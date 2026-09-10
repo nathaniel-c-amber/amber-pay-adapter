@@ -1,5 +1,9 @@
-# Build context exclusions (root). Used by both the frontend and backend
-# Docker builds (compose context is the repo root).
+# Build context exclusions (root). Used by the `api` Docker build
+# (docker-compose `api` service: context `.` + dockerfile `server/Dockerfile`).
+# The frontend lives in `web/` and is excluded so the api image stays lean.
+
+# Frontend (separate build context under web/)
+web
 
 # Dependencies
 node_modules

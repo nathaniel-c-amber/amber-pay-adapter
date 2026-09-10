@@ -1,0 +1,26 @@
+# Build context exclusions for the frontend Docker build
+# (docker-compose `web` service: context `./web` + dockerfile `Dockerfile`).
+
+# Dependencies
+node_modules
+
+# Build output
+dist
+
+# VCS / tooling
+.git
+.slim
+.impeccable
+.opencode
+
+# Local / secrets
+*.local
+.env
+.env.*
+!.env.example
+
+# Misc
+coverage
+*.tsbuildinfo
+*.log
+.DS_Store

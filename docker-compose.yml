@@ -4,7 +4,7 @@
 # Services:
 #   db   — PostgreSQL 16 (persistent volume, healthchecked)
 #   api  — backend server (Node 20, built from server/Dockerfile)
-#   web  — frontend SPA (nginx, built from root Dockerfile)
+#   web  — frontend SPA (nginx, built from web/Dockerfile)
 #
 # Secrets are read from a root `.env` file (docker-compose loads it
 # automatically). See `.env.example` / README for the required vars.
@@ -78,7 +78,7 @@ services:
 
   web:
     build:
-      context: .
+      context: ./web
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

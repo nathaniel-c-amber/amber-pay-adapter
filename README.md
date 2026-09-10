@@ -8,8 +8,13 @@ customer data** — operational statuses and reference hashes only.
 
 - **Backend** (`server/`) — Express + TypeScript (ESM, NodeNext), PostgreSQL 16,
   PBAC auth, webhook pipeline. Node 20.
-- **Frontend** (`src/`) — React 19 + Vite + TypeScript + TanStack Table.
+- **Frontend** (`web/`) — React 19 + Vite + TypeScript + TanStack Table.
 - **Deployment** — Docker Compose (PostgreSQL 16, backend Node 20, frontend nginx).
+
+## Repository layout
+
+- `server/` — backend API (Express + TypeScript).
+- `web/` — frontend monitoring console (React + Vite).
 
 ## Prerequisites
 
@@ -62,8 +67,16 @@ npm run dev            # tsx watch, port 3000
 Frontend:
 
 ```bash
+cd web
 npm install
 npm run dev            # Vite dev server, port 5173
+```
+
+Build the frontend (outputs to `web/dist/`):
+
+```bash
+cd web
+npm run build
 ```
 
 ## Notes
