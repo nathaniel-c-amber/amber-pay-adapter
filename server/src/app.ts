@@ -4,14 +4,20 @@ import cors from 'cors';
 import { corsOrigins } from './config/env.js';
 import { logger, requestLogger } from './lib/logger.js';
 import { AppError, NotFoundError, toHttpError } from './lib/errors.js';
+import { createWebhookRouter } from './routes/webhooks.js';
 
 export function createApp(): express.Express {
   const app = express();
 
   app.use(helmet());
   app.use(cors({ origin: corsOrigins }));
-  app.use(express.json());
   app.use(requestLogger);
+
+  // The webhook route verifies a signature over the RAW request body, so it
+  // MUST be mounted before the global JSON body parser.
+  app.use('/api/v1', createWebhookRouter());
+
+  app.use(express.json());
 
   app.get('/health', (_req, res) => {
     res.json({

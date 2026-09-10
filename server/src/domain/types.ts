@@ -100,7 +100,9 @@ export type LifecycleEventType =
   | 'collected'
   | 'record-updated'
   | 'sync-change'
-  | 'webhook-received';
+  | 'webhook-received'
+  | 'payment-declined'
+  | 'payment-failed';
 
 export type LifecycleChannel = 'payment' | 'accounting' | 'webhook' | 'system';
 
