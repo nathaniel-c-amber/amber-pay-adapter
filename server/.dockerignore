@@ -1,0 +1,23 @@
+# Build context exclusions for the backend (used when building with
+# context = server/, e.g. `docker build -f server/Dockerfile server/`).
+
+# Dependencies
+node_modules
+
+# Build output
+dist
+
+# Local / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Tests / coverage
+coverage
+*.test.js
+*.test.js.map
+
+# Misc
+*.log
+.DS_Store

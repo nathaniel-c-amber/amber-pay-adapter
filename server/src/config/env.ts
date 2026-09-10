@@ -58,6 +58,39 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration:\n${issues}`);
 }
 
+/**
+ * Known placeholder prefixes for secrets. These match the docker-compose /
+ * `.env.example` defaults so a production deploy can never run with them.
+ */
+const PLACEHOLDER_SECRET_PREFIXES = ['change-me-'];
+
+function isPlaceholderSecret(value: string): boolean {
+  return PLACEHOLDER_SECRET_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+/**
+ * Fail fast when running in production with a known placeholder secret.
+ * Dev/test are unaffected. Exported so it can be unit-tested directly without
+ * re-importing this module (which parses process.env at load time).
+ */
+export function assertNoPlaceholderSecrets(
+  nodeEnv: string,
+  jwtSecret: string,
+  webhookSecret: string,
+): void {
+  if (nodeEnv !== 'production') {
+    return;
+  }
+  if (isPlaceholderSecret(jwtSecret)) {
+    throw new Error('JWT_SECRET must not be a known placeholder value in production');
+  }
+  if (isPlaceholderSecret(webhookSecret)) {
+    throw new Error('AMBER_PAY_WEBHOOK_SECRET must not be a known placeholder value in production');
+  }
+}
+
+assertNoPlaceholderSecrets(parsed.data.NODE_ENV, parsed.data.JWT_SECRET, parsed.data.AMBER_PAY_WEBHOOK_SECRET);
+
 export const env = parsed.data;
 
 /** Comma-separated CORS allowlist -> array of origins for the CORS middleware. */

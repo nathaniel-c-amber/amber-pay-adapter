@@ -1,0 +1,28 @@
+# Build context exclusions (root). Used by both the frontend and backend
+# Docker builds (compose context is the repo root).
+
+# Dependencies
+node_modules
+server/node_modules
+
+# Build output
+dist
+server/dist
+
+# VCS / tooling
+.git
+.slim
+.impeccable
+.opencode
+
+# Local / secrets
+*.local
+.env
+.env.*
+!.env.example
+
+# Misc
+coverage
+*.tsbuildinfo
+*.log
+.DS_Store

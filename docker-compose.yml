@@ -1,0 +1,100 @@
+# ------------------------------------------------------------------
+# Amber Pay — full deployment stack
+#
+# Services:
+#   db   — PostgreSQL 16 (persistent volume, healthchecked)
+#   api  — backend server (Node 20, built from server/Dockerfile)
+#   web  — frontend SPA (nginx, built from root Dockerfile)
+#
+# Secrets are read from a root `.env` file (docker-compose loads it
+# automatically). See `.env.example` / README for the required vars.
+# NEVER commit real secrets.
+# ------------------------------------------------------------------
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-amber}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-amber}
+      POSTGRES_DB: ${POSTGRES_DB:-amber}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-amber} -d ${POSTGRES_DB:-amber}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    networks:
+      - amber
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-amber}:${POSTGRES_PASSWORD:-amber}@db:5432/${POSTGRES_DB:-amber}
+      JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret-0123456789abcdef}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      # Amber Pay gateway
+      AMBER_PAY_BASE_URL: ${AMBER_PAY_BASE_URL:-https://api.amberpay.example.com}
+      AMBER_PAY_WEBHOOK_SECRET: ${AMBER_PAY_WEBHOOK_SECRET:-change-me-webhook-secret}
+      # QuickBooks
+      QUICKBOOKS_CLIENT_ID: ${QUICKBOOKS_CLIENT_ID:-}
+      QUICKBOOKS_CLIENT_SECRET: ${QUICKBOOKS_CLIENT_SECRET:-}
+      QUICKBOOKS_BASE_URL: ${QUICKBOOKS_BASE_URL:-https://quickbooks.api.intuit.com}
+      QUICKBOOKS_REALM_ID: ${QUICKBOOKS_REALM_ID:-}
+      # Sage
+      SAGE_CLIENT_ID: ${SAGE_CLIENT_ID:-}
+      SAGE_CLIENT_SECRET: ${SAGE_CLIENT_SECRET:-}
+      SAGE_BASE_URL: ${SAGE_BASE_URL:-https://api.sage.com}
+      # Notifications
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "3000:3000"
+    networks:
+      - amber
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "8080:80"
+    networks:
+      - amber
+
+volumes:
+  db-data:
+
+networks:
+  amber:
