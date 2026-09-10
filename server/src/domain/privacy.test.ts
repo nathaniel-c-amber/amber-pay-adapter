@@ -8,6 +8,13 @@ import {
   Failure,
   PolicyScope,
 } from './types.js';
+import type {
+  PaymentRef,
+  SyncResult,
+  PushResult,
+  HealthCheckResult,
+  AdaptorStatus,
+} from '../adaptors/types.js';
 
 // Keys that must never appear on operational/monitoring domain types.
 // NOTE: `User` is intentionally excluded — it is an auth entity whose `email`
@@ -110,5 +117,39 @@ describe('privacy constraint', () => {
     );
     const forbidden = keys.filter((key) => FORBIDDEN_KEYS.includes(key));
     expect(forbidden).toEqual([]);
+  });
+
+  it('adaptor types expose no sensitive keys', () => {
+    const paymentRef: PaymentRef = {
+      id: 'p1',
+      transactionId: 'tx-1',
+      externalInvoiceId: 'inv-1',
+      status: 'collected',
+      processedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const syncResult: SyncResult = {
+      status: 'ok',
+      ranAt: '2026-01-01T00:00:00.000Z',
+      matched: 0,
+      unmatched: 0,
+      anomalies: 0,
+    };
+    const pushResult: PushResult = {
+      externalRef: 'tx-1',
+      at: '2026-01-01T00:00:00.000Z',
+    };
+    const healthCheck: HealthCheckResult = {
+      ok: true,
+      latencyMs: 1,
+    };
+
+    const keys = collectKeys(paymentRef, syncResult, pushResult, healthCheck);
+    const forbidden = keys.filter((key) => FORBIDDEN_KEYS.includes(key));
+    expect(forbidden).toEqual([]);
+
+    // AdaptorStatus is a string union; assert its members are operational only.
+    const statuses: AdaptorStatus[] = ['connected', 'disconnected', 'error', 'syncing'];
+    const forbiddenStatuses = statuses.filter((status) => FORBIDDEN_KEYS.includes(status));
+    expect(forbiddenStatuses).toEqual([]);
   });
 });
