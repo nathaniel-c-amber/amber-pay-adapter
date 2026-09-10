@@ -1,0 +1,14 @@
+{
+  "design": {
+    "world": "midnight-transit-diagonal",
+    "seed": "ca7932b5",
+    "kind": "challenger",
+    "sourceId": "wayfinding-cartography-signage-midnight-transit-diagram",
+    "mode": "operate",
+    "colorStrategy": "restrained",
+    "fontUi": "IBM Plex Sans",
+    "fontData": "IBM Plex Mono",
+    "primaryTarget": "dashboard",
+    "documentedAt": "2026-09-10"
+  }
+}

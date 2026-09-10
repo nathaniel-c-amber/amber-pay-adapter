@@ -1,0 +1,114 @@
+/* Amber Pay — Connector Monitor
+   Own world: the Midnight Transit Diagonal. A midnight-enamel service map of
+   the gateway⇄accounting link, porcelain-white station ticks, scarlet/cobalt/
+   amber/green line inks, active line burning brightest. Status is never
+   colour-only: text label + shape mark + hatch on the suspended line. */
+
+:root {
+  /* Ground & ink (midnight enamel) */
+  --midnight: #0b1330;
+  --midnight-2: #101a3e;
+  --midnight-3: #16224d;
+  --midnight-raised: #1a2a5e;
+  --porcelain: #f6f7fc;
+  --porcelain-dim: #b7c0e0;
+  --porcelain-faint: #7f8bc0;
+  --rule-enamel: #2a3a72;
+  --rule-enamel-soft: #1e2c5a;
+
+  /* Line inks (transit) */
+  --line-scarlet: #d6403f;
+  --line-cobalt: #3c6fe0;
+  --line-amber: #e6a12a;
+  --line-green: #39b98a;
+
+  /* State (service) */
+  --state-arriving: #7fe7d2;
+  --state-delayed: #e6a12a;
+  --state-suspended: #d6403f;
+  --text-suspended: #ee6159;
+  --text-delayed: #e6a12a;
+  --state-tint-arriving: rgba(127, 231, 210, 0.16);
+  --state-tint-delayed: rgba(230, 161, 42, 0.16);
+  --state-tint-suspended: rgba(214, 64, 63, 0.16);
+
+  /* Focus & selection */
+  --focus: #7fe7d2;
+  --sel-bg: #22316b;
+
+  /* Shadows carry offset + soft blur; the world is enamel, so it is a low
+     soft lift on raised panels, never a hard offset. */
+  --shadow-soft: 0 2px 8px rgba(3, 6, 24, 0.45);
+  --shadow-panel: 0 1px 2px rgba(3, 6, 24, 0.4), 0 0 0 1px var(--rule-enamel-soft);
+
+  /* Metrics */
+  --track: 0.125rem;
+  --hair: 1px;
+  --radius: 3px;
+  --radius-chip: 3px;
+  --measure: 72ch;
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 100%; }
+
+body {
+  margin: 0;
+  background: var(--midnight);
+  color: var(--porcelain);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--sel-bg); color: var(--porcelain); }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+/* Numerals align in tabular figures wherever counts or refs render. */
+.mono, .figure, [data-figure], code {
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* Custom scrollbars carry the design, not the browser default. */
+* { scrollbar-width: thin; scrollbar-color: var(--rule-enamel) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--rule-enamel); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--porcelain-faint); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Links and underline offset */
+a { color: var(--state-arriving); text-underline-offset: 0.18em; }
+
+/* Headings carry weight on the enamel, no decorative eyebrows. */
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.3rem; }
+h2 { font-size: 1rem; }
+h3 { font-size: 0.9rem; }
+
+p, li { max-width: var(--measure); }
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+}
+.skip-link:focus {
+  left: 0;
+  top: 0;
+  background: var(--porcelain);
+  color: var(--midnight);
+  padding: 0.5rem 1rem;
+  z-index: 50;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms; animation-iteration-count: 1; transition-duration: 0.01ms; }
+}
