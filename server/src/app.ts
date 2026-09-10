@@ -9,6 +9,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { createPaymentRouter } from './routes/payments.js';
 import { createReportRouter } from './routes/reports.js';
 import { createDashboardRouter } from './routes/dashboard.js';
+import { createFailuresRouter } from './routes/failures.js';
 import { getRepositories } from './repositories/index.js';
 import type { AuthRouteDeps } from './routes/auth.js';
 import type { Repositories } from './repositories/types.js';
@@ -49,6 +50,10 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
       events: repositories.events,
       failures: repositories.failures,
     }),
+  );
+  app.use(
+    '/api/v1',
+    createFailuresRouter({ failures: repositories.failures }),
   );
 
   app.get('/health', (_req, res) => {

@@ -21,9 +21,16 @@ const features = tableFeatures({
   sortedRowModel: createSortedRowModel(),
 });
 
-/* Clock times written "HH:MM:SS", compared as seconds since midnight. */
+/* Clock times written "HH:MM:SS" (or "HH:MM"), compared as seconds since
+   midnight. Also handles full ISO timestamps (contains a date separator) by
+   parsing with Date, so sorting is correct for both display formats (M1). */
 const toSeconds = (t: string) => {
-  const [h, m, s] = (t || "00:00:00").split(":").map(Number);
+  const value = String(t ?? "");
+  if (value.includes("T") || value.includes("-")) {
+    const ms = new Date(value).getTime();
+    if (!Number.isNaN(ms)) return ms;
+  }
+  const [h, m, s] = (value || "00:00:00").split(":").map(Number);
   return ((h || 0) * 60 + (m || 0)) * 60 + (s || 0);
 };
 
@@ -38,6 +45,8 @@ const EVENT_ORDER: Record<EventType, number> = {
   "record-updated": 2,
   "sync-change": 3,
   initiated: 4,
+  "payment-declined": 5,
+  "payment-failed": 6,
 };
 const sortEventType = constructSortFn({
   sort: (a, b) =>
@@ -99,7 +108,7 @@ function buildEventColumns(): ColumnDef<any, LifecycleEvent, unknown>[] {
       cell: (info) => (
         <span className="evcol-type">
           <span className="event-type-mark" aria-hidden />
-          {EVENT_LABEL[String(info.getValue()) as EventType]}
+          {EVENT_LABEL[String(info.getValue()) as EventType] ?? "Event"}
         </span>
       ),
     },

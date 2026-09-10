@@ -11,7 +11,9 @@ export type EventType =
   | "collected"
   | "record-updated"
   | "sync-change"
-  | "webhook-received";
+  | "webhook-received"
+  | "payment-declined"
+  | "payment-failed";
 export type Severity = "critical" | "attention";
 
 export interface Connector {
@@ -150,6 +152,8 @@ export const EVENT_LABEL: Record<EventType, string> = {
   "record-updated": "Record updated",
   "sync-change": "Sync change",
   "webhook-received": "Webhook received",
+  "payment-declined": "Payment declined",
+  "payment-failed": "Payment failed",
 };
 
 export const openCount = (connectors: Connector[]): number =>
