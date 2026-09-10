@@ -5,8 +5,15 @@ import { corsOrigins } from './config/env.js';
 import { logger, requestLogger } from './lib/logger.js';
 import { AppError, NotFoundError, toHttpError } from './lib/errors.js';
 import { createWebhookRouter } from './routes/webhooks.js';
+import { createAuthRouter } from './routes/auth.js';
+import type { AuthRouteDeps } from './routes/auth.js';
 
-export function createApp(): express.Express {
+export interface CreateAppDeps {
+  /** Optional auth service overrides (used by tests to inject seams). */
+  auth?: AuthRouteDeps;
+}
+
+export function createApp(deps: CreateAppDeps = {}): express.Express {
   const app = express();
 
   app.use(helmet());
@@ -18,6 +25,10 @@ export function createApp(): express.Express {
   app.use('/api/v1', createWebhookRouter());
 
   app.use(express.json());
+
+  // Auth routes rely on a parsed JSON body, so they are mounted AFTER the
+  // JSON body parser.
+  app.use('/api/v1', createAuthRouter(deps.auth));
 
   app.get('/health', (_req, res) => {
     res.json({

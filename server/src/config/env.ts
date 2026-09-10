@@ -20,6 +20,10 @@ const envSchema = z.object({
   // Auth (placeholder - JWT)
   JWT_SECRET: z.string().min(16),
   JWT_TTL: z.string().default('1h'),
+  // Invitation link lifetime (FR-1.3).
+  INVITE_TTL: z.string().default('48h'),
+  // Email 2FA challenge lifetime.
+  TWO_FACTOR_TTL: z.string().default('5m'),
 
   // Amber Pay
   AMBER_PAY_BASE_URL: z.string().url().default('https://api.amberpay.example.com'),
