@@ -6,15 +6,26 @@ import { logger, requestLogger } from './lib/logger.js';
 import { AppError, NotFoundError, toHttpError } from './lib/errors.js';
 import { createWebhookRouter } from './routes/webhooks.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createPaymentRouter } from './routes/payments.js';
+import { createReportRouter } from './routes/reports.js';
+import { createDashboardRouter } from './routes/dashboard.js';
+import { getRepositories } from './repositories/index.js';
 import type { AuthRouteDeps } from './routes/auth.js';
+import type { Repositories } from './repositories/types.js';
+import type { AmberPayGateway } from './gateway/types.js';
 
 export interface CreateAppDeps {
   /** Optional auth service overrides (used by tests to inject seams). */
   auth?: AuthRouteDeps;
+  /** Optional repository container override (tests inject in-memory). */
+  repositories?: Repositories;
+  /** Optional gateway override (tests inject a stub). */
+  gateway?: AmberPayGateway;
 }
 
 export function createApp(deps: CreateAppDeps = {}): express.Express {
   const app = express();
+  const repositories = deps.repositories ?? getRepositories();
 
   app.use(helmet());
   app.use(cors({ origin: corsOrigins }));
@@ -26,9 +37,19 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
 
   app.use(express.json());
 
-  // Auth routes rely on a parsed JSON body, so they are mounted AFTER the
-  // JSON body parser.
+  // Auth + data routes rely on a parsed JSON body, so they are mounted AFTER
+  // the JSON body parser.
   app.use('/api/v1', createAuthRouter(deps.auth));
+  app.use('/api/v1', createPaymentRouter({ payments: repositories.payments, gateway: deps.gateway }));
+  app.use('/api/v1', createReportRouter({ reconciliation: repositories.reconciliation }));
+  app.use(
+    '/api/v1',
+    createDashboardRouter({
+      connectorStates: repositories.connectorStates,
+      events: repositories.events,
+      failures: repositories.failures,
+    }),
+  );
 
   app.get('/health', (_req, res) => {
     res.json({

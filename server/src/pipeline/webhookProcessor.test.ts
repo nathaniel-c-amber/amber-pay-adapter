@@ -39,10 +39,11 @@ describe('WebhookProcessor', () => {
 
     await processor.processWebhook(collectedEvent);
 
-    expect(eventLog.list()).toHaveLength(1);
-    expect(eventLog.list()[0]?.type).toBe('collected');
+    const events = await eventLog.list(['org-1']);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('collected');
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
-    expect(failureTracker.list()).toHaveLength(0);
+    expect(await failureTracker.list(['org-1'])).toHaveLength(0);
   });
 
   it('connects the adaptor before pushing (real adaptor)', async () => {
@@ -57,7 +58,7 @@ describe('WebhookProcessor', () => {
 
     expect(await adaptor.status()).toBe('connected');
     expect(transport).toHaveBeenCalled();
-    expect(failureTracker.list()).toHaveLength(0);
+    expect(await failureTracker.list(['org-1'])).toHaveLength(0);
   });
 
   it('uses the configured active adaptor id', async () => {
@@ -82,7 +83,40 @@ describe('WebhookProcessor', () => {
     await processor.processWebhook(collectedEvent);
     await processor.processWebhook(collectedEvent);
 
-    expect(eventLog.list()).toHaveLength(1);
+    expect(await eventLog.list(['org-1'])).toHaveLength(1);
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT dedup a failed webhook — a retry reprocesses it (M2)', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor({
+      pushCompletedPayment: jest.fn().mockRejectedValue(new Error('boom')),
+    });
+    const resolver = { get: jest.fn().mockReturnValue(adaptor) };
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+
+    // First delivery fails (adaptor push throws).
+    await processor.processWebhook(collectedEvent);
+    expect(await failureTracker.list(['org-1'])).toHaveLength(1);
+
+    // Retry must reprocess (not be deduped): the failure is recorded again.
+    await processor.processWebhook(collectedEvent);
+    expect(await failureTracker.list(['org-1'])).toHaveLength(2);
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedups a successful webhook on a later retry (M2)', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const resolver = { get: jest.fn().mockReturnValue(adaptor) };
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+
+    await processor.processWebhook(collectedEvent);
+    await processor.processWebhook(collectedEvent);
+
+    expect(await eventLog.list(['org-1'])).toHaveLength(1);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
   });
 
@@ -97,8 +131,9 @@ describe('WebhookProcessor', () => {
 
     await expect(processor.processWebhook(collectedEvent)).resolves.toBeUndefined();
 
-    expect(failureTracker.list()).toHaveLength(1);
-    expect(failureTracker.list()[0]?.severity).toBe('critical');
+    const failures = await failureTracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.severity).toBe('critical');
   });
 
   it('records a critical failure when the adaptor push times out', async () => {
@@ -115,8 +150,9 @@ describe('WebhookProcessor', () => {
 
     await processor.processWebhook(collectedEvent);
 
-    expect(failureTracker.list()).toHaveLength(1);
-    expect(failureTracker.list()[0]?.severity).toBe('critical');
+    const failures = await failureTracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.severity).toBe('critical');
   });
 
   it('records a declined lifecycle event and a failure for declined payments', async () => {
@@ -130,9 +166,10 @@ describe('WebhookProcessor', () => {
       status: 'failed',
     });
 
-    expect(eventLog.list()).toHaveLength(1);
-    expect(eventLog.list()[0]?.type).toBe('payment-declined');
-    expect(failureTracker.list()).toHaveLength(1);
+    const events = await eventLog.list(['org-1']);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('payment-declined');
+    expect(await failureTracker.list(['org-1'])).toHaveLength(1);
   });
 
   it('records a payment-failed lifecycle event for failed payments', async () => {
@@ -146,6 +183,7 @@ describe('WebhookProcessor', () => {
       status: 'failed',
     });
 
-    expect(eventLog.list()[0]?.type).toBe('payment-failed');
+    const events = await eventLog.list(['org-1']);
+    expect(events[0]?.type).toBe('payment-failed');
   });
 });

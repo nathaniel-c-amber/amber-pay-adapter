@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '../lib/logger.js';
 import { ValidationError } from '../lib/errors.js';
+import { getRepositories } from '../repositories/index.js';
+import { InMemoryEventRepository } from '../repositories/inMemory.js';
+import type { EventRepository } from '../repositories/types.js';
 import type { LifecycleChannel, LifecycleEvent, LifecycleEventType } from '../domain/types.js';
 
 export interface EventLogInput {
@@ -8,6 +11,8 @@ export interface EventLogInput {
   channel: string;
   ref: string;
   detail: string;
+  /** Organization the event belongs to (C1). Stored org-scoped. */
+  organizationId: string;
 }
 
 /**
@@ -80,12 +85,11 @@ export function assertNoSensitiveData(value: string, label = 'value'): void {
 
 /**
  * Records lifecycle events (FR-5.1) with a hard privacy guarantee (FR-5.2).
- *
- * LIMITATION: persists to an in-memory array — data is lost on restart. DB
- * persistence is Phase 5.
+ * Sanitization/redaction runs BEFORE persisting, then delegates to an
+ * `EventRepository`.
  */
 export class EventLog {
-  private readonly events: LifecycleEvent[] = [];
+  constructor(private readonly events: EventRepository = new InMemoryEventRepository()) {}
 
   async recordEvent(input: EventLogInput): Promise<LifecycleEvent> {
     const channel = validateChannel(input.channel);
@@ -97,21 +101,22 @@ export class EventLog {
 
     const event: LifecycleEvent = {
       id: randomUUID(),
+      organizationId: input.organizationId,
       at: new Date().toISOString(),
       type: input.type,
       channel,
       ref: input.ref,
       detail,
     };
-    this.events.push(event);
+    await this.events.append(event);
     logger.info({ eventType: event.type, ref: event.ref }, 'Lifecycle event recorded');
     return event;
   }
 
-  list(): LifecycleEvent[] {
-    return [...this.events];
+  async list(organizationIds: string[]): Promise<LifecycleEvent[]> {
+    return this.events.list(organizationIds);
   }
 }
 
-/** Singleton event log. */
-export const eventLog = new EventLog();
+/** Singleton event log backed by the shared repository container. */
+export const eventLog = new EventLog(getRepositories().events);

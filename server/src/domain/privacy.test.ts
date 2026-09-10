@@ -51,6 +51,7 @@ describe('privacy constraint', () => {
     const invoice: Invoice = {
       id: 'i1',
       accountId: 'a1',
+      organizationId: 'org1',
       externalInvoiceId: 'ref-1',
       status: 'open',
       dueDate: '2026-01-01T00:00:00.000Z',
@@ -58,12 +59,14 @@ describe('privacy constraint', () => {
     const payment: Payment = {
       id: 'p1',
       invoiceId: 'i1',
+      organizationId: 'org1',
       transactionId: 'tx-1',
       status: 'collected',
       processedAt: '2026-01-01T00:00:00.000Z',
     };
     const reconciliation: ReconciliationJob = {
       id: 'r1',
+      organizationId: 'org1',
       runAt: '2026-01-01T00:00:00.000Z',
       status: 'completed',
       summary: {
@@ -76,6 +79,7 @@ describe('privacy constraint', () => {
     };
     const event: LifecycleEvent = {
       id: 'e1',
+      organizationId: 'org1',
       at: '2026-01-01T00:00:00.000Z',
       type: 'initiated',
       channel: 'payment',
@@ -84,6 +88,7 @@ describe('privacy constraint', () => {
     };
     const connector: ConnectorState = {
       id: 'c1',
+      organizationId: 'org1',
       label: 'QB',
       terminus: 'quickbooks',
       status: 'open',
@@ -92,6 +97,7 @@ describe('privacy constraint', () => {
     };
     const failure: Failure = {
       id: 'f1',
+      organizationId: 'org1',
       severity: 'critical',
       channel: 'webhook',
       title: 'err',

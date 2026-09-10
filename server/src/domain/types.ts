@@ -14,6 +14,10 @@
  *   sensitive keys so nothing leaks into logs.
  * - `User` is an auth entity (invite email + credential hash) and is the only
  *   type that legitimately holds an email address.
+ *
+ * TENANCY: every operational/monitoring entity carries `organizationId`. Rows
+ * are stored org-scoped and reads are always filtered by the caller's
+ * authorized organizations, so PBAC org checks actually restrict returned data.
  */
 
 // --- Identifier aliases ---
@@ -54,6 +58,7 @@ export type InvoiceStatus = 'draft' | 'open' | 'paid' | 'overdue' | 'void';
 export interface Invoice {
   id: InvoiceId;
   accountId: AccountId;
+  organizationId: string;
   /** External reference hash / id (e.g. QuickBooks). No financial data. */
   externalInvoiceId: string;
   status: InvoiceStatus;
@@ -66,6 +71,7 @@ export type PaymentStatus = 'initiated' | 'collected' | 'failed' | 'refunded';
 export interface Payment {
   id: PaymentId;
   invoiceId: InvoiceId;
+  organizationId: string;
   /** Reference hash of the gateway transaction. No financial data. */
   transactionId: string;
   status: PaymentStatus;
@@ -88,6 +94,7 @@ export interface ReconciliationSummary {
 
 export interface ReconciliationJob {
   id: ReconciliationJobId;
+  organizationId: string;
   runAt: string; // ISO 8601
   status: ReconciliationJobStatus;
   summary: ReconciliationSummary;
@@ -108,6 +115,7 @@ export type LifecycleChannel = 'payment' | 'accounting' | 'webhook' | 'system';
 
 export interface LifecycleEvent {
   id: LifecycleEventId;
+  organizationId: string;
   at: string; // ISO 8601
   type: LifecycleEventType;
   channel: LifecycleChannel;
@@ -123,6 +131,7 @@ export type ConnectorTerminus = 'quickbooks' | 'sage' | 'amber-pay' | 'audit-tra
 
 export interface ConnectorState {
   id: ConnectorStateId;
+  organizationId: string;
   label: string;
   terminus: ConnectorTerminus;
   status: ConnectorStatus;
@@ -136,6 +145,7 @@ export type Severity = 'critical' | 'attention';
 
 export interface Failure {
   id: FailureId;
+  organizationId: string;
   severity: Severity;
   channel: LifecycleChannel;
   /** Human-readable operational text only. No financial/customer data. */
@@ -143,6 +153,7 @@ export interface Failure {
   /** Human-readable operational text only. No financial/customer data. */
   detail: string;
   since: string; // ISO 8601
+  acknowledgedAt?: string; // ISO 8601 — present once acknowledged
 }
 
 export type PolicyAction = 'read' | 'ack' | 'write' | 'admin';

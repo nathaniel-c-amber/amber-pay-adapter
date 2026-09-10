@@ -27,14 +27,14 @@ describe('TwoFactorService', () => {
     expect(code).toMatch(/^\d{6}$/);
     expect(challenge.codeHash).not.toBe(code); // only the hash is stored
 
-    expect(service.verifyChallenge(challenge.id, code).id).toBe(challenge.id);
+    expect((await service.verifyChallenge(challenge.id, code)).id).toBe(challenge.id);
   });
 
   it('rejects a wrong code', async () => {
     const { sender, lastCode } = recordingSender();
     const service = new TwoFactorService(sender);
     const challenge = await service.createChallenge('u1');
-    expect(() => service.verifyChallenge(challenge.id, wrongCode(lastCode()))).toThrow(
+    await expect(service.verifyChallenge(challenge.id, wrongCode(lastCode()))).rejects.toThrow(
       UnauthorizedError,
     );
   });
@@ -44,7 +44,9 @@ describe('TwoFactorService', () => {
     const service = new TwoFactorService(sender);
     const challenge = await service.createChallenge('u1');
     challenge.expiresAt = new Date(Date.now() - 1000).toISOString();
-    expect(() => service.verifyChallenge(challenge.id, lastCode())).toThrow(UnauthorizedError);
+    await expect(service.verifyChallenge(challenge.id, lastCode())).rejects.toThrow(
+      UnauthorizedError,
+    );
   });
 
   it('enforces the attempt limit', async () => {
@@ -54,15 +56,17 @@ describe('TwoFactorService', () => {
     const bad = wrongCode(lastCode());
 
     for (let i = 0; i < 5; i += 1) {
-      expect(() => service.verifyChallenge(challenge.id, bad)).toThrow(UnauthorizedError);
+      await expect(service.verifyChallenge(challenge.id, bad)).rejects.toThrow(UnauthorizedError);
     }
     // Beyond the limit, even a correct code is rejected.
-    expect(() => service.verifyChallenge(challenge.id, lastCode())).toThrow(UnauthorizedError);
+    await expect(service.verifyChallenge(challenge.id, lastCode())).rejects.toThrow(
+      UnauthorizedError,
+    );
   });
 
-  it('rejects an unknown challenge id', () => {
+  it('rejects an unknown challenge id', async () => {
     const { sender } = recordingSender();
     const service = new TwoFactorService(sender);
-    expect(() => service.verifyChallenge('nobody', '123456')).toThrow(UnauthorizedError);
+    await expect(service.verifyChallenge('nobody', '123456')).rejects.toThrow(UnauthorizedError);
   });
 });

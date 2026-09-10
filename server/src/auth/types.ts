@@ -1,4 +1,4 @@
-import type { PolicyAction } from '../domain/types.js';
+import type { PolicyAction, User } from '../domain/types.js';
 
 /**
  * A single PBAC policy attribute granted to a user. Authorization is entirely
@@ -8,6 +8,14 @@ export interface PolicyAttribute {
   scope: string;
   organizationId: string;
   actions: PolicyAction[];
+}
+
+/**
+ * Internal auth user: the domain `User` plus the PBAC attributes granted at
+ * invite time. This is an auth-internal record (not part of the domain model).
+ */
+export interface AuthUser extends User {
+  policyAttributes: PolicyAttribute[];
 }
 
 /**

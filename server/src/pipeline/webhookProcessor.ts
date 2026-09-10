@@ -2,6 +2,9 @@ import { logger } from '../lib/logger.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.js';
 import { failureTracker } from '../events/failures.js';
+import { getRepositories } from '../repositories/index.js';
+import { InMemoryWebhookDedupRepository } from '../repositories/inMemory.js';
+import type { WebhookDedupRepository } from '../repositories/types.js';
 import type { AccountingAdaptor, AdaptorId, PaymentRef } from '../adaptors/types.js';
 import type { WebhookEvent } from '../gateway/types.js';
 import type { LifecycleEventType } from '../domain/types.js';
@@ -18,26 +21,32 @@ export interface AdaptorResolver {
  * never crash the process. On adaptor failure it records a critical Failure
  * (FR-5.3) instead of propagating.
  *
- * Idempotency: processed webhook ids are tracked in-memory so duplicate or
- * replayed webhooks are skipped. DB-backed dedup is Phase 5.
+ * Idempotency (M2): processed webhook ids are tracked via a two-phase
+ * `WebhookDedupRepository`. A webhook is marked `processing` before handling
+ * and only flipped to `processed` once it succeeds, so a failed webhook is NOT
+ * deduped and is retried on the next delivery.
+ *
+ * Org-scoping (C1): every recorded event/failure carries the configured
+ * `organizationId` for this processor.
  */
 export class WebhookProcessor {
-  private readonly processedIds = new Set<string>();
-
   constructor(
     private readonly eventLog: EventLog,
     private readonly failureTracker: FailureTracker,
     private readonly adaptorResolver: AdaptorResolver = adaptorRegistry,
     private readonly pushTimeoutMs = 5000,
     private readonly activeAdaptorId: AdaptorId = 'quickbooks',
+    private readonly dedup: WebhookDedupRepository = new InMemoryWebhookDedupRepository(),
+    private readonly organizationId = 'org-1',
   ) {}
 
   async processWebhook(event: WebhookEvent): Promise<void> {
-    if (this.processedIds.has(event.id)) {
+    if (await this.dedup.hasProcessed(event.id)) {
       logger.warn({ webhookId: event.id }, 'Duplicate webhook ignored');
       return;
     }
-    this.processedIds.add(event.id);
+    const now = new Date().toISOString();
+    await this.dedup.markProcessing(event.id, now);
 
     try {
       switch (event.type) {
@@ -54,6 +63,9 @@ export class WebhookProcessor {
         default:
           logger.warn({ webhookType: event.type }, 'Unhandled webhook type');
       }
+      // Only mark processed after the whole handler succeeded, so a failure
+      // leaves the webhook retryable (M2).
+      await this.dedup.markProcessed(event.id, now);
     } catch (err) {
       logger.error({ err }, 'Webhook processing failed');
     }
@@ -65,6 +77,7 @@ export class WebhookProcessor {
       channel: 'webhook',
       ref: event.reference,
       detail: 'Payment collected',
+      organizationId: this.organizationId,
     });
 
     try {
@@ -86,7 +99,12 @@ export class WebhookProcessor {
         channel: 'accounting',
         title: 'Payment push to adaptor failed',
         detail: 'Failed to push collected payment to accounting adaptor',
+        organizationId: this.organizationId,
       });
+      // Rethrow so the webhook is NOT marked processed (M2): a failed push
+      // remains retryable on the next delivery. `processWebhook` catches this
+      // internally, so the pipeline still never throws to the caller.
+      throw err;
     }
   }
 
@@ -121,12 +139,14 @@ export class WebhookProcessor {
       channel: 'webhook',
       ref: event.reference,
       detail: 'Payment declined or failed',
+      organizationId: this.organizationId,
     });
     await this.failureTracker.recordFailure({
       severity: 'critical',
       channel: 'payment',
       title: 'Payment declined or failed',
       detail: 'Payment was declined or failed',
+      organizationId: this.organizationId,
     });
   }
 
@@ -136,9 +156,18 @@ export class WebhookProcessor {
       channel: 'webhook',
       ref: event.reference,
       detail: 'Payment initiated',
+      organizationId: this.organizationId,
     });
   }
 }
 
-/** Singleton webhook processor wired to the default event log, failure tracker and adaptor registry. */
-export const webhookProcessor = new WebhookProcessor(eventLog, failureTracker);
+/** Singleton webhook processor wired to the default services and repositories. */
+export const webhookProcessor = new WebhookProcessor(
+  eventLog,
+  failureTracker,
+  adaptorRegistry,
+  5000,
+  'quickbooks',
+  getRepositories().webhookDedup,
+  'org-1',
+);

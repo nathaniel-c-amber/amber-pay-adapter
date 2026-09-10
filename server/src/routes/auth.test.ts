@@ -38,7 +38,7 @@ function buildTestApp(): {
 }
 
 async function seedAdmin(userStore: UserStore): Promise<string> {
-  const user = userStore.create(
+  const user = await userStore.create(
     'admin@example.com',
     await hashPassword('AdminPassw0rd!'),
     adminPolicy,

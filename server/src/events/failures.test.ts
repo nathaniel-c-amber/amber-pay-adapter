@@ -9,10 +9,12 @@ describe('FailureTracker', () => {
       channel: 'accounting',
       title: 'Push failed',
       detail: 'Could not push to QuickBooks',
+      organizationId: 'org-1',
     });
 
-    expect(tracker.list()).toHaveLength(1);
-    expect(tracker.list()[0]).toEqual(failure);
+    const failures = await tracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toEqual(failure);
     expect(failure.severity).toBe('critical');
   });
 
@@ -23,6 +25,7 @@ describe('FailureTracker', () => {
       channel: 'accounting',
       title: 'Card 4111 1111 1111 1111 failed',
       detail: 'Amount $1,234.56 for customer@example.com',
+      organizationId: 'org-1',
     });
 
     expect(failure.title).not.toContain('4111');
@@ -38,14 +41,29 @@ describe('FailureTracker', () => {
       channel: 'payment',
       title: 'Declined',
       detail: 'Payment declined',
+      organizationId: 'org-1',
     });
 
-    const acked = await tracker.acknowledge(failure.id);
+    const acked = await tracker.acknowledge(failure.id, ['org-1']);
     expect(acked.id).toBe(failure.id);
+    expect(acked.acknowledgedAt).toBeDefined();
   });
 
   it('acknowledge throws NotFoundError for an unknown id', async () => {
     const tracker = new FailureTracker();
-    await expect(tracker.acknowledge('unknown')).rejects.toThrow(NotFoundError);
+    await expect(tracker.acknowledge('unknown', ['org-1'])).rejects.toThrow(NotFoundError);
+  });
+
+  it('acknowledge throws NotFoundError for a failure in another org (C1)', async () => {
+    const tracker = new FailureTracker();
+    const failure = await tracker.recordFailure({
+      severity: 'critical',
+      channel: 'payment',
+      title: 'Declined',
+      detail: 'Payment declined',
+      organizationId: 'org-2',
+    });
+
+    await expect(tracker.acknowledge(failure.id, ['org-1'])).rejects.toThrow(NotFoundError);
   });
 });

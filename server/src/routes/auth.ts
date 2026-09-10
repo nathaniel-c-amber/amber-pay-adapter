@@ -3,7 +3,6 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import {
-  ForbiddenError,
   TooManyRequestsError,
   UnauthorizedError,
   ValidationError,
@@ -15,6 +14,7 @@ import { issueAccessToken, resolveAccessTokenTtlSeconds } from '../auth/tokens.j
 import { inviteService as defaultInviteService } from '../auth/invites.js';
 import { twoFactorService as defaultTwoFactorService } from '../auth/twoFactor.js';
 import { userStore as defaultUserStore } from '../auth/users.js';
+import { organizationIdOf } from './policyResource.js';
 import { env } from '../config/env.js';
 import type { InviteService } from '../auth/invites.js';
 import type { TwoFactorService } from '../auth/twoFactor.js';
@@ -66,11 +66,6 @@ const ACCEPT_INVITE_RATE_LIMIT_MAX = 5;
 function rateLimitHandler(_req: express.Request, res: express.Response): void {
   const { status, body } = toHttpError(new TooManyRequestsError());
   res.status(status).json(body);
-}
-
-function organizationIdOf(req: express.Request): string {
-  const body = req.body as { organizationId?: unknown } | undefined;
-  return typeof body?.organizationId === 'string' ? body.organizationId : '';
 }
 
 // Dummy bcrypt hash used to equalise login timing when the user is unknown.
@@ -148,28 +143,19 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
         throw new ValidationError('Invalid invite payload');
       }
 
-      // C1: an admin may only grant policy for organizations they themselves
-      // hold `admin` on. The allowed set is derived from the token's policy,
-      // never from the request body, so an admin on org-1 cannot plant an
-      // account in org-2.
-      const authorizedOrganizations = new Set(
-        auth.policy
-          .filter((attribute) => attribute.actions.includes('admin'))
-          .map((attribute) => attribute.organizationId),
-      );
-      const unauthorizedOrganization = parsed.data.policyAttributes
-        .map((attribute) => attribute.organizationId)
-        .find((organizationId) => !authorizedOrganizations.has(organizationId));
-      if (unauthorizedOrganization !== undefined) {
-        throw new ForbiddenError(
-          `Cannot grant policy for organization '${unauthorizedOrganization}'`,
-        );
-      }
+      // S2: the admin-grants-only-own-orgs rule lives in InviteService. The
+      // allowed set is derived from the token policy, never the request body.
+      const authorizedOrganizations = auth.policy
+        .filter((attribute) => attribute.actions.includes('admin'))
+        .map((attribute) => attribute.organizationId);
 
-      const { invite, token } = await inviteService.createInvite({
-        email: parsed.data.email,
-        policyAttributes: parsed.data.policyAttributes,
-      });
+      const { invite, token } = await inviteService.createInvite(
+        {
+          email: parsed.data.email,
+          policyAttributes: parsed.data.policyAttributes,
+        },
+        authorizedOrganizations,
+      );
 
       const body: Record<string, unknown> = {
         invite: { id: invite.id, email: invite.email, expiresAt: invite.expiresAt },
@@ -207,7 +193,7 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
       if (!parsed.success) {
         throw new ValidationError('Invalid login payload');
       }
-      const user = userStore.findByEmail(parsed.data.email);
+      const user = await userStore.findByEmail(parsed.data.email);
       // Always run a bcrypt comparison — a dummy one when the user does not
       // exist — so response timing does not reveal user existence.
       const passwordHash = user?.hashedPassword ?? (await getDummyPasswordHash());
@@ -230,8 +216,11 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
       if (!parsed.success) {
         throw new ValidationError('Invalid 2FA payload');
       }
-      const challenge = twoFactorService.verifyChallenge(parsed.data.challengeId, parsed.data.code);
-      const user = userStore.findById(challenge.userId);
+      const challenge = await twoFactorService.verifyChallenge(
+        parsed.data.challengeId,
+        parsed.data.code,
+      );
+      const user = await userStore.findById(challenge.userId);
       if (!user) {
         throw new UnauthorizedError('User not found');
       }

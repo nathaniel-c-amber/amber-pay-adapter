@@ -3,13 +3,17 @@ import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import {
   ConflictError,
+  ForbiddenError,
   UnauthorizedError,
   ValidationError,
 } from '../lib/errors.js';
 import { parseDurationMs } from './duration.js';
 import { hashPassword } from './passwords.js';
 import { userStore as defaultUserStore } from './users.js';
+import { getRepositories } from '../repositories/index.js';
+import { InMemoryInviteRepository } from '../repositories/inMemory.js';
 import type { UserStore } from './users.js';
+import type { InviteRepository } from '../repositories/types.js';
 import type { Invite, PolicyAttribute } from './types.js';
 import type { User } from '../domain/types.js';
 
@@ -66,31 +70,44 @@ function assertStrongPassword(password: string): void {
 /**
  * Manages invite-only account creation (FR-1.1 / FR-1.2 / FR-1.3).
  *
- * EMAIL VERIFICATION (FR-1.1/1.2): possession of the emailed, single-use,
- * time-limited invite token IS the verification step — only the address that
- * received the token can complete setup, so no separate verification email is
- * required. A dedicated verification step is deferred unless requirements
- * change.
- *
- * In-memory store for now (DB is Phase 5 — data is lost on restart). The only
- * path that creates a user is `acceptInvite`; there is no public registration.
+ * Persistence is delegated to an `InviteRepository` (Postgres or in-memory).
+ * The only path that creates a user is `acceptInvite`; there is no public
+ * registration.
  */
 export class InviteService {
-  private readonly invitesByTokenHash = new Map<string, Invite>();
-
   constructor(
     private readonly userStore: UserStore = defaultUserStore,
     private readonly emailSender: InviteEmailSender = logInviteEmailSender,
+    private readonly invites: InviteRepository = new InMemoryInviteRepository(),
   ) {}
 
-  async createInvite(input: CreateInviteInput): Promise<CreateInviteResult> {
+  async createInvite(
+    input: CreateInviteInput,
+    authorizedOrganizationIds?: string[],
+  ): Promise<CreateInviteResult> {
     const email = input.email.trim().toLowerCase();
     assertValidEmail(email);
     if (input.policyAttributes.length === 0) {
       throw new ValidationError('At least one policy attribute is required');
     }
-    if (this.userStore.findByEmail(email)) {
+    if (await this.userStore.findByEmail(email)) {
       throw new ConflictError('A user with this email already exists');
+    }
+
+    // S2: an admin may only grant policy for organizations they themselves
+    // hold `admin` on. The allowed set is derived from the caller's token
+    // policy, never from the request body, so an admin on org-1 cannot plant
+    // an account in org-2.
+    if (authorizedOrganizationIds) {
+      const authorized = new Set(authorizedOrganizationIds);
+      const unauthorizedOrganization = input.policyAttributes
+        .map((attribute) => attribute.organizationId)
+        .find((organizationId) => !authorized.has(organizationId));
+      if (unauthorizedOrganization !== undefined) {
+        throw new ForbiddenError(
+          `Cannot grant policy for organization '${unauthorizedOrganization}'`,
+        );
+      }
     }
 
     const token = randomBytes(32).toString('hex');
@@ -106,7 +123,7 @@ export class InviteService {
       createdAt: new Date(now).toISOString(),
     };
 
-    this.invitesByTokenHash.set(tokenHash, invite);
+    await this.invites.create(invite);
     // Deliver via the email seam. The raw token is never returned by the API
     // in production (see routes/auth.ts).
     await this.emailSender.sendInvite(email, token);
@@ -118,11 +135,11 @@ export class InviteService {
    * Validate an invite token and return its invite. Throws on invalid,
    * expired or already-accepted tokens.
    */
-  verifyInviteToken(token: string): Invite {
+  async verifyInviteToken(token: string): Promise<Invite> {
     if (!token) {
       throw new ValidationError('Invite token is required');
     }
-    const invite = this.invitesByTokenHash.get(hashToken(token));
+    const invite = await this.invites.findByTokenHash(hashToken(token));
     if (!invite) {
       throw new UnauthorizedError('Invalid invite token');
     }
@@ -142,18 +159,22 @@ export class InviteService {
    */
   async acceptInvite(token: string, password: string): Promise<User> {
     assertStrongPassword(password);
-    const invite = this.verifyInviteToken(token);
-    if (this.userStore.findByEmail(invite.email)) {
+    const invite = await this.verifyInviteToken(token);
+    if (await this.userStore.findByEmail(invite.email)) {
       throw new ConflictError('A user with this email already exists');
     }
 
     const hashedPassword = await hashPassword(password);
-    const user = this.userStore.create(invite.email, hashedPassword, invite.policyAttributes);
-    invite.acceptedAt = new Date().toISOString();
+    const user = await this.userStore.create(invite.email, hashedPassword, invite.policyAttributes);
+    await this.invites.markAccepted(invite.id, new Date().toISOString());
     logger.info({ inviteId: invite.id, userId: user.id }, 'Invite accepted');
     return user;
   }
 }
 
-/** Singleton invite service. */
-export const inviteService = new InviteService();
+/** Singleton invite service backed by the shared repository container. */
+export const inviteService = new InviteService(
+  defaultUserStore,
+  logInviteEmailSender,
+  getRepositories().invites,
+);

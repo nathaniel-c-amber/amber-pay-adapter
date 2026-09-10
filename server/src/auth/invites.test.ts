@@ -59,7 +59,7 @@ describe('InviteService', () => {
     expect(user.email).toBe('new@example.com');
     expect(user.hashedPassword).not.toBe('Str0ngPassw0rd!');
     await expect(verifyPassword('Str0ngPassw0rd!', user.hashedPassword)).resolves.toBe(true);
-    expect(users.findByEmail('new@example.com')?.id).toBe(user.id);
+    expect((await users.findByEmail('new@example.com'))?.id).toBe(user.id);
   });
 
   it('rejects a reused invite token', async () => {
@@ -69,9 +69,9 @@ describe('InviteService', () => {
     await expect(service.acceptInvite(token, 'Str0ngPassw0rd!')).rejects.toThrow(ConflictError);
   });
 
-  it('rejects an invalid invite token', () => {
+  it('rejects an invalid invite token', async () => {
     const service = new InviteService(new UserStore());
-    expect(() => service.verifyInviteToken('not-a-real-token')).toThrow(UnauthorizedError);
+    await expect(service.verifyInviteToken('not-a-real-token')).rejects.toThrow(UnauthorizedError);
   });
 
   it('rejects an expired invite token', async () => {
@@ -81,13 +81,13 @@ describe('InviteService', () => {
       policyAttributes: policy,
     });
     invite.expiresAt = new Date(Date.now() - 1000).toISOString();
-    expect(() => service.verifyInviteToken(token)).toThrow(UnauthorizedError);
+    await expect(service.verifyInviteToken(token)).rejects.toThrow(UnauthorizedError);
   });
 
   it('rejects an invite for an existing user', async () => {
     const users = new UserStore();
     const service = new InviteService(users);
-    users.create('existing@example.com', 'hash', policy);
+    await users.create('existing@example.com', 'hash', policy);
     await expect(
       service.createInvite({ email: 'existing@example.com', policyAttributes: policy }),
     ).rejects.toThrow(ConflictError);
