@@ -49,7 +49,7 @@ export class PaymentService {
   }
 
   /** Org-scoped read (C1): returns undefined when the payment is not in the caller's orgs. */
-  async findById(id: string, organizationIds: string[]): Promise<Payment | undefined> {
+  async findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined> {
     return this.payments.findById(id, organizationIds);
   }
 }

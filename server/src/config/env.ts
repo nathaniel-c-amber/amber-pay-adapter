@@ -25,6 +25,12 @@ const envSchema = z.object({
   // Email 2FA challenge lifetime.
   TWO_FACTOR_TTL: z.string().default('5m'),
 
+  // Super admin bootstrap (optional). When BOTH are set, a super admin user
+  // (all privileges, all scopes/orgs) is seeded on install. Idempotent: an
+  // existing user is never overwritten.
+  SUPER_ADMIN_EMAIL: z.string().email().optional(),
+  SUPER_ADMIN_PASSWORD: z.string().min(12).optional(),
+
   // Amber Pay
   AMBER_PAY_BASE_URL: z.string().url().default('https://api.amberpay.example.com'),
   // Required: webhook signature verification must never silently fall back to
@@ -77,6 +83,7 @@ export function assertNoPlaceholderSecrets(
   nodeEnv: string,
   jwtSecret: string,
   webhookSecret: string,
+  superAdminPassword?: string,
 ): void {
   if (nodeEnv !== 'production') {
     return;
@@ -87,9 +94,17 @@ export function assertNoPlaceholderSecrets(
   if (isPlaceholderSecret(webhookSecret)) {
     throw new Error('AMBER_PAY_WEBHOOK_SECRET must not be a known placeholder value in production');
   }
+  if (superAdminPassword && isPlaceholderSecret(superAdminPassword)) {
+    throw new Error('SUPER_ADMIN_PASSWORD must not be a known placeholder value in production');
+  }
 }
 
-assertNoPlaceholderSecrets(parsed.data.NODE_ENV, parsed.data.JWT_SECRET, parsed.data.AMBER_PAY_WEBHOOK_SECRET);
+assertNoPlaceholderSecrets(
+  parsed.data.NODE_ENV,
+  parsed.data.JWT_SECRET,
+  parsed.data.AMBER_PAY_WEBHOOK_SECRET,
+  parsed.data.SUPER_ADMIN_PASSWORD,
+);
 
 export const env = parsed.data;
 

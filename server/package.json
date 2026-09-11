@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Amber Pay API Adaptor & Monitor System - backend (monitoring only, zero financial/customer data)",
+  "description": "Amber Pay API Adaptor & Monitor System - backend (monitoring only)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

@@ -273,12 +273,13 @@ export class PostgresEventRepository implements EventRepository {
     return event;
   }
 
-  async list(organizationIds: string[]): Promise<LifecycleEvent[]> {
+  async list(organizationIds: string[] | null): Promise<LifecycleEvent[]> {
+    const where = organizationIds === null ? '' : 'WHERE organization_id = ANY($1)';
+    const params = organizationIds === null ? [] : [organizationIds];
     const result = await this.pool.query<EventRow>(
-      `SELECT ${EVENT_COLUMNS} FROM lifecycle_events
-       WHERE organization_id = ANY($1)
+      `SELECT ${EVENT_COLUMNS} FROM lifecycle_events ${where}
        ORDER BY at DESC LIMIT 500`,
-      [organizationIds],
+      params,
     );
     return result.rows.map(toLifecycleEvent);
   }
@@ -336,12 +337,13 @@ export class PostgresFailureRepository implements FailureRepository {
     return failure;
   }
 
-  async list(organizationIds: string[]): Promise<Failure[]> {
+  async list(organizationIds: string[] | null): Promise<Failure[]> {
+    const where = organizationIds === null ? '' : 'WHERE organization_id = ANY($1)';
+    const params = organizationIds === null ? [] : [organizationIds];
     const result = await this.pool.query<FailureRow>(
-      `SELECT ${FAILURE_COLUMNS} FROM failures
-       WHERE organization_id = ANY($1)
+      `SELECT ${FAILURE_COLUMNS} FROM failures ${where}
        ORDER BY since DESC LIMIT 500`,
-      [organizationIds],
+      params,
     );
     return result.rows.map(toFailure);
   }
@@ -349,14 +351,21 @@ export class PostgresFailureRepository implements FailureRepository {
   async acknowledge(
     id: string,
     acknowledgedAt: string,
-    organizationIds: string[],
+    organizationIds: string[] | null,
   ): Promise<Failure | undefined> {
-    const result = await this.pool.query<FailureRow>(
-      `UPDATE failures SET acknowledged_at = $2
-       WHERE id = $1 AND organization_id = ANY($3)
-       RETURNING ${FAILURE_COLUMNS}`,
-      [id, acknowledgedAt, organizationIds],
-    );
+    const result =
+      organizationIds === null
+        ? await this.pool.query<FailureRow>(
+            `UPDATE failures SET acknowledged_at = $2 WHERE id = $1
+             RETURNING ${FAILURE_COLUMNS}`,
+            [id, acknowledgedAt],
+          )
+        : await this.pool.query<FailureRow>(
+            `UPDATE failures SET acknowledged_at = $2
+             WHERE id = $1 AND organization_id = ANY($3)
+             RETURNING ${FAILURE_COLUMNS}`,
+            [id, acknowledgedAt, organizationIds],
+          );
     const row = result.rows[0];
     return row ? toFailure(row) : undefined;
   }
@@ -439,13 +448,14 @@ export class PostgresReconciliationRepository implements ReconciliationRepositor
     return job;
   }
 
-  async list(organizationIds: string[]): Promise<ReconciliationJob[]> {
+  async list(organizationIds: string[] | null): Promise<ReconciliationJob[]> {
+    const where = organizationIds === null ? '' : 'WHERE organization_id = ANY($1)';
+    const params = organizationIds === null ? [] : [organizationIds];
     const result = await this.pool.query<ReconciliationRow>(
       `SELECT id, organization_id, run_at, status, matched, unmatched, anomalies
-       FROM reconciliation_jobs
-       WHERE organization_id = ANY($1)
+       FROM reconciliation_jobs ${where}
        ORDER BY run_at DESC LIMIT 100`,
-      [organizationIds],
+      params,
     );
     return result.rows.map(toReconciliationJob);
   }
@@ -503,13 +513,14 @@ export class PostgresConnectorStateRepository implements ConnectorStateRepositor
     return state;
   }
 
-  async list(organizationIds: string[]): Promise<ConnectorState[]> {
+  async list(organizationIds: string[] | null): Promise<ConnectorState[]> {
+    const where = organizationIds === null ? '' : 'WHERE organization_id = ANY($1)';
+    const params = organizationIds === null ? [] : [organizationIds];
     const result = await this.pool.query<ConnectorRow>(
       `SELECT id, organization_id, label, terminus, status, reading, note
-       FROM connector_states
-       WHERE organization_id = ANY($1)
+       FROM connector_states ${where}
        ORDER BY id`,
-      [organizationIds],
+      params,
     );
     return result.rows.map(toConnectorState);
   }
@@ -558,12 +569,18 @@ export class PostgresPaymentRepository implements PaymentRepository {
     return payment;
   }
 
-  async findById(id: string, organizationIds: string[]): Promise<Payment | undefined> {
-    const result = await this.pool.query<PaymentRow>(
-      `SELECT ${PAYMENT_COLUMNS} FROM payments
-       WHERE id = $1 AND organization_id = ANY($2)`,
-      [id, organizationIds],
-    );
+  async findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined> {
+    const result =
+      organizationIds === null
+        ? await this.pool.query<PaymentRow>(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments WHERE id = $1`,
+            [id],
+          )
+        : await this.pool.query<PaymentRow>(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments
+             WHERE id = $1 AND organization_id = ANY($2)`,
+            [id, organizationIds],
+          );
     const row = result.rows[0];
     return row ? toPayment(row) : undefined;
   }

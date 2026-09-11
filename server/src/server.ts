@@ -1,8 +1,9 @@
 import { env } from './config/env.js';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
-import { isDatabaseConfigured } from './repositories/index.js';
+import { getRepositories, isDatabaseConfigured } from './repositories/index.js';
 import { runMigrations } from './db/migrator.js';
+import { seedSuperAdmin } from './db/seed.js';
 import { closePool } from './db/pool.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -14,6 +15,12 @@ async function start(): Promise<void> {
     try {
       const applied = await runMigrations();
       logger.info({ applied }, 'Database migrations up to date');
+
+      // Seed a super admin on install when configured (idempotent).
+      const seeded = await seedSuperAdmin(getRepositories());
+      if (seeded) {
+        logger.info('Super admin seeded on install');
+      }
     } catch (err) {
       logger.error({ err }, 'Failed to run database migrations');
       process.exit(1);

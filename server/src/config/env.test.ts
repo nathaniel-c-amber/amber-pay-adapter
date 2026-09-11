@@ -21,6 +21,17 @@ describe('assertNoPlaceholderSecrets', () => {
     ).toThrow(/AMBER_PAY_WEBHOOK_SECRET/);
   });
 
+  it('rejects a placeholder SUPER_ADMIN_PASSWORD in production', () => {
+    expect(() =>
+      assertNoPlaceholderSecrets(
+        'production',
+        'a-real-jwt-secret-0123456789abcdef',
+        'a-real-webhook-secret-0123456789',
+        'change-me-super-admin-password',
+      ),
+    ).toThrow(/SUPER_ADMIN_PASSWORD/);
+  });
+
   it('accepts real-looking secrets in production', () => {
     expect(() =>
       assertNoPlaceholderSecrets(

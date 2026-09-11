@@ -39,4 +39,36 @@ describe('evaluatePolicy (PBAC)', () => {
     expect(can(adminOnly, { scope: 'users', organizationId: 'org-1', action: 'write' })).toBe(false);
     expect(can(adminOnly, { scope: 'users', organizationId: 'org-1', action: 'admin' })).toBe(true);
   });
+
+  it('allows a wildcard scope and organization (super admin)', () => {
+    const superAdmin: PolicyAttribute[] = [
+      { scope: '*', organizationId: '*', actions: ['read', 'ack', 'write', 'admin'] },
+    ];
+    expect(can(superAdmin, { scope: 'payments', organizationId: 'org-1', action: 'read' })).toBe(true);
+    expect(can(superAdmin, { scope: 'users', organizationId: 'org-2', action: 'admin' })).toBe(true);
+  });
+
+  it('allows a wildcard scope with a specific organization', () => {
+    const policy: PolicyAttribute[] = [
+      { scope: '*', organizationId: 'org-1', actions: ['read'] },
+    ];
+    expect(can(policy, { scope: 'payments', organizationId: 'org-1', action: 'read' })).toBe(true);
+    expect(can(policy, { scope: 'reports', organizationId: 'org-1', action: 'read' })).toBe(true);
+  });
+
+  it('allows a specific scope with a wildcard organization', () => {
+    const policy: PolicyAttribute[] = [
+      { scope: 'payments', organizationId: '*', actions: ['read'] },
+    ];
+    expect(can(policy, { scope: 'payments', organizationId: 'org-1', action: 'read' })).toBe(true);
+    expect(can(policy, { scope: 'payments', organizationId: 'org-2', action: 'read' })).toBe(true);
+  });
+
+  it('denies a wildcard attribute when the action is missing', () => {
+    const superAdmin: PolicyAttribute[] = [
+      { scope: '*', organizationId: '*', actions: ['read', 'write'] },
+    ];
+    // `admin` is not listed, so it must NOT be granted even with wildcards.
+    expect(can(superAdmin, { scope: 'users', organizationId: 'org-1', action: 'admin' })).toBe(false);
+  });
 });

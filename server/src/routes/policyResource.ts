@@ -21,16 +21,23 @@ export function organizationIdOf(req: Request): string {
  * scope, from the token policy (C1). Used to filter repository reads so a
  * caller can never observe rows belonging to organizations they lack `read`
  * on. Never trusts the request body/query for the authorized set.
+ *
+ * Returns `null` to mean "all organizations" when the caller holds a wildcard
+ * attribute (`organizationId === '*'`) granting `read` on the scope (or on all
+ * scopes). Otherwise returns the union of the concrete org ids granted `read`
+ * on the scope (including via a wildcard `scope: '*'` attribute).
  */
 export function authorizedOrganizationIds(
   policy: PolicyAttribute[],
   scope: string,
-): string[] {
-  return [
-    ...new Set(
-      policy
-        .filter((attribute) => attribute.scope === scope && attribute.actions.includes('read'))
-        .map((attribute) => attribute.organizationId),
-    ),
-  ];
+): string[] | null {
+  const readAttributes = policy.filter(
+    (attribute) =>
+      (attribute.scope === '*' || attribute.scope === scope) &&
+      attribute.actions.includes('read'),
+  );
+  if (readAttributes.some((attribute) => attribute.organizationId === '*')) {
+    return null;
+  }
+  return [...new Set(readAttributes.map((attribute) => attribute.organizationId))];
 }

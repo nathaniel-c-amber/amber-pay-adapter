@@ -16,7 +16,9 @@ const adminPolicy: PolicyAttribute[] = [
 const inviteBody = {
   email: 'invitee@example.com',
   organizationId: 'org-1',
-  policyAttributes: [{ scope: 'payments', organizationId: 'org-1', actions: ['read'] }],
+  // The admin holds `admin` on `users` scope for org-1, so a grant of the same
+  // scope/action is allowed (M2).
+  policyAttributes: [{ scope: 'users', organizationId: 'org-1', actions: ['admin'] }],
 };
 
 function buildTestApp(): {
@@ -90,6 +92,48 @@ describe('auth routes', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(inviteBody);
     expect(res.status).toBe(201);
+  });
+
+  it('rejects granting a scope the admin does not hold (M2, 403)', async () => {
+    const { app, userStore } = buildTestApp();
+    const token = await seedAdmin(userStore); // admin holds `users` scope only
+    const res = await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: [{ scope: 'payments', organizationId: 'org-1', actions: ['read'] }],
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects granting a wildcard scope unless the admin holds one (M2, 403)', async () => {
+    const { app, userStore } = buildTestApp();
+    const token = await seedAdmin(userStore); // admin holds `users` scope only
+    const res = await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: [{ scope: '*', organizationId: 'org-1', actions: ['admin'] }],
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects granting an action the admin does not hold (M2, 403)', async () => {
+    const { app, userStore } = buildTestApp();
+    const token = await seedAdmin(userStore); // admin holds `admin` only on `users`
+    const res = await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: [{ scope: 'users', organizationId: 'org-1', actions: ['read'] }],
+      });
+    expect(res.status).toBe(403);
   });
 
   it('rejects invite with an invalid body (400)', async () => {

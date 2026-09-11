@@ -13,9 +13,20 @@ export function policyScopesOf(policy: PolicyAttribute[]): PolicyScope[] {
     const hasWriteOrAdmin = attribute.actions.some(
       (action) => action === 'write' || action === 'admin',
     );
+    const isSuperAdmin = attribute.scope === '*' && attribute.organizationId === '*';
+    let label: string;
+    if (isSuperAdmin) {
+      label = 'Super Admin';
+    } else if (attribute.scope === '*') {
+      label = `All scopes · ${attribute.organizationId}`;
+    } else if (attribute.organizationId === '*') {
+      label = `${attribute.scope} · All organizations`;
+    } else {
+      label = `${attribute.scope} · ${attribute.organizationId}`;
+    }
     return {
-      id: `${attribute.organizationId}:${attribute.scope}:${index}`,
-      label: `${attribute.scope} · ${attribute.organizationId}`,
+      id: isSuperAdmin ? 'super-admin' : `${attribute.organizationId}:${attribute.scope}:${index}`,
+      label,
       attributes: {
         scope: attribute.scope,
         organizationId: attribute.organizationId,

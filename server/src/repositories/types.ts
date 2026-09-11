@@ -43,7 +43,8 @@ export interface TwoFactorRepository {
  * restrict results to the organizations they are authorized for (C1). The
  * Postgres implementation enforces this with `WHERE organization_id = ANY($1)`;
  * the in-memory implementation filters in JS. Passing an empty array returns
- * no rows.
+ * no rows. Passing `null` means "all organizations" (used for a wildcard /
+ * super-admin caller) and returns all rows.
  *
  * ORDERING/LIMITS (M1): the in-memory implementations mirror the Postgres
  * ordering and limits exactly so tests observe the same shapes as production:
@@ -54,16 +55,16 @@ export interface TwoFactorRepository {
  */
 export interface EventRepository {
   append(event: LifecycleEvent): Promise<LifecycleEvent>;
-  list(organizationIds: string[]): Promise<LifecycleEvent[]>;
+  list(organizationIds: string[] | null): Promise<LifecycleEvent[]>;
 }
 
 export interface FailureRepository {
   append(failure: Failure): Promise<Failure>;
-  list(organizationIds: string[]): Promise<Failure[]>;
+  list(organizationIds: string[] | null): Promise<Failure[]>;
   acknowledge(
     id: string,
     acknowledgedAt: string,
-    organizationIds: string[],
+    organizationIds: string[] | null,
   ): Promise<Failure | undefined>;
 }
 
@@ -81,17 +82,17 @@ export interface WebhookDedupRepository {
 
 export interface ReconciliationRepository {
   create(job: ReconciliationJob): Promise<ReconciliationJob>;
-  list(organizationIds: string[]): Promise<ReconciliationJob[]>;
+  list(organizationIds: string[] | null): Promise<ReconciliationJob[]>;
 }
 
 export interface ConnectorStateRepository {
   upsert(state: ConnectorState): Promise<ConnectorState>;
-  list(organizationIds: string[]): Promise<ConnectorState[]>;
+  list(organizationIds: string[] | null): Promise<ConnectorState[]>;
 }
 
 export interface PaymentRepository {
   create(payment: Payment): Promise<Payment>;
-  findById(id: string, organizationIds: string[]): Promise<Payment | undefined>;
+  findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined>;
 }
 
 /** Container of every repository, wired by the factory. */

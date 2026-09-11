@@ -10,6 +10,10 @@ import type {
  * Rule: access is ALLOWED iff some policy attribute matches the resource's
  * `scope` AND `organizationId` AND includes the requested `action`.
  *
+ * Wildcards: `'*'` for `scope` or `organizationId` matches any value, enabling
+ * a super admin (all privileges) to be expressed as a single attribute with
+ * `scope: '*'`, `organizationId: '*'`.
+ *
  * There are no static roles and no implicit escalation — e.g. holding the
  * `admin` action does NOT grant `write` unless `write` is also listed. Every
  * endpoint access is evaluated dynamically against the caller's attributes.
@@ -23,10 +27,10 @@ export function evaluatePolicy(
   }
 
   for (const attribute of policy) {
-    if (attribute.scope !== resource.scope) {
+    if (attribute.scope !== '*' && attribute.scope !== resource.scope) {
       continue;
     }
-    if (attribute.organizationId !== resource.organizationId) {
+    if (attribute.organizationId !== '*' && attribute.organizationId !== resource.organizationId) {
       continue;
     }
     if (!attribute.actions.includes(resource.action)) {

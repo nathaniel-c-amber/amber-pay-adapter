@@ -119,12 +119,12 @@ export class InMemoryEventRepository implements EventRepository {
     return event;
   }
 
-  async list(organizationIds: string[]): Promise<LifecycleEvent[]> {
-    const allowed = new Set(organizationIds);
-    return this.events
-      .filter((event) => allowed.has(event.organizationId))
-      .sort((a, b) => b.at.localeCompare(a.at))
-      .slice(0, 500);
+  async list(organizationIds: string[] | null): Promise<LifecycleEvent[]> {
+    const events =
+      organizationIds === null
+        ? [...this.events]
+        : this.events.filter((event) => organizationIds.includes(event.organizationId));
+    return events.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 500);
   }
 }
 
@@ -136,22 +136,23 @@ export class InMemoryFailureRepository implements FailureRepository {
     return failure;
   }
 
-  async list(organizationIds: string[]): Promise<Failure[]> {
-    const allowed = new Set(organizationIds);
-    return this.failures
-      .filter((failure) => allowed.has(failure.organizationId))
-      .sort((a, b) => b.since.localeCompare(a.since))
-      .slice(0, 500);
+  async list(organizationIds: string[] | null): Promise<Failure[]> {
+    const failures =
+      organizationIds === null
+        ? [...this.failures]
+        : this.failures.filter((failure) => organizationIds.includes(failure.organizationId));
+    return failures.sort((a, b) => b.since.localeCompare(a.since)).slice(0, 500);
   }
 
   async acknowledge(
     id: string,
     acknowledgedAt: string,
-    organizationIds: string[],
+    organizationIds: string[] | null,
   ): Promise<Failure | undefined> {
-    const allowed = new Set(organizationIds);
     const failure = this.failures.find(
-      (candidate) => candidate.id === id && allowed.has(candidate.organizationId),
+      (candidate) =>
+        candidate.id === id &&
+        (organizationIds === null || organizationIds.includes(candidate.organizationId)),
     );
     if (!failure) {
       return undefined;
@@ -187,12 +188,12 @@ export class InMemoryReconciliationRepository implements ReconciliationRepositor
     return job;
   }
 
-  async list(organizationIds: string[]): Promise<ReconciliationJob[]> {
-    const allowed = new Set(organizationIds);
-    return this.jobs
-      .filter((job) => allowed.has(job.organizationId))
-      .sort((a, b) => b.runAt.localeCompare(a.runAt))
-      .slice(0, 100);
+  async list(organizationIds: string[] | null): Promise<ReconciliationJob[]> {
+    const jobs =
+      organizationIds === null
+        ? [...this.jobs]
+        : this.jobs.filter((job) => organizationIds.includes(job.organizationId));
+    return jobs.sort((a, b) => b.runAt.localeCompare(a.runAt)).slice(0, 100);
   }
 }
 
@@ -241,11 +242,14 @@ export class InMemoryConnectorStateRepository implements ConnectorStateRepositor
     return state;
   }
 
-  async list(organizationIds: string[]): Promise<ConnectorState[]> {
-    const allowed = new Set(organizationIds);
-    return [...this.states.values()]
-      .filter((state) => allowed.has(state.organizationId))
-      .sort((a, b) => a.id.localeCompare(b.id));
+  async list(organizationIds: string[] | null): Promise<ConnectorState[]> {
+    const states =
+      organizationIds === null
+        ? [...this.states.values()]
+        : [...this.states.values()].filter((state) =>
+            organizationIds.includes(state.organizationId),
+          );
+    return states.sort((a, b) => a.id.localeCompare(b.id));
   }
 }
 
@@ -257,12 +261,14 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return payment;
   }
 
-  async findById(id: string, organizationIds: string[]): Promise<Payment | undefined> {
+  async findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined> {
     const payment = this.byId.get(id);
     if (!payment) {
       return undefined;
     }
-    return organizationIds.includes(payment.organizationId) ? payment : undefined;
+    return organizationIds === null || organizationIds.includes(payment.organizationId)
+      ? payment
+      : undefined;
   }
 }
 

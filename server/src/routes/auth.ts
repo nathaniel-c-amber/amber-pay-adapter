@@ -143,18 +143,15 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
         throw new ValidationError('Invalid invite payload');
       }
 
-      // S2: the admin-grants-only-own-orgs rule lives in InviteService. The
-      // allowed set is derived from the token policy, never the request body.
-      const authorizedOrganizations = auth.policy
-        .filter((attribute) => attribute.actions.includes('admin'))
-        .map((attribute) => attribute.organizationId);
-
+      // S2/M2: the admin-grants-only-what-they-hold rule lives in
+      // InviteService. The allowed set is derived from the token policy, never
+      // the request body.
       const { invite, token } = await inviteService.createInvite(
         {
           email: parsed.data.email,
           policyAttributes: parsed.data.policyAttributes,
         },
-        authorizedOrganizations,
+        auth.policy,
       );
 
       const body: Record<string, unknown> = {

@@ -8,7 +8,7 @@ import {
   ValidationError,
 } from '../lib/errors.js';
 import { parseDurationMs } from './duration.js';
-import { hashPassword } from './passwords.js';
+import { assertStrongPassword, hashPassword } from './passwords.js';
 import { userStore as defaultUserStore } from './users.js';
 import { getRepositories } from '../repositories/index.js';
 import { InMemoryInviteRepository } from '../repositories/inMemory.js';
@@ -18,7 +18,6 @@ import type { Invite, PolicyAttribute } from './types.js';
 import type { User } from '../domain/types.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{12,}$/;
 
 export interface CreateInviteInput {
   email: string;
@@ -58,15 +57,6 @@ function assertValidEmail(email: string): void {
   }
 }
 
-/** Defense-in-depth password-strength validation (the route also validates). */
-function assertStrongPassword(password: string): void {
-  if (!PASSWORD_PATTERN.test(password)) {
-    throw new ValidationError(
-      'Password must be at least 12 characters and include upper, lower and digit characters',
-    );
-  }
-}
-
 /**
  * Manages invite-only account creation (FR-1.1 / FR-1.2 / FR-1.3).
  *
@@ -83,7 +73,7 @@ export class InviteService {
 
   async createInvite(
     input: CreateInviteInput,
-    authorizedOrganizationIds?: string[],
+    adminPolicy?: PolicyAttribute[],
   ): Promise<CreateInviteResult> {
     const email = input.email.trim().toLowerCase();
     assertValidEmail(email);
@@ -94,20 +84,12 @@ export class InviteService {
       throw new ConflictError('A user with this email already exists');
     }
 
-    // S2: an admin may only grant policy for organizations they themselves
-    // hold `admin` on. The allowed set is derived from the caller's token
-    // policy, never from the request body, so an admin on org-1 cannot plant
-    // an account in org-2.
-    if (authorizedOrganizationIds) {
-      const authorized = new Set(authorizedOrganizationIds);
-      const unauthorizedOrganization = input.policyAttributes
-        .map((attribute) => attribute.organizationId)
-        .find((organizationId) => !authorized.has(organizationId));
-      if (unauthorizedOrganization !== undefined) {
-        throw new ForbiddenError(
-          `Cannot grant policy for organization '${unauthorizedOrganization}'`,
-        );
-      }
+    // S2/M2: an admin may only grant policy they themselves hold. The allowed
+    // set is derived from the caller's token policy, never from the request
+    // body, so an admin on org-1 cannot plant an account in org-2, grant a
+    // scope they don't hold, or grant actions they don't hold.
+    if (adminPolicy) {
+      this.assertGrantableByAdmin(input.policyAttributes, adminPolicy);
     }
 
     const token = randomBytes(32).toString('hex');
@@ -129,6 +111,33 @@ export class InviteService {
     await this.emailSender.sendInvite(email, token);
     logger.info({ inviteId: invite.id }, 'Invite created');
     return { invite, token };
+  }
+
+  /**
+   * Enforce that every requested policy attribute is a subset of what the
+   * admin themselves holds (M2). For each requested attribute, the admin must
+   * hold a covering attribute (same scope, or wildcard scope; same org, or
+   * wildcard org) whose actions include every requested action. Otherwise the
+   * grant is rejected with `ForbiddenError`.
+   */
+  private assertGrantableByAdmin(
+    requested: PolicyAttribute[],
+    adminPolicy: PolicyAttribute[],
+  ): void {
+    for (const attribute of requested) {
+      const covering = adminPolicy.filter(
+        (admin) =>
+          (admin.scope === '*' || admin.scope === attribute.scope) &&
+          (admin.organizationId === '*' || admin.organizationId === attribute.organizationId),
+      );
+      const grantedActions = new Set(covering.flatMap((admin) => admin.actions));
+      const missing = attribute.actions.filter((action) => !grantedActions.has(action));
+      if (missing.length > 0) {
+        throw new ForbiddenError(
+          `Cannot grant action '${missing[0]}' on scope '${attribute.scope}' for organization '${attribute.organizationId}'`,
+        );
+      }
+    }
   }
 
   /**
