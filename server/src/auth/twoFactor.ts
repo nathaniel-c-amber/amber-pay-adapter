@@ -1,6 +1,7 @@
 import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
+import { emailService } from '../lib/email.js';
 import { UnauthorizedError } from '../lib/errors.js';
 import { parseDurationMs } from './duration.js';
 import { getRepositories } from '../repositories/index.js';
@@ -12,18 +13,21 @@ import type { TwoFactorChallenge } from './types.js';
 export const MAX_TWO_FACTOR_ATTEMPTS = 5;
 
 /**
- * Seam for delivering a 2FA code to a user. The real Twilio SendGrid
- * implementation lands in a later phase; the default stub only logs that a
- * code was issued (never the code itself).
+ * Seam for delivering a 2FA code to a user's email address. The code is
+ * delivered via the SMTP-backed `emailService`; it is never logged.
  */
 export interface EmailSender {
-  send(userId: string, code: string): Promise<void>;
+  send(email: string, code: string): Promise<void>;
 }
 
-/** Stub sender — logs issuance WITHOUT logging the code. */
-export const logEmailSender: EmailSender = {
-  async send(userId: string, _code: string): Promise<void> {
-    logger.info({ userId }, '2FA code issued (email delivery stubbed)');
+/** SMTP-backed sender — delivers the 2FA code via `emailService`. */
+export const emailSender: EmailSender = {
+  async send(email: string, code: string): Promise<void> {
+    await emailService.sendEmail({
+      to: email,
+      subject: 'Your Amber Pay verification code',
+      text: `Your verification code is ${code}`,
+    });
   },
 };
 
@@ -52,11 +56,11 @@ function generateCode(): string {
  */
 export class TwoFactorService {
   constructor(
-    private readonly emailSender: EmailSender = logEmailSender,
+    private readonly emailSender: EmailSender = emailSender,
     private readonly challenges: TwoFactorRepository = new InMemoryTwoFactorRepository(),
   ) {}
 
-  async createChallenge(userId: string): Promise<TwoFactorChallenge> {
+  async createChallenge(userId: string, email: string): Promise<TwoFactorChallenge> {
     const code = generateCode();
     const challenge: TwoFactorChallenge = {
       id: randomUUID(),
@@ -66,7 +70,7 @@ export class TwoFactorService {
       attempts: 0,
     };
     await this.challenges.create(challenge);
-    await this.emailSender.send(userId, code);
+    await this.emailSender.send(email, code);
     logger.info({ userId }, '2FA challenge created');
     return challenge;
   }
@@ -101,6 +105,6 @@ export class TwoFactorService {
 
 /** Singleton 2FA service backed by the shared repository container. */
 export const twoFactorService = new TwoFactorService(
-  logEmailSender,
+  emailSender,
   getRepositories().twoFactor,
 );

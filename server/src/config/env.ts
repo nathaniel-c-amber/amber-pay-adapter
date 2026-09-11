@@ -51,8 +51,16 @@ const envSchema = z.object({
   SAGE_CLIENT_SECRET: z.string().optional(),
   SAGE_BASE_URL: z.string().url().optional(),
 
-  // Notifications
-  SENDGRID_API_KEY: z.string().optional(),
+  // Email (SMTP). When SMTP_HOST is set, invites and 2FA codes are delivered
+  // via SMTP; otherwise delivery is stubbed (logged, never the body/code).
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().email().optional(),
+  SMTP_SECURE: z.enum(['starttls', 'ssl', 'none']).default('starttls'),
+  // Base URL used to build the invite link in emails.
+  APP_BASE_URL: z.string().url().default('http://localhost:5173'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -63,6 +71,36 @@ if (!parsed.success) {
     .join('\n');
   throw new Error(`Invalid environment configuration:\n${issues}`);
 }
+
+/**
+ * Validate SMTP config together. When `SMTP_HOST` is set, `SMTP_FROM` is
+ * required, and `SMTP_USER`/`SMTP_PASS` must be set together. Fails fast so a
+ * misconfigured email setup is caught at startup. Exported so it can be
+ * unit-tested directly.
+ */
+export function assertValidSmtpConfig(
+  host: string | undefined,
+  from: string | undefined,
+  user: string | undefined,
+  pass: string | undefined,
+): void {
+  if (!host) {
+    return;
+  }
+  if (!from) {
+    throw new Error('SMTP_FROM is required when SMTP_HOST is set');
+  }
+  if ((user && !pass) || (!user && pass)) {
+    throw new Error('SMTP_USER and SMTP_PASS must be set together');
+  }
+}
+
+assertValidSmtpConfig(
+  parsed.data.SMTP_HOST,
+  parsed.data.SMTP_FROM,
+  parsed.data.SMTP_USER,
+  parsed.data.SMTP_PASS,
+);
 
 /**
  * Known placeholder prefixes for secrets. These match the docker-compose /
@@ -84,6 +122,7 @@ export function assertNoPlaceholderSecrets(
   jwtSecret: string,
   webhookSecret: string,
   superAdminPassword?: string,
+  smtpPass?: string,
 ): void {
   if (nodeEnv !== 'production') {
     return;
@@ -97,6 +136,9 @@ export function assertNoPlaceholderSecrets(
   if (superAdminPassword && isPlaceholderSecret(superAdminPassword)) {
     throw new Error('SUPER_ADMIN_PASSWORD must not be a known placeholder value in production');
   }
+  if (smtpPass && isPlaceholderSecret(smtpPass)) {
+    throw new Error('SMTP_PASS must not be a known placeholder value in production');
+  }
 }
 
 assertNoPlaceholderSecrets(
@@ -104,6 +146,7 @@ assertNoPlaceholderSecrets(
   parsed.data.JWT_SECRET,
   parsed.data.AMBER_PAY_WEBHOOK_SECRET,
   parsed.data.SUPER_ADMIN_PASSWORD,
+  parsed.data.SMTP_PASS,
 );
 
 export const env = parsed.data;

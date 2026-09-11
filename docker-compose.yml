@@ -54,8 +54,14 @@ services:
       SAGE_CLIENT_ID: ${SAGE_CLIENT_ID:-}
       SAGE_CLIENT_SECRET: ${SAGE_CLIENT_SECRET:-}
       SAGE_BASE_URL: ${SAGE_BASE_URL:-https://api.sage.com}
-      # Notifications
-      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      # Email (SMTP)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_SECURE: ${SMTP_SECURE:-starttls}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
     depends_on:
       db:
         condition: service_healthy

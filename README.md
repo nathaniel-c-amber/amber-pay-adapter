@@ -50,7 +50,7 @@ docker-compose reads a root `.env` file automatically. Required vars:
 - `CORS_ORIGINS` (the frontend origin, e.g. `http://localhost:8080`)
 - `AMBER_PAY_WEBHOOK_SECRET`
 
-Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SENDGRID_API_KEY`.
+Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SMTP_*`, `APP_BASE_URL`.
 See `.env.example` for the full list. **Never commit real secrets.**
 
 ## Development (without Docker)

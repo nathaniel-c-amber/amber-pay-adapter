@@ -6,7 +6,7 @@ import type { EmailSender } from './twoFactor.js';
 function recordingSender(): { sender: EmailSender; lastCode: () => string } {
   let lastCode = '';
   const sender: EmailSender = {
-    async send(_userId: string, code: string): Promise<void> {
+    async send(_email: string, code: string): Promise<void> {
       lastCode = code;
     },
   };
@@ -22,7 +22,7 @@ describe('TwoFactorService', () => {
     const { sender, lastCode } = recordingSender();
     const service = new TwoFactorService(sender);
 
-    const challenge = await service.createChallenge('u1');
+    const challenge = await service.createChallenge('u1', 'user@example.com');
     const code = lastCode();
     expect(code).toMatch(/^\d{6}$/);
     expect(challenge.codeHash).not.toBe(code); // only the hash is stored
@@ -33,7 +33,7 @@ describe('TwoFactorService', () => {
   it('rejects a wrong code', async () => {
     const { sender, lastCode } = recordingSender();
     const service = new TwoFactorService(sender);
-    const challenge = await service.createChallenge('u1');
+    const challenge = await service.createChallenge('u1', 'user@example.com');
     await expect(service.verifyChallenge(challenge.id, wrongCode(lastCode()))).rejects.toThrow(
       UnauthorizedError,
     );
@@ -42,7 +42,7 @@ describe('TwoFactorService', () => {
   it('rejects an expired challenge', async () => {
     const { sender, lastCode } = recordingSender();
     const service = new TwoFactorService(sender);
-    const challenge = await service.createChallenge('u1');
+    const challenge = await service.createChallenge('u1', 'user@example.com');
     challenge.expiresAt = new Date(Date.now() - 1000).toISOString();
     await expect(service.verifyChallenge(challenge.id, lastCode())).rejects.toThrow(
       UnauthorizedError,
@@ -52,7 +52,7 @@ describe('TwoFactorService', () => {
   it('enforces the attempt limit', async () => {
     const { sender, lastCode } = recordingSender();
     const service = new TwoFactorService(sender);
-    const challenge = await service.createChallenge('u1');
+    const challenge = await service.createChallenge('u1', 'user@example.com');
     const bad = wrongCode(lastCode());
 
     for (let i = 0; i < 5; i += 1) {

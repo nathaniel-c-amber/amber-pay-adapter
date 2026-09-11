@@ -198,7 +198,7 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
       if (!user || !passwordOk) {
         throw new UnauthorizedError('Invalid credentials');
       }
-      const challenge = await twoFactorService.createChallenge(user.id);
+      const challenge = await twoFactorService.createChallenge(user.id, user.email);
       // No access token yet — a valid 2FA code is required.
       res.status(200).json({ challengeId: challenge.id, requiresTwoFactor: true });
     }),

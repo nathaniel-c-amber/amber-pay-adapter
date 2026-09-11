@@ -24,12 +24,12 @@ const inviteBody = {
 function buildTestApp(): {
   app: ReturnType<typeof createApp>;
   userStore: UserStore;
-  sent: Array<{ userId: string; code: string }>;
+  sent: Array<{ email: string; code: string }>;
 } {
-  const sent: Array<{ userId: string; code: string }> = [];
+  const sent: Array<{ email: string; code: string }> = [];
   const emailSender: EmailSender = {
-    async send(userId: string, code: string): Promise<void> {
-      sent.push({ userId, code });
+    async send(email: string, code: string): Promise<void> {
+      sent.push({ email, code });
     },
   };
   const userStore = new UserStore();

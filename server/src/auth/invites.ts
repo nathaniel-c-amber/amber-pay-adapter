@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
+import { emailService } from '../lib/email.js';
 import {
   ConflictError,
   ForbiddenError,
@@ -31,18 +32,21 @@ export interface CreateInviteResult {
 }
 
 /**
- * Seam for delivering an invite link/token by email. The real Twilio SendGrid
- * implementation lands in a later phase; the default stub only logs issuance
- * and never logs the token itself.
+ * Seam for delivering an invite link/token by email. The token is delivered
+ * via the SMTP-backed `emailService`; it is never logged.
  */
 export interface InviteEmailSender {
   sendInvite(email: string, token: string): Promise<void>;
 }
 
-/** Stub sender — logs issuance WITHOUT logging the token. */
-export const logInviteEmailSender: InviteEmailSender = {
-  async sendInvite(email: string, _token: string): Promise<void> {
-    logger.info({ email }, 'Invite email delivery stubbed (token not logged)');
+/** SMTP-backed sender — delivers the invite link via `emailService`. */
+export const inviteEmailSender: InviteEmailSender = {
+  async sendInvite(email: string, token: string): Promise<void> {
+    await emailService.sendEmail({
+      to: email,
+      subject: 'Your Amber Pay invite',
+      text: `Accept your invite: ${env.APP_BASE_URL}/accept-invite?token=${token}`,
+    });
   },
 };
 
@@ -67,7 +71,7 @@ function assertValidEmail(email: string): void {
 export class InviteService {
   constructor(
     private readonly userStore: UserStore = defaultUserStore,
-    private readonly emailSender: InviteEmailSender = logInviteEmailSender,
+    private readonly emailSender: InviteEmailSender = inviteEmailSender,
     private readonly invites: InviteRepository = new InMemoryInviteRepository(),
   ) {}
 
@@ -184,6 +188,6 @@ export class InviteService {
 /** Singleton invite service backed by the shared repository container. */
 export const inviteService = new InviteService(
   defaultUserStore,
-  logInviteEmailSender,
+  inviteEmailSender,
   getRepositories().invites,
 );
