@@ -61,6 +61,7 @@ export interface PolicyDecision {
 /**
  * An in-flight email 2FA challenge. Only the SHA-256 HASH of the 6-digit code
  * is stored, alongside an expiry and an attempt counter.
+ * The raw code is only included in dev/test environments for convenience.
  */
 export interface TwoFactorChallenge {
   id: string;
@@ -68,4 +69,6 @@ export interface TwoFactorChallenge {
   codeHash: string;
   expiresAt: string; // ISO 8601
   attempts: number;
+  /** Raw 2FA code — only set in non-production environments. Never persisted. */
+  code?: string;
 }

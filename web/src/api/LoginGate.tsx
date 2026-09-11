@@ -11,6 +11,9 @@ import type { FormEvent } from "react";
 import { login } from "./client";
 import { verifyAndStoreToken } from "./auth";
 
+// Auto-submit delay (ms) after auto-filling OTP in dev mode
+const AUTO_SUBMIT_DELAY_MS = 100;
+
 const fieldStyle: React.CSSProperties = {
   width: "100%",
   font: "inherit",
@@ -58,8 +61,16 @@ export function LoginGate({
     setError(null);
     setSubmitting(true);
     try {
-      const { challengeId: id } = await login(email, password);
+      const { challengeId: id, code } = await login(email, password);
       setChallengeId(id);
+      // In dev mode, auto-fill and auto-submit the OTP
+      if (code) {
+        setCode(code);
+        // Auto-submit after a short delay to allow state to update
+        setTimeout(() => {
+          handleCodeSubmit(new Event('submit') as unknown as FormEvent);
+        }, AUTO_SUBMIT_DELAY_MS);
+      }
     } catch {
       setError("Sign-in failed. Check your email and password.");
     } finally {

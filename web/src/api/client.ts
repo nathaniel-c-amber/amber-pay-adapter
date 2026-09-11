@@ -52,12 +52,13 @@ export function acknowledgeFailure(token: string, id: string): Promise<void> {
   });
 }
 
-/** POST /auth/login — password step; returns a 2FA challenge id. */
+/** POST /auth/login — password step; returns a 2FA challenge id.
+ *  In dev mode, also returns the raw code for auto-fill. */
 export async function login(
   email: string,
   password: string,
-): Promise<{ challengeId: string }> {
-  return request<{ challengeId: string }>("/auth/login", {
+): Promise<{ challengeId: string; code?: string }> {
+  return request<{ challengeId: string; code?: string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });

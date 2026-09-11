@@ -93,6 +93,7 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
   const twoFactorService = deps.twoFactorService ?? defaultTwoFactorService;
   const router = express.Router();
   const exposeInviteToken = env.NODE_ENV !== 'production';
+  const exposeTwoFactorCode = env.NODE_ENV !== 'production';
 
   const loginLimiter = rateLimit({
     windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
@@ -200,7 +201,15 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
       }
       const challenge = await twoFactorService.createChallenge(user.id, user.email);
       // No access token yet — a valid 2FA code is required.
-      res.status(200).json({ challengeId: challenge.id, requiresTwoFactor: true });
+      // In dev/test mode, include the raw code so the frontend can auto-fill it.
+      const body: Record<string, unknown> = {
+        challengeId: challenge.id,
+        requiresTwoFactor: true,
+      };
+      if (exposeTwoFactorCode && challenge.code) {
+        body['code'] = challenge.code;
+      }
+      res.status(200).json(body);
     }),
   );
 

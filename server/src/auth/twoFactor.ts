@@ -68,6 +68,8 @@ export class TwoFactorService {
       codeHash: hashCode(code),
       expiresAt: new Date(Date.now() + parseDurationMs(env.TWO_FACTOR_TTL)).toISOString(),
       attempts: 0,
+      // Include raw code only in non-production environments for dev convenience
+      code: env.NODE_ENV !== 'production' ? code : undefined,
     };
     await this.challenges.create(challenge);
     await this.emailSender.send(email, code);
