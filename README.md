@@ -1,8 +1,7 @@
 # Amber Pay — Connector Monitor
 
 Operational monitoring for the Amber Pay gateway and its accounting adaptors
-(QuickBooks, Sage). Backend API + monitoring dashboard. **No financial or
-customer data** — operational statuses and reference hashes only.
+(QuickBooks, Sage). Backend API + monitoring dashboard.
 
 ## Stack
 
@@ -32,10 +31,11 @@ docker compose up --build
 
 Services and ports:
 
-| Service | Port (host) | Notes |
-| ------- | ----------- | ----- |
-| `web`   | `8080`      | Frontend SPA (nginx) |
-| `api`   | `3000`      | Backend API (`/health`, `/api/v1/*`) |
+
+| Service | Port (host) | Notes                                 |
+| --------- | ------------- | --------------------------------------- |
+| `web`   | `8080`      | Frontend SPA (nginx)                  |
+| `api`   | `3000`      | Backend API (`/health`, `/api/v1/*`)  |
 | `db`    | `5432`      | PostgreSQL 16 (internal to the stack) |
 
 The `api` service runs migrations on startup and waits for `db` to be healthy.
