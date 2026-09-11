@@ -14,10 +14,10 @@ const envSchema = z.object({
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
 
-  // Database (placeholder - PostgreSQL 16 wired in a later phase)
+  // Database (PostgreSQL 16)
   DATABASE_URL: z.string().min(1),
 
-  // Auth (placeholder - JWT)
+  // Auth (JWT + PBAC)
   JWT_SECRET: z.string().min(16),
   JWT_TTL: z.string().default('1h'),
   // Invitation link lifetime (FR-1.3).
