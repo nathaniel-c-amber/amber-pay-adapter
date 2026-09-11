@@ -81,7 +81,11 @@ npm run build
 
 ## Notes
 
-- The frontend is **not yet wired to the backend API** (Phase 7). It currently
-  serves its static build; the API is reachable independently at `:3000`.
+- The frontend is **wired to the backend API**: it authenticates via the login
+  gate (email + password + email 2FA), then polls `/api/v1/dashboard/metrics`
+  every 15s for live connector states, lifecycle events, and findings.
+  Acknowledging a finding persists via `POST /api/v1/failures/:id/acknowledge`.
+- In development, the Vite server proxies `/api` to the backend at `:3000`; in
+  the Docker stack, nginx proxies `/api` to the `api` service.
 - Backend tests run without a live DB (in-memory repositories); Postgres
   integration tests are skipped unless a real `DATABASE_URL` is configured.

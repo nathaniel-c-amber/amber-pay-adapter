@@ -1,7 +1,32 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+web/node_modules/
+server/node_modules/
+
+# Build output
+dist/
+web/dist/
+server/dist/
+
+# Build artifacts
+*.tsbuildinfo
+
+# Local / secrets
 *.local
+.env
+.env.*
+!.env.example
+
+# Logs / coverage
+*.log
+coverage/
+
+# OS
 .DS_Store
+
+# Design tooling state
 .impeccable/review
 .impeccable/mocks
+
+# Deepwork progress (git-local, OpenCode-readable)
 .slim/deepwork/
