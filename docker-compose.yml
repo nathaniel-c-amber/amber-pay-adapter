@@ -39,9 +39,17 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-amber}:${POSTGRES_PASSWORD:-amber}@db:5432/${POSTGRES_DB:-amber}
       JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret-0123456789abcdef}
+      JWT_TTL: ${JWT_TTL:-1h}
+      INVITE_TTL: ${INVITE_TTL:-48h}
+      TWO_FACTOR_TTL: ${TWO_FACTOR_TTL:-5m}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      # Super admin bootstrap (optional). Setting BOTH seeds a super admin
+      # (all privileges, all scopes/orgs) on install.
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
       # Amber Pay gateway
       AMBER_PAY_BASE_URL: ${AMBER_PAY_BASE_URL:-https://api.amberpay.example.com}
       AMBER_PAY_WEBHOOK_SECRET: ${AMBER_PAY_WEBHOOK_SECRET:-change-me-webhook-secret}
