@@ -1,10 +1,10 @@
 import request from 'supertest';
 import { createApp } from '../app.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
-import { issueAccessToken } from '../auth/tokens.js';
+import { issueAccessToken } from '../utils/tokens.js';
 import { forbiddenKeysIn } from '../test/privacy.js';
-import type { PolicyAttribute } from '../auth/types.js';
-import type { ConnectorState, Failure, LifecycleEvent, PolicyScope } from '../domain/types.js';
+import type { PolicyAttribute } from '../types/auth.js';
+import type { ConnectorState, Failure, LifecycleEvent, PolicyScope } from '../models/domain.js';
 
 const readPolicy: PolicyAttribute[] = [
   { scope: 'dashboard', organizationId: 'org-1', actions: ['read'] },
@@ -63,7 +63,7 @@ describe('dashboard routes', () => {
     expect(Array.isArray(res.body.policies)).toBe(true);
     expect(typeof res.body.generatedAt).toBe('string');
 
-    // Shape matches domain/types.ts exactly.
+    // Shape matches models/domain.ts exactly.
     expect((res.body.connectors as ConnectorState[]).every((c) => typeof c.terminus === 'string')).toBe(true);
     expect((res.body.events as LifecycleEvent[])[0]?.type).toBe('collected');
     expect((res.body.failures as Failure[])[0]?.severity).toBe('critical');

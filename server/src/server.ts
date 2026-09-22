@@ -1,6 +1,6 @@
 import { env } from './config/env.js';
 import { createApp } from './app.js';
-import { logger } from './lib/logger.js';
+import { logger } from './utils/logger.js';
 import { getRepositories, isDatabaseConfigured } from './repositories/index.js';
 import { runMigrations } from './db/migrator.js';
 import { seedSuperAdmin } from './db/seed.js';

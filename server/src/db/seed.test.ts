@@ -1,10 +1,10 @@
 import { seedSuperAdmin } from './seed.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
-import { verifyPassword } from '../auth/passwords.js';
-import { ConflictError, ValidationError } from '../lib/errors.js';
-import type { Repositories } from '../repositories/types.js';
-import type { UserRepository } from '../repositories/types.js';
-import type { AuthUser } from '../auth/types.js';
+import { verifyPassword } from '../utils/passwords.js';
+import { ConflictError, ValidationError } from '../utils/errors.js';
+import type { Repositories } from '../types/repository.js';
+import type { UserRepository } from '../types/repository.js';
+import type { AuthUser } from '../types/auth.js';
 
 /** Simulates a concurrent instance: findByEmail misses, create hits a conflict. */
 class RacingUserRepository implements UserRepository {
@@ -16,6 +16,15 @@ class RacingUserRepository implements UserRepository {
   }
   async findById(): Promise<AuthUser | undefined> {
     return undefined;
+  }
+  async list(): Promise<AuthUser[]> {
+    return [];
+  }
+  async updatePolicyAttributes(): Promise<AuthUser | undefined> {
+    return undefined;
+  }
+  async updatePassword(): Promise<boolean> {
+    return false;
   }
 }
 

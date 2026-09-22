@@ -1,25 +1,26 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictError } from '../lib/errors.js';
+import { ConflictError } from '../utils/errors.js';
 import type {
   ConnectorState,
   Failure,
   LifecycleEvent,
   Payment,
   ReconciliationJob,
-} from '../domain/types.js';
-import type { AuthUser, Invite, PolicyAttribute, TwoFactorChallenge } from '../auth/types.js';
+} from '../models/domain.js';
+import type { AuthUser, Invite, PasswordReset, PolicyAttribute, TwoFactorChallenge } from '../types/auth.js';
 import type {
   ConnectorStateRepository,
   EventRepository,
   FailureRepository,
   InviteRepository,
+  PasswordResetRepository,
   PaymentRepository,
   ReconciliationRepository,
   Repositories,
   TwoFactorRepository,
   UserRepository,
   WebhookDedupRepository,
-} from './types.js';
+} from '../types/repository.js';
 
 /**
  * In-memory repository implementations. Used in tests (which MUST run without
@@ -61,6 +62,46 @@ export class InMemoryUserRepository implements UserRepository {
   async findById(id: string): Promise<AuthUser | undefined> {
     return this.byId.get(id);
   }
+
+  async list(): Promise<AuthUser[]> {
+    return [...this.byId.values()].sort((a, b) => a.email.localeCompare(b.email));
+  }
+
+  async updatePolicyAttributes(
+    id: string,
+    policyAttributes: PolicyAttribute[],
+  ): Promise<AuthUser | undefined> {
+    const user = this.byId.get(id);
+    if (!user) {
+      return undefined;
+    }
+    // Replace the array rather than mutating in place: the stored object is
+    // handed out by reference, so an in-place push would retroactively change
+    // a caller's copy of the previous attributes.
+    const updated: AuthUser = {
+      ...user,
+      policyAttributes,
+      updatedAt: new Date().toISOString(),
+    };
+    this.byId.set(id, updated);
+    this.byEmail.set(updated.email, updated);
+    return updated;
+  }
+
+  async updatePassword(id: string, hashedPassword: string): Promise<boolean> {
+    const user = this.byId.get(id);
+    if (!user) {
+      return false;
+    }
+    const updated: AuthUser = {
+      ...user,
+      hashedPassword,
+      updatedAt: new Date().toISOString(),
+    };
+    this.byId.set(id, updated);
+    this.byEmail.set(updated.email, updated);
+    return true;
+  }
 }
 
 export class InMemoryInviteRepository implements InviteRepository {
@@ -80,6 +121,42 @@ export class InMemoryInviteRepository implements InviteRepository {
       if (invite.id === id) {
         invite.acceptedAt = acceptedAt;
         return;
+      }
+    }
+  }
+
+  async list(): Promise<Invite[]> {
+    return [...this.byTokenHash.values()].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }
+}
+
+export class InMemoryPasswordResetRepository implements PasswordResetRepository {
+  private readonly byTokenHash = new Map<string, PasswordReset>();
+
+  async create(reset: PasswordReset): Promise<PasswordReset> {
+    this.byTokenHash.set(reset.tokenHash, reset);
+    return reset;
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<PasswordReset | undefined> {
+    return this.byTokenHash.get(tokenHash);
+  }
+
+  async markUsed(id: string, usedAt: string): Promise<void> {
+    for (const reset of this.byTokenHash.values()) {
+      if (reset.id === id) {
+        reset.usedAt = usedAt;
+        return;
+      }
+    }
+  }
+
+  async invalidateForUser(userId: string, usedAt: string): Promise<void> {
+    for (const reset of this.byTokenHash.values()) {
+      if (reset.userId === userId && !reset.usedAt) {
+        reset.usedAt = usedAt;
       }
     }
   }
@@ -278,6 +355,7 @@ export function createInMemoryRepositories(): Repositories {
     users: new InMemoryUserRepository(),
     invites: new InMemoryInviteRepository(),
     twoFactor: new InMemoryTwoFactorRepository(),
+    passwordResets: new InMemoryPasswordResetRepository(),
     events: new InMemoryEventRepository(),
     failures: new InMemoryFailureRepository(),
     webhookDedup: new InMemoryWebhookDedupRepository(),

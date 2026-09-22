@@ -24,6 +24,9 @@ const envSchema = z.object({
   INVITE_TTL: z.string().default('48h'),
   // Email 2FA challenge lifetime.
   TWO_FACTOR_TTL: z.string().default('5m'),
+  // Self-service password-reset link lifetime. Short: the link is a bearer
+  // credential delivered by email.
+  PASSWORD_RESET_TTL: z.string().default('1h'),
 
   // Super admin bootstrap (optional). When BOTH are set, a super admin user
   // (all privileges, all scopes/orgs) is seeded on install. Idempotent: an

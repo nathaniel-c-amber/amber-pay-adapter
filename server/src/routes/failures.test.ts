@@ -1,8 +1,8 @@
 import request from 'supertest';
 import { createApp } from '../app.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
-import { issueAccessToken } from '../auth/tokens.js';
-import type { PolicyAttribute } from '../auth/types.js';
+import { issueAccessToken } from '../utils/tokens.js';
+import type { PolicyAttribute } from '../types/auth.js';
 
 const ackPolicy: PolicyAttribute[] = [
   { scope: 'dashboard', organizationId: 'org-1', actions: ['read', 'ack'] },

@@ -2,22 +2,28 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { corsOrigins } from './config/env.js';
-import { logger, requestLogger } from './lib/logger.js';
-import { AppError, NotFoundError, toHttpError } from './lib/errors.js';
-import { createWebhookRouter } from './routes/webhooks.js';
-import { createAuthRouter } from './routes/auth.js';
-import { createPaymentRouter } from './routes/payments.js';
-import { createReportRouter } from './routes/reports.js';
-import { createDashboardRouter } from './routes/dashboard.js';
-import { createFailuresRouter } from './routes/failures.js';
+import { requestLogger } from './utils/logger.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import {
+  createAuthRouter,
+  createDashboardRouter,
+  createFailuresRouter,
+  createPaymentRouter,
+  createReportRouter,
+  createServiceRouter,
+  createUsersRouter,
+  createWebhookRouter,
+} from './routes/index.js';
 import { getRepositories } from './repositories/index.js';
-import type { AuthRouteDeps } from './routes/auth.js';
-import type { Repositories } from './repositories/types.js';
-import type { AmberPayGateway } from './gateway/types.js';
+import type { AuthRouteDeps, UsersRouteDeps } from './routes/index.js';
+import type { Repositories } from './types/repository.js';
+import type { AmberPayGateway } from './types/gateway.js';
 
 export interface CreateAppDeps {
   /** Optional auth service overrides (used by tests to inject seams). */
   auth?: AuthRouteDeps;
+  /** Optional user-directory service override (tests inject a stub). */
+  users?: UsersRouteDeps;
   /** Optional repository container override (tests inject in-memory). */
   repositories?: Repositories;
   /** Optional gateway override (tests inject a stub). */
@@ -56,6 +62,13 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
     createFailuresRouter({ failures: repositories.failures }),
   );
 
+  // Administrator-only user directory and permission management.
+  app.use('/api/v1', createUsersRouter(deps.users));
+
+  // The console's window into its own backend: process, storage and adaptor
+  // reachability, so "pipeline healthy" is distinguishable from "console blind".
+  app.use('/api/v1', createServiceRouter());
+
   app.get('/health', (_req, res) => {
     res.json({
       status: 'ok',
@@ -64,29 +77,8 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
     });
   });
 
-  // 404 handler
-  app.use((_req, res) => {
-    const { status, body } = toHttpError(new NotFoundError('Route not found'));
-    res.status(status).json(body);
-  });
-
-  // Centralized error handler
-  const errorHandler: express.ErrorRequestHandler = (err, _req, res, next) => {
-    if (res.headersSent) {
-      return next(err);
-    }
-
-    // Operational errors are expected: log at warn without a stack trace.
-    // Non-operational / unknown errors are bugs: log at error with the stack.
-    if (err instanceof AppError && err.isOperational) {
-      logger.warn({ code: err.code, statusCode: err.statusCode }, err.message);
-    } else {
-      logger.error({ err }, 'Unhandled error');
-    }
-
-    const { status, body } = toHttpError(err);
-    res.status(status).json(body);
-  };
+  // 404 handler + centralized error handler (see middleware/errorHandler.ts).
+  app.use(notFoundHandler);
   app.use(errorHandler);
 
   return app;

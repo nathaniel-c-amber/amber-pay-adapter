@@ -1,15 +1,13 @@
 import express from 'express';
-import { asyncHandler } from '../lib/asyncHandler.js';
-import { UnauthorizedError } from '../lib/errors.js';
-import { requireAuth, requirePolicy } from '../auth/middleware.js';
+import { requireAuth, requirePolicy } from '../middleware/auth.middleware.js';
 import { getRepositories } from '../repositories/index.js';
-import { authorizedOrganizationIds, organizationIdOf } from './policyResource.js';
-import { policyScopesOf } from '../lib/policyScopes.js';
+import { organizationIdOf } from '../utils/policyResource.js';
+import { createDashboardController } from '../controllers/dashboard.controller.js';
 import type {
   ConnectorStateRepository,
   EventRepository,
   FailureRepository,
-} from '../repositories/types.js';
+} from '../types/repository.js';
 
 export interface DashboardRouteDeps {
   connectorStates?: ConnectorStateRepository;
@@ -18,14 +16,17 @@ export interface DashboardRouteDeps {
 }
 
 /**
- * Dashboard metrics endpoint (consumed by the frontend). Returns the exact
- * domain shapes: ConnectorState[], LifecycleEvent[], Failure[], PolicyScope[].
+ * Dashboard metrics endpoint (consumed by the frontend). Handlers live in
+ * `controllers/dashboard.controller.ts`; this module only declares the route
+ * surface and its authorization policy.
  */
 export function createDashboardRouter(deps: DashboardRouteDeps = {}): express.Router {
   const repositories = getRepositories();
-  const connectorStates = deps.connectorStates ?? repositories.connectorStates;
-  const events = deps.events ?? repositories.events;
-  const failures = deps.failures ?? repositories.failures;
+  const controller = createDashboardController({
+    connectorStates: deps.connectorStates ?? repositories.connectorStates,
+    events: deps.events ?? repositories.events,
+    failures: deps.failures ?? repositories.failures,
+  });
   const router = express.Router();
 
   // GET /api/v1/dashboard/metrics — requires PBAC 'read' on scope 'dashboard'.
@@ -36,26 +37,7 @@ export function createDashboardRouter(deps: DashboardRouteDeps = {}): express.Ro
       scope: 'dashboard',
       organizationId: organizationIdOf(req),
     })),
-    asyncHandler(async (req, res) => {
-      if (!req.auth) {
-        throw new UnauthorizedError('Authentication required');
-      }
-      // C1: only return rows for organizations the caller can read.
-      const organizationIds = authorizedOrganizationIds(req.auth.policy, 'dashboard');
-      const [connectors, lifecycleEvents, failureList] = await Promise.all([
-        connectorStates.list(organizationIds),
-        events.list(organizationIds),
-        failures.list(organizationIds),
-      ]);
-
-      res.status(200).json({
-        connectors,
-        events: lifecycleEvents,
-        failures: failureList,
-        policies: policyScopesOf(req.auth.policy),
-        generatedAt: new Date().toISOString(),
-      });
-    }),
+    controller.getMetrics,
   );
 
   return router;

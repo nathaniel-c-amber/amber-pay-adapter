@@ -1,13 +1,13 @@
 import request from 'supertest';
 import { createApp } from '../app.js';
-import { UserStore } from '../auth/users.js';
-import { InviteService } from '../auth/invites.js';
-import { TwoFactorService } from '../auth/twoFactor.js';
-import { hashPassword } from '../auth/passwords.js';
-import { issueAccessToken } from '../auth/tokens.js';
+import { UserStore } from '../services/auth/user.service.js';
+import { InviteService } from '../services/auth/invite.service.js';
+import { TwoFactorService } from '../services/auth/twoFactor.service.js';
+import { hashPassword } from '../utils/passwords.js';
+import { issueAccessToken } from '../utils/tokens.js';
 import { env } from '../config/env.js';
-import type { EmailSender } from '../auth/twoFactor.js';
-import type { PolicyAttribute } from '../auth/types.js';
+import type { EmailSender } from '../services/auth/twoFactor.service.js';
+import type { PolicyAttribute } from '../types/auth.js';
 
 const adminPolicy: PolicyAttribute[] = [
   { scope: 'users', organizationId: 'org-1', actions: ['admin'] },

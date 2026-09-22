@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { runMigrations } from '../db/migrator.js';
 import { createPostgresRepositories } from './postgres.js';
-import type { Repositories } from './types.js';
+import type { Repositories } from '../types/repository.js';
 
 /**
  * Postgres persistence integration tests (M4).

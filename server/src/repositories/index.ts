@@ -2,9 +2,9 @@ import { env } from '../config/env.js';
 import { getPool } from '../db/pool.js';
 import { createInMemoryRepositories } from './inMemory.js';
 import { createPostgresRepositories } from './postgres.js';
-import type { Repositories } from './types.js';
+import type { Repositories } from '../types/repository.js';
 
-export * from './types.js';
+export * from '../types/repository.js';
 export { createInMemoryRepositories } from './inMemory.js';
 export { createPostgresRepositories } from './postgres.js';
 

@@ -1,9 +1,9 @@
 import { env } from '../config/env.js';
-import { logger } from '../lib/logger.js';
-import { ConflictError } from '../lib/errors.js';
-import { assertStrongPassword, hashPassword } from '../auth/passwords.js';
-import type { PolicyAttribute } from '../auth/types.js';
-import type { Repositories } from '../repositories/types.js';
+import { logger } from '../utils/logger.js';
+import { ConflictError } from '../utils/errors.js';
+import { assertStrongPassword, hashPassword } from '../utils/passwords.js';
+import type { PolicyAttribute } from '../types/auth.js';
+import type { Repositories } from '../types/repository.js';
 
 /** The super admin policy attribute: all actions, all scopes, all orgs. */
 export const SUPER_ADMIN_POLICY_ATTRIBUTES: PolicyAttribute[] = [

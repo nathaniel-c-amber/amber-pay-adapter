@@ -11,6 +11,9 @@ server/dist/
 # Build artifacts
 *.tsbuildinfo
 
+# Generated audit output (see web/scripts/audit-classes.mjs)
+web/scripts/audit-report.txt
+
 # Local / secrets
 *.local
 .env
@@ -33,5 +36,6 @@ coverage/
 .slim/deepwork/
 
 # Other
-.opencode
-.slim
+.opencode/
+.slim/
+.github/

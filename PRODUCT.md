@@ -46,12 +46,12 @@ Explicitly undecided: none confirmed beyond the requirements doc; treat anything
 
 ## Brand Commitments
 
-Product name: **Amber Pay API Adaptor & Monitor System** (v2.0.0 required a monitoring console, not a reconciliation ledger). Owner: Amber Innovations Ltd. No logo or style assets have been provided. The visual world is the Midnight Transit Diagonal (network service-map, see DESIGN.md).
+Product name: **Amber Pay API Adaptor & Monitor System** (v2.0.0 required a monitoring console, not a reconciliation ledger). Owner: Amber Innovations Ltd. No logo or style assets have been provided. The visual world is the Amber Daylight multi-page operations console (light porcelain field, sidebar navigation, policy-gated surfaces — see DESIGN.md).
 
 ## Evidence on Hand
 
 - REQUIREMENTS.md at project root (v2.0.0, 2026-09-09): purpose, objectives, PBAC access model, tech stack, functional requirements (FR-1.1 through FR-5.3), API spec, data model, testing strategy, deployment, user journeys, milestones.
-- `src/` implements the frontend monitoring console (dashboard surface) in the Midnight Transit Diagonal world.
+- `src/` implements the frontend monitoring console (multi-page dashboard surface) in the Amber Daylight world.
 - No design assets, mockups, testimonials, or customer references exist yet. Future work must not fabricate testimonials, customers, pricing, or deployment claims, and must not place financial or customer data in any display or log.
 
 ## Product Principles

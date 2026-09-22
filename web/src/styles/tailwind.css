@@ -1,0 +1,422 @@
+/* Amber Pay — Connector Monitor
+   Tailwind CSS v4 entry point. Replaces the hand-authored global.css token
+   sheet plus the Astryx reset/theme imports and the unused StyleX dependency.
+
+   Dark field: porcelain ink ground, porcelain surface, the four transit
+   line-inks held for connector routes and service states. Status is never
+   colour-only: text label + shape mark + (on suspended) a hatch. Brand actions
+   use amber; mauve supports.
+
+   Everything below is the single source of truth for values. No component may
+   declare a literal colour, size, or spacing value — use the generated
+   utility, or var(--color-*) / var(--text-*) in the rare arbitrary value.
+*/
+
+@import "tailwindcss";
+
+/* The app source tree is scanned explicitly so the utility set is deterministic
+   and does not depend on gitignore/auto-detection heuristics. */
+@source "../";
+
+@theme {
+  /* ------------------------------------------------------------------ fonts
+     Geist (variable) replaced IBM Plex as the working face. Plex is a fine
+     typeface but it is *wide* and its uppercase forms are chunky, so on a dark
+     field at 10–12px every label read heavy and the layout ran out of room
+     sooner than the content needed. Geist has a taller x-height, tighter
+     apertures at small sizes, and a variable axis — which matters more than it
+     sounds: it means emphasis can be 550 instead of jumping 400 → 600, so
+     hierarchy stops arriving as "bold or nothing".
+
+     One sans + one mono carry the system; the whole world can be re-pointed by
+     changing these two tokens alone. */
+  --font-sans: "Geist Variable", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* ------------------------------------------------------------- type scale
+     Nine roles. Every size in the app is one of these — the previous sheet
+     carried 29 ad-hoc sizes (0.62 through 1.05rem in 0.02 steps), which is
+     what "inconsistent" was actually made of. Nothing below 11px, and 11px is
+     reserved for short uppercase labels only; running text starts at 12px.
+
+     The namespace is cleared first so Tailwind's default paired
+     `--text-*--line-height` values cannot leak in: every `text-*` utility here
+     sets font-size ONLY, and line-height is chosen separately with `leading-*`.
+     Without the reset, `text-sm` would silently impose Tailwind's 1.25rem
+     line-height on dense table cells authored for `leading-snug`. */
+  --text-*: initial;
+  --text-micro: 0.6875rem; /* 11px — uppercase micro-labels only */
+  --text-xs: 0.75rem;      /* 12px — meta, captions, thresholds */
+  --text-sm: 0.8125rem;    /* 13px — dense body, table cells, controls */
+  --text-md: 0.875rem;     /* 14px — body prose, event detail */
+  --text-lg: 0.9375rem;    /* 15px — subheads, stage names */
+  --text-base: 1rem;       /* 16px — lead paragraphs */
+  --text-xl: 1.0625rem;    /* 17px — section titles, hero readings */
+  --text-2xl: 1.25rem;     /* 20px — page title */
+  --text-3xl: 1.5rem;      /* 24px — the verdict: the loudest thing on screen */
+
+  /* Line height rises as measure widens, and light-on-dark needs more of it
+     than dark-on-light: 1.35 for single-line data was making prose fight
+     itself. */
+  --leading-*: initial;
+  --leading-tight: 1.25; /* badges, single-line chips */
+  --leading-snug: 1.4;   /* dense table cells, labels */
+  --leading-base: 1.5;   /* UI body */
+  --leading-prose: 1.65; /* multi-line explanatory prose on the dark field */
+
+  --tracking-*: initial;
+  --tracking-tight: -0.011em; /* headings */
+  --tracking-label: 0.055em;  /* uppercase micro-labels */
+
+  /* Weights are the variable-axis stops the face actually ships. Defaults are
+     cleared so `font-bold` (700) is not reachable: browsers defaulting <b> and
+     <th> to 700 previously made stray inline values the heaviest type in a
+     console that tops out at 600. */
+  --font-weight-*: initial;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-strong: 550;   /* variable-axis emphasis that is not yet bold */
+  --font-weight-semibold: 600;
+
+  /* ------------------------------------------------------------- space scale
+     Tailwind's native 4px multiplier is kept (`--spacing: 0.25rem`) rather than
+     re-declaring the old `--space-1..10` ramp: the app ramp is exactly this
+     scale doubled (old space-1 = 2px = `0.5`, old space-6 = 16px = `4`), so a
+     1:1 translation exists and the markup reads as standard Tailwind. */
+  --spacing: 0.25rem;
+
+  /* ------------------------------------------------------- ground & inks
+     Four inks, each a deliberate step. The previous ramp put real supporting
+     content (thresholds, column heads, units) on the faintest step at 5.12:1,
+     so the things a reader needs most looked washed out while headings glowed.
+     The ramp is rebalanced so the *lowest* ink is still ~5:1 and anything
+     carrying information sits at 6.8:1 or better.
+
+     The default palette is cleared: an accidental `text-white` or `bg-slate-*`
+     is exactly how the shipped "white on amber" 3.31:1 defect happened, and an
+     unknown colour class fails silently rather than loudly. */
+  --color-*: initial;
+  --color-ink-1: #f8fafc;          /* values, headings        16.6:1 */
+  --color-ink-2: #cbd5e1;          /* body, prose             11.7:1 */
+  --color-ink-3: #94a3b8;          /* meta, labels, thresholds 6.8:1 */
+  --color-ink-4: #7c8ba0;          /* separators, disabled     5.1:1 — never information */
+
+  --color-midnight: #0a0e1a;       /* page ground (dark) */
+  --color-midnight-2: #111827;     /* card surface */
+  --color-midnight-3: #1a2236;     /* hover / selected surface */
+  --color-midnight-raised: #1e293b;
+
+  --color-rule-enamel: #1e293b;      /* hairlines on dark */
+  --color-rule-enamel-soft: #1a2236;
+
+  /* Line inks (transit routes) — reserved for connector identity and state. */
+  --color-line-scarlet: #d6403f;
+  --color-line-cobalt: #3c6fe0;
+  --color-line-amber: #e6a12a;
+  --color-line-green: #39b98a;
+
+  /* Brand action colours.
+     --color-on-primary exists because white on #ef6000 measures 3.31:1 — the
+     primary action on every page was failing WCAG AA outright. Dark ink on the
+     brand orange measures 5.6:1, and reads as a considered amber control rather
+     than a glowing block, which is also what "too bright" was about. */
+  --color-primary: #ef6000;
+  --color-primary-hover: #ff7a1a;
+  --color-primary-soft: rgb(239 96 0 / 0.16);
+  --color-primary-ink: #ff8c33;
+  --color-on-primary: #1a1206;
+  --color-secondary: #bf7ab2;
+  --color-secondary-hover: #d49cc4;
+  --color-secondary-soft: rgb(191 122 178 / 0.16);
+  --color-secondary-ink: #d49cc4;
+
+  /* Service state — brightened text variants hold 4.5:1 on dark ground. */
+  --color-state-arriving: #2dd4bf;
+  --color-state-delayed: #fbbf24;
+  --color-state-suspended: #f87171;
+  --color-text-suspended: #f87171;
+  --color-text-delayed: #fbbf24;
+  --color-state-tint-arriving: rgb(45 212 191 / 0.12);
+  --color-state-tint-delayed: rgb(251 191 36 / 0.12);
+  --color-state-tint-suspended: rgb(248 113 113 / 0.12);
+
+  /* Focus and selection use the accessible primary text variant. */
+  --color-focus: #ff8c33;
+  --color-sel-bg: rgb(239 96 0 / 0.16);
+
+  /* Legacy aliases, re-pointed at the ink ramp. Kept during the migration so a
+     surviving inline `var(--porcelain)` cannot silently resolve to nothing —
+     an undefined custom property in a style attribute paints an empty value
+     with no build error. */
+  --color-porcelain: #f8fafc;
+  --color-porcelain-dim: #cbd5e1;
+  --color-porcelain-faint: #94a3b8;
+  --color-porcelain-ghost: #7c8ba0;
+
+  /* Depth is a low, soft lift on the dark field — never a hard offset. */
+  --shadow-*: initial;
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 0.3);
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.2), 0 0 0 1px var(--color-rule-enamel);
+
+  --radius-*: initial;
+  --radius-panel: 8px;
+  --radius-chip: 6px;
+
+  /* Breakpoint tiers the sheets actually use, ascending. Declared explicitly and
+     named by tier rather than repurposing Tailwind's sm/md/lg with non-standard
+     values, which would read as a bug.
+
+     Each value carries a +0.02px bump. This is deliberate, not sloppiness:
+     Tailwind's `max-<tier>:` compiles to `@media not all and (min-width: Npx)`,
+     which EXCLUDES the breakpoint itself, whereas the legacy sheets used
+     `@media (max-width: Npx)`, which INCLUDES it. At exactly 1024px the old
+     sheet switched to the icon rail and Tailwind alone would not. The bump
+     makes the two agree at every integer viewport width. No min-width variant is
+     used anywhere, so the bump has no other effect. */
+  --breakpoint-*: initial;
+  --breakpoint-xs: 480.02px;
+  --breakpoint-sm: 640.02px;
+  --breakpoint-md: 720.02px;
+  --breakpoint-lg: 860.02px;
+  --breakpoint-xl: 900.02px;
+  --breakpoint-2xl: 1024.02px;
+  --breakpoint-3xl: 1080.02px;
+  --breakpoint-4xl: 1100.02px;
+  --breakpoint-5xl: 1200.02px;
+
+  /* `max-w-measure` replaces the old `--measure: 72ch`. */
+  --container-measure: 72ch;
+
+  /* ------------------------------------------------------------- motion
+     Named animations for the four ambient loops the sheets hand-authored.
+     Each keeps its original duration and easing; `prefers-reduced-motion` is
+     handled once in the base layer below rather than per-rule. */
+  --animate-pill: ambPulse 1.6s ease-in-out infinite;
+  --animate-spin-slow: ambSpin 1.1s linear infinite;
+  --animate-warn: ambWarnPulse 2s ease-in-out infinite;
+  --animate-hatch: hatchPulse 1.6s steps(2) infinite;
+
+  @keyframes ambPulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes ambSpin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes ambWarnPulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
+    }
+  }
+  @keyframes hatchPulse {
+    50% {
+      opacity: 0.45;
+    }
+  }
+}
+
+/* Non-utility custom properties: read by JS, SVG attributes, or `calc()`, and
+   deliberately not exposed as classes. */
+:root {
+  --sidebar: 260px;
+  --topbar: 64px;
+  --track: 0.125rem;
+  --hair: 1px;
+}
+
+/* ----------------------------------------------------------------- base layer
+   The old reset + element defaults from global.css. Astryx previously supplied
+   its own reset; Tailwind's preflight now does that job, so these are app
+   styling decisions, not reset patches. */
+@layer base {
+  html {
+    font-size: 100%;
+    /* Interpolate brand/surface colours only where they change; never
+       `transition: all`, which animates non-animatable properties, costs paint
+       work, and leaves controls permanently in a "still moving" state (it also
+       broke Playwright actionability on every button). */
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-rule-enamel) transparent;
+  }
+
+  body {
+    background: var(--color-midnight);
+    color: var(--color-ink-1);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: var(--font-weight-regular);
+    line-height: var(--leading-base);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-sel-bg);
+    color: var(--color-ink-1);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-panel);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-rule-enamel);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-4);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Links and underline offset. */
+  a {
+    color: var(--color-primary-ink);
+    text-underline-offset: 0.18em;
+  }
+  a:hover {
+    color: var(--color-primary-hover);
+  }
+
+  /* Column heads are labels, not statements. Browsers set `th` to bold by
+     default, which silently made every supporting line inside a header cell
+     bold too — the spine's stage descriptions were rendering at weight 700 in
+     the faintest ink, which is precisely the "heavy but unreadable" combination.
+     Emphasis inside a header is now opt-in. */
+  th {
+    font-weight: var(--font-weight-medium);
+  }
+
+  /* Headings carry weight on the field, no decorative eyebrows. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    margin: 0;
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--tracking-tight);
+  }
+  h1 {
+    font-size: var(--text-2xl);
+  }
+  h2 {
+    font-size: var(--text-xl);
+  }
+  h3 {
+    font-size: var(--text-lg);
+  }
+  h4 {
+    font-size: var(--text-md);
+  }
+
+  p,
+  li {
+    max-width: var(--container-measure);
+    line-height: var(--leading-prose);
+  }
+
+  /* <b> is emphasis, not a fourth weight. */
+  b,
+  strong {
+    font-weight: var(--font-weight-semibold);
+  }
+
+  /* Form controls inherit the field's type instead of the browser's. */
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease,
+      transform 0.15s ease,
+      opacity 0.15s ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms;
+      animation-iteration-count: 1;
+      transition-duration: 0.01ms;
+    }
+  }
+
+  /* The page transition the legacy `.amb-page` carried. Named once here so a
+     converted page can reference it with `animate-[fadeIn_0.2s_ease-out]`. */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Browsers paint autofilled inputs with their own light background, which on
+     this dark field is a white block. An inset shadow is the only cross-browser
+     way to override it, and it needs vendor-prefixed properties with no utility
+     equivalent — so it stays a named hook rather than a pile of arbitrary values
+     at every call site. The transition delay pushes the override past the
+     autofill repaint. */
+  /* Browsers paint autofilled inputs with their own light background, which on
+     this dark field is a white block. An inset shadow is the only cross-browser
+     way to override it, and it needs vendor-prefixed properties with no utility
+     equivalent — so it stays a named hook rather than a pile of arbitrary values
+     at every call site. The transition delay pushes the override past the
+     autofill repaint. */
+  .field-autofill,
+  .field-autofill:hover,
+  .field-autofill:focus {
+    -webkit-text-fill-color: var(--color-ink-1);
+    -webkit-box-shadow: 0 0 0 100px var(--color-midnight-2) inset;
+    transition: background-color 100000s ease-in-out 0s;
+  }
+
+  /* The nav rail's scrollbar is narrower than the app default so it does not
+     reserve 10px of a 260px column. Webkit scrollbar pseudo-elements have no
+     utility form, hence a named hook. */
+  .rail-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .rail-scroll::-webkit-scrollbar-thumb {
+    background: var(--color-rule-enamel);
+    border-radius: 3px;
+  }
+}
+
+/* ------------------------------------------------------------------ utilities
+   Project utilities that encode an invariant rather than a value. */
+
+/* Data, code, and measurement use the mono face with tabular, lining figures so
+   numerals align in columns. Defined once because forgetting the
+   `font-variant-numeric` half is invisible until a column of counts misaligns. */
+@utility mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  font-variant-numeric: tabular-nums lining-nums;
+}

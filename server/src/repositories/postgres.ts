@@ -1,5 +1,5 @@
 import type { Pool } from 'pg';
-import { ConflictError, InternalError } from '../lib/errors.js';
+import { ConflictError, InternalError } from '../utils/errors.js';
 import type {
   ConnectorState,
   Failure,
@@ -7,20 +7,21 @@ import type {
   Payment,
   ReconciliationJob,
   Severity,
-} from '../domain/types.js';
-import type { AuthUser, Invite, PolicyAttribute, TwoFactorChallenge } from '../auth/types.js';
+} from '../models/domain.js';
+import type { AuthUser, Invite, PasswordReset, PolicyAttribute, TwoFactorChallenge } from '../types/auth.js';
 import type {
   ConnectorStateRepository,
   EventRepository,
   FailureRepository,
   InviteRepository,
+  PasswordResetRepository,
   PaymentRepository,
   ReconciliationRepository,
   Repositories,
   TwoFactorRepository,
   UserRepository,
   WebhookDedupRepository,
-} from './types.js';
+} from '../types/repository.js';
 
 /**
  * Postgres-backed repository implementations. Exercised at runtime when a
@@ -108,6 +109,36 @@ export class PostgresUserRepository implements UserRepository {
     const row = result.rows[0];
     return row ? toAuthUser(row) : undefined;
   }
+
+  async list(): Promise<AuthUser[]> {
+    const result = await this.pool.query<UserRow>(
+      `SELECT ${USER_COLUMNS} FROM users ORDER BY email`,
+    );
+    return result.rows.map(toAuthUser);
+  }
+
+  async updatePolicyAttributes(
+    id: string,
+    policyAttributes: PolicyAttribute[],
+  ): Promise<AuthUser | undefined> {
+    const result = await this.pool.query<UserRow>(
+      `UPDATE users
+         SET policy_attributes = $2::jsonb, updated_at = now()
+       WHERE id = $1
+       RETURNING ${USER_COLUMNS}`,
+      [id, JSON.stringify(policyAttributes)],
+    );
+    const row = result.rows[0];
+    return row ? toAuthUser(row) : undefined;
+  }
+
+  async updatePassword(id: string, hashedPassword: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'UPDATE users SET hashed_password = $2, updated_at = now() WHERE id = $1',
+      [id, hashedPassword],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
 }
 
 // --- invites ---------------------------------------------------------------
@@ -170,6 +201,74 @@ export class PostgresInviteRepository implements InviteRepository {
 
   async markAccepted(id: string, acceptedAt: string): Promise<void> {
     await this.pool.query('UPDATE invites SET accepted_at = $2 WHERE id = $1', [id, acceptedAt]);
+  }
+
+  async list(): Promise<Invite[]> {
+    const result = await this.pool.query<InviteRow>(
+      `SELECT ${INVITE_COLUMNS} FROM invites ORDER BY created_at DESC`,
+    );
+    return result.rows.map(toInvite);
+  }
+}
+
+// --- password resets -------------------------------------------------------
+
+interface PasswordResetRow {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: Date;
+  used_at: Date | null;
+  created_at: Date;
+}
+
+const PASSWORD_RESET_COLUMNS =
+  'id, user_id, token_hash, expires_at, used_at, created_at';
+
+function toPasswordReset(row: PasswordResetRow): PasswordReset {
+  const reset: PasswordReset = {
+    id: row.id,
+    userId: row.user_id,
+    tokenHash: row.token_hash,
+    expiresAt: toIso(row.expires_at),
+    createdAt: toIso(row.created_at),
+  };
+  if (row.used_at) {
+    reset.usedAt = toIso(row.used_at);
+  }
+  return reset;
+}
+
+export class PostgresPasswordResetRepository implements PasswordResetRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async create(reset: PasswordReset): Promise<PasswordReset> {
+    await this.pool.query(
+      `INSERT INTO password_resets (id, user_id, token_hash, expires_at, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [reset.id, reset.userId, reset.tokenHash, reset.expiresAt, reset.createdAt],
+    );
+    return reset;
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<PasswordReset | undefined> {
+    const result = await this.pool.query<PasswordResetRow>(
+      `SELECT ${PASSWORD_RESET_COLUMNS} FROM password_resets WHERE token_hash = $1`,
+      [tokenHash],
+    );
+    const row = result.rows[0];
+    return row ? toPasswordReset(row) : undefined;
+  }
+
+  async markUsed(id: string, usedAt: string): Promise<void> {
+    await this.pool.query('UPDATE password_resets SET used_at = $2 WHERE id = $1', [id, usedAt]);
+  }
+
+  async invalidateForUser(userId: string, usedAt: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE password_resets SET used_at = $2 WHERE user_id = $1 AND used_at IS NULL',
+      [userId, usedAt],
+    );
   }
 }
 
@@ -592,6 +691,7 @@ export function createPostgresRepositories(pool: Pool): Repositories {
     users: new PostgresUserRepository(pool),
     invites: new PostgresInviteRepository(pool),
     twoFactor: new PostgresTwoFactorRepository(pool),
+    passwordResets: new PostgresPasswordResetRepository(pool),
     events: new PostgresEventRepository(pool),
     failures: new PostgresFailureRepository(pool),
     webhookDedup: new PostgresWebhookDedupRepository(pool),

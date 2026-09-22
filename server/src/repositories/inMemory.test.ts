@@ -1,5 +1,5 @@
 import { createInMemoryRepositories, InMemoryConnectorStateRepository } from './inMemory.js';
-import type { Repositories } from './types.js';
+import type { Repositories } from '../types/repository.js';
 
 describe('in-memory repositories org filtering', () => {
   let repositories: Repositories;

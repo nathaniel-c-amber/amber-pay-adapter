@@ -1,4 +1,4 @@
-# Amber Pay — Connector Monitor
+# Amber Linked — Connector Monitor
 
 Operational monitoring for the Amber Pay gateway and its accounting adaptors
 (QuickBooks, Sage). Backend API + monitoring dashboard.
@@ -12,8 +12,17 @@ Operational monitoring for the Amber Pay gateway and its accounting adaptors
 
 ## Repository layout
 
-- `server/` — backend API (Express + TypeScript).
-- `web/` — frontend monitoring console (React + Vite).
+- `server/` — backend API (Express + TypeScript). Layered by technical
+  responsibility: `routes/` → `controllers/` → `services/` → `repositories/`,
+  with `models/` (domain entities), `types/`, `middleware/`, `utils/`, `db/`
+  and `config/` alongside. See `server/AGENTS.md`.
+- `web/` — frontend monitoring console (React + Vite). Grouped by type:
+  `pages/`, `components/`, `services/`, `types/`, `utils/`, `styles/`. See
+  `web/AGENTS.md`.
+
+Both are TypeScript with a single-direction dependency rule: a layer may depend
+on the layers below it, never above it (a `service` must not import a
+`controller`; a `component` must not import a `page`).
 
 ## Prerequisites
 
@@ -41,6 +50,40 @@ Services and ports:
 The `api` service runs migrations on startup and waits for `db` to be healthy.
 PostgreSQL data persists in the `db-data` volume.
 
+## Testing across the internet (ngrok)
+
+The stack ships an opt-in `ngrok` service that publishes the app on a public
+HTTPS URL. It tunnels the `web` service (nginx), which already proxies `/api`
+to `api`, so a single URL serves both the SPA and the API.
+
+```bash
+# 1. Add your token to .env (https://dashboard.ngrok.com/get-started/your-authtoken)
+#    NGROK_AUTHTOKEN=...
+#    NGROK_DOMAIN=            # optional reserved/static domain
+
+# 2. Start the stack with the tunnel profile
+docker compose --profile tunnel up --build
+```
+
+- The public URL is printed in the `ngrok` logs and shown at
+  [http://localhost:4040](http://localhost:4040) (ngrok's local inspector).
+- Without `NGROK_DOMAIN`, ngrok assigns a random ephemeral URL that changes on
+  every restart. Set `NGROK_DOMAIN` to a reserved domain for a stable URL.
+- The tunnel is opt-in: a plain `docker compose up` stays local and never
+  exposes the stack.
+
+**Point the app at the public URL.** Once you know the URL, set these in `.env`
+and restart so CORS, invite links, and 2FA links use it:
+
+```bash
+CORS_ORIGINS=https://<your-subdomain>.ngrok-free.app
+APP_BASE_URL=https://<your-subdomain>.ngrok-free.app
+```
+
+> The ngrok free tier shows a browser interstitial on first visit. Send the
+> `ngrok-skip-browser-warning` header (or use a paid plan) to bypass it for
+> automated/API testing.
+
 ## Environment / secrets
 
 docker-compose reads a root `.env` file automatically. Required vars:
@@ -51,6 +94,7 @@ docker-compose reads a root `.env` file automatically. Required vars:
 - `AMBER_PAY_WEBHOOK_SECRET`
 
 Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SMTP_*`, `APP_BASE_URL`.
+For internet testing, `NGROK_AUTHTOKEN` and (optionally) `NGROK_DOMAIN`.
 See `.env.example` for the full list. **Never commit real secrets.**
 
 ## Development (without Docker)

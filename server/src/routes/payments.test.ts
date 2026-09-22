@@ -1,11 +1,11 @@
 import request from 'supertest';
 import { createApp } from '../app.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
-import { issueAccessToken } from '../auth/tokens.js';
+import { issueAccessToken } from '../utils/tokens.js';
 import { forbiddenKeysIn } from '../test/privacy.js';
-import type { Repositories } from '../repositories/types.js';
-import type { AmberPayGateway, PaymentLinkResult } from '../gateway/types.js';
-import type { PolicyAttribute } from '../auth/types.js';
+import type { Repositories } from '../types/repository.js';
+import type { AmberPayGateway, PaymentLinkResult } from '../types/gateway.js';
+import type { PolicyAttribute } from '../types/auth.js';
 
 function stubGateway(): AmberPayGateway {
   return {

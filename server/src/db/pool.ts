@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { env } from '../config/env.js';
-import { logger } from '../lib/logger.js';
+import { logger } from '../utils/logger.js';
 
 let pool: Pool | undefined;
 

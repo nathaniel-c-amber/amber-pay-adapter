@@ -9,7 +9,7 @@
 
 ### 1.1 Purpose & Scope
 
-The system is a strictly backend service with a frontend monitoring system. Its sole purpose is to facilitate the connection between accounting software (adaptable to any accounting software, starting with QuickBooks and Sage) and the payment gateway, and to monitor the connection between the two.
+The system is a strictly backend service with a frontend monitoring system. Its sole purpose is to facilitate the connection between accounting software (adaptable to any accounting software, starting with QuickBooks or Sage | configurable on onboarding) and the payment gateway, and to monitor the connection between the two.
 
 ### 1.2 Key Objectives & Benefits
 

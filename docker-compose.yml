@@ -2,13 +2,20 @@
 # Amber Pay — full deployment stack
 #
 # Services:
-#   db   — PostgreSQL 16 (persistent volume, healthchecked)
-#   api  — backend server (Node 20, built from server/Dockerfile)
-#   web  — frontend SPA (nginx, built from web/Dockerfile)
+#   db    — PostgreSQL 16 (persistent volume, healthchecked)
+#   api   — backend server (Node 20, built from server/Dockerfile)
+#   web   — frontend SPA (nginx, built from web/Dockerfile)
+#   ngrok — public tunnel for cross-internet testing (opt-in profile)
 #
 # Secrets are read from a root `.env` file (docker-compose loads it
 # automatically). See `.env.example` / README for the required vars.
 # NEVER commit real secrets.
+#
+# The ngrok tunnel is opt-in so a normal `docker compose up` stays local.
+# Start it with:
+#   docker compose --profile tunnel up --build
+# It exposes the `web` service, which already proxies /api to `api`, so the
+# entire app is reachable through a single public HTTPS URL.
 # ------------------------------------------------------------------
 
 services:
@@ -104,6 +111,42 @@ services:
       retries: 5
     ports:
       - "8080:80"
+    networks:
+      - amber
+
+  # Public tunnel for testing across the internet. Opt-in via the `tunnel`
+  # profile so a plain `docker compose up` never exposes the stack.
+  #
+  #   docker compose --profile tunnel up --build
+  #
+  # Tunnels the `web` service (nginx), which proxies /api to `api`, so one
+  # public URL serves both the SPA and the API. Set NGROK_AUTHTOKEN in `.env`
+  # (required for reserved domains and higher limits; optional for ephemeral
+  # URLs). Set NGROK_DOMAIN to use a reserved/static domain.
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    depends_on:
+      - web
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+    # Use a reserved/static domain when NGROK_DOMAIN is set; otherwise ngrok
+    # assigns a random ephemeral URL. `$$` escapes the var for the container
+    # shell so compose does not interpolate it.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -n "$$NGROK_DOMAIN" ]; then
+          exec ngrok http web:80 --log=stdout --domain "$$NGROK_DOMAIN"
+        else
+          exec ngrok http web:80 --log=stdout
+        fi
+    ports:
+      - "4040:4040"
     networks:
       - amber
 
