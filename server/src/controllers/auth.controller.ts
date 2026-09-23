@@ -64,12 +64,16 @@ export interface AuthController {
   inviteUser: RequestHandler;
   /** POST /api/v1/auth/accept-invite (token-gated, public) */
   acceptInvite: RequestHandler;
+  /** GET /api/v1/auth/invite/:token (token-gated, public) — reads, never consumes */
+  getInvite: RequestHandler;
   /** POST /api/v1/auth/login (public; password step only) */
   login: RequestHandler;
   /** POST /api/v1/auth/2fa/verify (public) */
   verifyTwoFactor: RequestHandler;
   /** GET /api/v1/auth/me (Bearer) — the caller's own identity and policy */
   me: RequestHandler;
+  /** POST /api/v1/auth/me/tour-complete (Bearer) — stamp first-run tour completion */
+  completeTour: RequestHandler;
   /** POST /api/v1/auth/forgot-password (public; never reveals account existence) */
   forgotPassword: RequestHandler;
   /** POST /api/v1/auth/reset-password (public; token-gated) */
@@ -129,6 +133,27 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
       }
       const user = await deps.inviteService.acceptInvite(parsed.data.token, parsed.data.password);
       res.status(200).json({ status: 'accepted', userId: user.id });
+    }),
+
+    /*
+      What an invite carries, so the accept page can say who it is for and what
+      it grants BEFORE a password is chosen. Reading uses the same validation as
+      accepting — expired, used and forged tokens are refused here — but creates
+      nothing and does not consume the invite, so reloading the link is safe.
+
+      The token is the bearer credential and is a 32-byte random value, so this
+      discloses no more to its holder than the email that carried it already did.
+    */
+    getInvite: asyncHandler(async (req, res) => {
+      const token = req.params.token ?? '';
+      const invite = await deps.inviteService.verifyInviteToken(token);
+      res.status(200).json({
+        invite: {
+          email: invite.email,
+          policyAttributes: invite.policyAttributes,
+          expiresAt: invite.expiresAt,
+        },
+      });
     }),
 
     login: asyncHandler(async (req, res) => {
@@ -202,8 +227,34 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         policies: policyScopesOf(auth.policy),
         createdAt: user?.createdAt ?? null,
         updatedAt: user?.updatedAt ?? null,
+        // `null` means this account has never been offered the guided tour.
+        // Read from the account, NOT the token: a user who finished the tour
+        // must not be re-toured because an older token is still valid.
+        tourCompletedAt: user?.tourCompletedAt ?? null,
         tokenExpiresAt: new Date(auth.exp * 1000).toISOString(),
       });
+    }),
+
+    /*
+      Mark the first-run guided tour as seen (finished or explicitly skipped).
+
+      Self-service by design: the resource is the CALLER'S OWN account, which is
+      exactly why it lives under /auth rather than /users. `PATCH /users/:id` is
+      admin-gated and organization-scoped, so an ordinary invited user cannot
+      reach it — and widening that route to accommodate this would hand admins a
+      write path onto other people's rows.
+
+      Idempotent: a second call writes nothing and still answers 204, so a retry
+      after a dropped response can neither double-stamp nor fail. A replay from
+      Profile never rewrites the original timestamp.
+    */
+    completeTour: asyncHandler(async (req, res) => {
+      const auth = req.auth;
+      if (!auth) {
+        throw new UnauthorizedError('Authentication required');
+      }
+      await deps.userStore.markTourCompleted(auth.sub, new Date().toISOString());
+      res.status(204).end();
     }),
 
     /*

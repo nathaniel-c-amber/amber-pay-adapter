@@ -4,6 +4,7 @@ import { UnauthorizedError } from '../utils/errors.js';
 import { authorizedOrganizationIds } from '../utils/policyResource.js';
 import { policyScopesOf } from '../utils/policyScopes.js';
 import { computeStageFlow } from '../services/flow/stageFlow.service.js';
+import { withAdaptorConnections } from '../services/adaptors/connectorState.service.js';
 import type {
   ConnectorStateRepository,
   EventRepository,
@@ -34,11 +35,19 @@ export function createDashboardController(deps: DashboardControllerDeps): Dashbo
       }
       // C1: only return rows for organizations the caller can read.
       const organizationIds = authorizedOrganizationIds(req.auth.policy, 'dashboard');
-      const [connectors, lifecycleEvents, failureList] = await Promise.all([
+      const [connectorRows, lifecycleEvents, failureList] = await Promise.all([
         deps.connectorStates.list(organizationIds),
         deps.events.list(organizationIds),
         deps.failures.list(organizationIds),
       ]);
+
+      /*
+        Connector rows are stored state, and a Postgres install stores none at
+        all; the adaptors' ability to reach their accounting platform is live.
+        Merge the two so the Connections page and the service window cannot
+        disagree about whether a route works — see the module comment.
+      */
+      const connectors = await withAdaptorConnections(connectorRows, organizationIds);
 
       res.status(200).json({
         connectors,

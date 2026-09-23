@@ -106,6 +106,57 @@ describe('WebhookProcessor', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects a CONCURRENT duplicate — the second delivery never reaches the adaptor', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    let releasePush!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releasePush = resolve;
+    });
+    const adaptor = makeAdaptor({
+      pushCompletedPayment: jest.fn().mockImplementation(async () => {
+        // Hold the first delivery inside the push so the second arrives while
+        // the first is still in flight — the window the old
+        // hasProcessed-then-markProcessing pair could not close.
+        await gate;
+        return { externalRef: 'ref-0001', at: '2026-01-01T00:00:00.000Z' };
+      }),
+    });
+    const resolver = { get: jest.fn().mockReturnValue(adaptor) };
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+
+    const first = processor.processWebhook(collectedEvent);
+    const second = processor.processWebhook(collectedEvent);
+    releasePush();
+    await Promise.all([first, second]);
+
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
+    expect(await eventLog.list(['org-1'])).toHaveLength(1);
+    expect(await failureTracker.list(['org-1'])).toHaveLength(0);
+  });
+
+  it('pushes a refund with the refunded status and logs its own event type', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const resolver = { get: jest.fn().mockReturnValue(adaptor) };
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+
+    await processor.processWebhook({
+      ...collectedEvent,
+      id: 'w-refund',
+      type: 'payment.refunded',
+      status: 'refunded',
+    });
+
+    const events = await eventLog.list(['org-1']);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('payment-refunded');
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'refunded' }),
+    );
+  });
+
   it('dedups a successful webhook on a later retry (M2)', async () => {
     const eventLog = new EventLog();
     const failureTracker = new FailureTracker();

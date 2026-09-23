@@ -7,6 +7,7 @@ import {
   IconCheck,
   IconClock,
   IconLatency,
+  IconLedger,
   IconLink,
   IconLogout,
   IconRefresh,
@@ -20,6 +21,7 @@ import { getToken, clearToken } from "@/services/auth.service";
 import {
   acknowledgeFailure,
   checkHealth,
+  completeTour,
   getCurrentUser,
   getMetrics,
   getReconciliationReport,
@@ -36,12 +38,24 @@ import { accessFor, isBroadest } from "@/utils/permissions";
 import type { PageId } from "@/utils/permissions";
 import { navigate, useRoute } from "@/router";
 import type { RouteName } from "@/router";
+import { TOUR_STEPS } from "@/tour/steps";
+import { TourLayer } from "@/tour/TourLayer";
+import { useAnchorRect } from "@/tour/useAnchorRect";
+import { T_ANCHOR, anchorNeedsDrawer, navAnchor } from "@/tour/anchors";
+import {
+  firstShowable,
+  nextShowable,
+  prevShowable,
+  showableCount,
+  showablePosition,
+} from "@/tour/engine";
+import { PolicyProvider } from "./Can";
 import { SignInPage } from "@/pages/auth/SignInPage";
 import { InvitePage } from "@/pages/auth/InvitePage";
 import { DeniedPage } from "@/pages/auth/DeniedPage";
 import { ForgotPasswordPage } from "@/pages/auth/ForgotPasswordPage";
 import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
-import { demoMetrics, DEMO_RECON, DEMO_POLICIES, DEMO_CONFIG, DEMO_WEBHOOK, demoService } from "@/utils/fixtures";
+import { demoMetrics, DEMO_RECON, DEMO_POLICIES, DEMO_CONFIG, DEMO_WEBHOOK, demoService, DEMO_ENABLED } from "@/utils/fixtures";
 import { ErrorState, LoadingState, SearchBox, cx } from "./ui";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { ConnectionsPage, ConnectionDetailPage } from "@/pages/ConnectionsPage";
@@ -86,6 +100,33 @@ function readRefreshMs(): number {
 function formatInterval(ms: number): string {
   return `${Math.round(ms / 1000)}s`;
 }
+
+/**
+ * Titles for the routes that render outside the console shell.
+ *
+ * The console routes take their title from the nav entry, so this only has to
+ * cover the unauthenticated surfaces — otherwise a user on an emailed invite
+ * link sees a tab that still says "Amber Pay Ledger" and cannot tell the link
+ * worked.
+ */
+const AUTH_TITLES: Partial<Record<RouteName, string>> = {
+  signin: "Sign in",
+  invite: "Accept invitation",
+  forgot: "Reset your password",
+  reset: "Choose a new password",
+};
+
+const APP_SUFFIX = "Amber Pay Ledger";
+
+/**
+ * The drawer's breakpoint, in JS as well as in CSS.
+ *
+ * `inert` is a DOM attribute, not a style, so it cannot be applied by a
+ * Tailwind variant. The sidebar is a permanent column at >=720px and an
+ * overlay drawer below it, which means the attribute has to be conditional on
+ * the viewport — and this is the only place that can be expressed.
+ */
+const DRAWER_MEDIA_QUERY = "(max-width: 720px)";
 
 /**
  * How often the shell's clock advances. Ages and uptime are shown to the
@@ -226,12 +267,45 @@ function pickDefaultPolicy(policies: PolicyScope[]): PolicyScope | null {
   return policies.find(isBroadest) ?? policies[0];
 }
 
+/*
+  What the console holds when there is no demo mode and live data has not
+  arrived yet: nothing, stated as nothing.
+
+  Every collection is empty and `generatedAt` is blank — the pages already
+  render that as their "no data yet" empty state. This replaces a seed of
+  synthetic metrics, which in a production build would have been reachable
+  whenever a live refresh failed and would have put fabricated figures on screen
+  under a live-mode label.
+*/
+const NO_DATA: MappedMetrics = {
+  connectors: [],
+  events: [],
+  failures: [],
+  policies: [],
+  generatedAt: "",
+};
+
+const NO_RECON: ReconciliationReport = { reconciliation: null, generatedAt: "" };
+
 export default function Shell() {
   const route = useRoute();
   const [token, setToken] = useState<string | null>(() => getToken());
-  const [mode, setMode] = useState<"demo" | "live">(token ? "live" : "demo");
-  const [data, setData] = useState<MappedMetrics>(() => demoMetrics());
-  const [recon, setRecon] = useState<ReconciliationReport>(() => ({ reconciliation: DEMO_RECON, generatedAt: new Date().toISOString() }));
+  /*
+    Demo is a development-only mode (see DEMO_ENABLED in utils/fixtures.ts), so
+    outside development the console starts in live and never leaves it: there is
+    no synthetic figure anywhere below to fall back to.
+  */
+  const [mode, setMode] = useState<"demo" | "live">(() =>
+    DEMO_ENABLED && !token ? "demo" : "live",
+  );
+  const [data, setData] = useState<MappedMetrics>(() =>
+    DEMO_ENABLED ? demoMetrics() : NO_DATA,
+  );
+  const [recon, setRecon] = useState<ReconciliationReport>(() =>
+    DEMO_ENABLED
+      ? { reconciliation: DEMO_RECON, generatedAt: new Date().toISOString() }
+      : NO_RECON,
+  );
   const [service, setService] = useState<ApiServiceStatus | null>(null);
   /*
     Flow comparison state.
@@ -285,11 +359,41 @@ export default function Shell() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const inFlight = useRef(false);
+  /* The route announcement is kept separate from the connectivity one so that
+     either can change without re-reading the other. */
+  const [routeNotice, setRouteNotice] = useState("");
+  /* True only while the viewport is narrow enough for the sidebar to be an
+     overlay drawer rather than a permanent column. See DRAWER_MEDIA_QUERY. */
+  const [drawerTier, setDrawerTier] = useState(false);
+
+  /*
+    First-run tour state. `tourIndex` is the position in TOUR_STEPS, or null when
+    the tour is not running — ONE value rather than an {active, step} pair, so the
+    two cannot disagree about whether the tour is up.
+  */
+  const [tourIndex, setTourIndex] = useState<number | null>(null);
+  /* Escape dismisses for this session only; "Skip tour" stamps permanently. */
+  const [tourDismissed, setTourDismissed] = useState(false);
+  const tourActive = tourIndex !== null;
+  /*
+    A ref, not the state value, for the two effects below that must fall silent
+    while the tour runs. Adding `tourActive` to their dependency lists would re-run
+    them on every start and finish, re-announcing the page and pulling focus back
+    to `main` — the exact collision this exists to prevent. Assigned during render
+    on purpose: it has to be current in the SAME commit that starts the tour,
+    whereas an effect would lag a commit and let one announcement through.
+  */
+  const tourActiveRef = useRef(false);
+  tourActiveRef.current = tourActive;
+  /** The page container: the programmatic focus target on navigation. */
+  const mainRef = useRef<HTMLElement>(null);
+  /** Navigation announces itself, but the initial paint should not steal focus. */
+  const skipFirstRouteEffect = useRef(true);
 
 
-  const policies = data.policies.length > 0 ? data.policies : DEMO_POLICIES;
+  const policies = data.policies.length > 0 ? data.policies : DEMO_ENABLED ? DEMO_POLICIES : [];
   const [activePolicy, setActivePolicy] = useState<PolicyScope | null>(() =>
-    pickDefaultPolicy(data.policies.length > 0 ? data.policies : DEMO_POLICIES),
+    pickDefaultPolicy(data.policies.length > 0 ? data.policies : DEMO_ENABLED ? DEMO_POLICIES : []),
   );
 
   // Keep active scope in sync whenever the policy set changes (live reload,
@@ -308,6 +412,10 @@ export default function Shell() {
   }, []);
 
   const applyDemo = useCallback(() => {
+    /* No-op outside development: demo mode is a development affordance, not a
+       fallback. Callers leave the console in live mode with whatever the API
+       last returned. */
+    if (!DEMO_ENABLED) return;
     setData(demoMetrics());
     setMode("demo");
     setLiveError(null);
@@ -474,6 +582,85 @@ export default function Shell() {
     setSidebarOpen(false);
   }, [route.path]);
 
+  // Track whether the sidebar is currently an overlay drawer (see
+  // DRAWER_MEDIA_QUERY). Read once on mount and on every crossing.
+  useEffect(() => {
+    const mq = window.matchMedia(DRAWER_MEDIA_QUERY);
+    const sync = () => setDrawerTier(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  /*
+    Escape dismisses the open drawer. Without it the only exits are the backdrop
+    and the close button, so a keyboard user who opened it by accident is stuck
+    behind an overlay that covers the page.
+  */
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // The tour owns Escape while it is running. At the drawer tier a step
+      // anchored on the navigation OPENS the drawer, so without this guard one
+      // Escape would close the drawer and dismiss the tour together.
+      if (event.key === "Escape" && !tourActiveRef.current) setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [sidebarOpen]);
+
+  /*
+    Give every route its own document title, move focus into the view, and
+    announce the destination.
+
+    A hash-router navigation never reloads the document, so by default all
+    thirteen routes shared one title and focus stayed on the nav control that
+    had just been activated — a screen-reader user had to re-traverse the whole
+    shell to find the new content (SC 2.4.2 and 2.4.3). Focus goes to `main`,
+    which is a programmatic target (`tabIndex={-1}`) and so adds no tab stop.
+
+    The focus move is deliberately skipped on the auth surfaces: `main` is not
+    mounted there, they render their own shell, and AuthShell already focuses
+    its own heading on mount.
+  */
+  useEffect(() => {
+    /*
+      The title must name the surface actually RENDERED, not the route that was
+      requested. A signed-out visitor deep-linking to #/overview sees the
+      sign-in screen, so titling that page "Overview" would contradict the page
+      in front of them — which is exactly what a title is for.
+
+      Derived here, from primitives, rather than from the `activeNav`/`denied`
+      values computed further down: those are consts declared later in the
+      component body, and referencing them from a callback above their
+      declaration is a temporal-dead-zone error at compile time.
+    */
+    const signedOutInterstitial =
+      route.name === "signin" || (!token && !guest && isConsoleRoute(route.name));
+    const label = signedOutInterstitial
+      ? "Sign in"
+      : (NAV.find((n) => n.id === route.name)?.label ?? AUTH_TITLES[route.name] ?? "Console");
+    document.title = `${label} — ${APP_SUFFIX}`;
+
+    if (skipFirstRouteEffect.current) {
+      skipFirstRouteEffect.current = false;
+      return;
+    }
+    /*
+      While the tour runs it owns focus and announcement: it moves focus to its
+      own panel on each step, and several steps navigate BETWEEN routes. Left
+      unguarded, this effect steals that focus to `main` and interrupts the step
+      with a "page loaded" announcement. The title above is still set — the page
+      really has changed — and the tour's own focus move does the announcing.
+    */
+    if (tourActiveRef.current) return;
+    // `main` only exists on the console surfaces; on the auth interstitials it
+    // is absent, so this is a no-op rather than a focus move into nothing.
+    if (!mainRef.current) return;
+    mainRef.current.focus();
+    setRouteNotice(`${label} page loaded.`);
+  }, [route.path, route.name, token, guest]);
+
   /*
     The sign-in surface is now a routed page, so focus management is its own
     problem: AuthShell moves focus to its heading on mount, and the browser
@@ -547,17 +734,23 @@ export default function Shell() {
   );
   const criticalOpen = activeFailures.filter((f) => f.severity === "critical").length;
   /*
+    "Nothing is wrong" and "nothing was read" are different claims. When a live
+    refresh has failed and there is no demo mode to stand in, the console holds
+    no findings at all — so the bell and the sidebar chip say they do not know,
+    instead of counting zero and reading as health.
+  */
+  const findingsKnown = !(liveUnavailable && !DEMO_ENABLED);
+  /*
     The demo service status is built once per mode, not on every render: it
     derives its start time from Date.now(), so rebuilding it each render made
     the process appear to restart continuously and the uptime readout tick
     backwards.
   */
   const serviceForDisplay = useMemo(
-    () => (mode === "live" ? service : demoService()),
+    () => (DEMO_ENABLED && mode === "demo" ? demoService() : service),
     [mode, service],
   );
   const asOf = formatClock(data.generatedAt);
-  const canAck = access.findings.canEdit;
 
   /*
     Authorization that is invisible is indistinguishable from authorization
@@ -575,6 +768,148 @@ export default function Shell() {
   };
 
   const activeNav = NAV.find((n) => n.id === route.name);
+
+  /*
+    The connectivity announcement. Empty until the first probe lands: `online`
+    is `null` while unmeasured, and announcing "Offline" before asking would be
+    a claim the console has not earned.
+  */
+  const connectivityNotice =
+    online === null
+      ? ""
+      : online
+        ? "Backend reachable. Online."
+        : "Backend unreachable. Offline.";
+
+  /* ------------------------------------------------------- first-run tour */
+
+  const activeStep = tourIndex === null ? null : (TOUR_STEPS[tourIndex] ?? null);
+  const stepAnchor = activeStep?.anchor;
+  const anchorState = useAnchorRect(stepAnchor, tourActive && activeStep !== null);
+
+  const tourProgress = useMemo(
+    () => ({
+      // Counted among the steps THIS policy can see, so a restricted account is
+      // never told it is on "3 of 8" when two of those can never be shown.
+      total: showableCount(TOUR_STEPS, activePolicy),
+      position: tourIndex === null ? 0 : showablePosition(TOUR_STEPS, tourIndex, activePolicy),
+    }),
+    [activePolicy, tourIndex],
+  );
+
+  /*
+    Offer the tour once, to an account that has never seen it.
+
+    Every condition below is a real state rather than a defensive extra:
+      - `identity` is null between the token being read and /auth/me answering,
+        and starting there would tour a half-built shell;
+      - demo and guest sessions have no account, so there is nothing to stamp and
+        nothing to own the claim;
+      - the auth interstitials have no console to point at.
+    The stamp is read from the ACCOUNT, so a second device does not re-tour the
+    same person and a cleared browser cannot replay it forever.
+  */
+  useEffect(() => {
+    if (tourActive || tourDismissed) return;
+    if (!token || !identity) return;
+    if (identity.tourCompletedAt !== null) return;
+    if (guest || mode === "demo") return;
+    if (!isConsoleRoute(route.name)) return;
+    const first = firstShowable(TOUR_STEPS, 0, activePolicy);
+    if (first === null) return;
+    setTourIndex(first);
+  }, [tourActive, tourDismissed, token, identity, guest, mode, route.name, activePolicy]);
+
+  /*
+    Follow the step's route. The tour crosses two routes deliberately: it has to
+    show that the console is navigable rather than describe navigation from one
+    page.
+  */
+  useEffect(() => {
+    if (!activeStep) return;
+    if (activeStep.route !== route.name) navigate(activeStep.route);
+  }, [activeStep, route.name]);
+
+  /*
+    A navigation or account-footer anchor lives inside the sidebar, which at
+    <=720px is a closed drawer. Open it for those steps and close it again on the
+    step after — a drawer left open behind a later step would cover the page that
+    step is describing. Desktop tiers are unaffected (`drawerTier` is false).
+  */
+  useEffect(() => {
+    if (!tourActive) return;
+    setSidebarOpen(drawerTier && anchorNeedsDrawer(stepAnchor ?? null));
+  }, [tourActive, drawerTier, stepAnchor]);
+
+  /*
+    Skip a step whose anchor never appeared.
+
+    This is what keeps the tour honest rather than merely working: the surface may
+    be denied by policy, withheld because the backend never answered, or replaced
+    by an empty state — and in every one of those the panel is advanced past
+    instead of describing something the reader cannot see.
+  */
+  useEffect(() => {
+    if (!tourActive || anchorState.status !== "absent") return;
+    setTourIndex((current) =>
+      current === null ? null : nextShowable(TOUR_STEPS, current, activePolicy),
+    );
+  }, [tourActive, anchorState.status, activePolicy]);
+
+  /**
+   * End the tour.
+   *
+   * `stamp` separates the two exits on purpose: finishing and "Skip tour" are
+   * decisions not to be offered it again, whereas Escape is an accident that
+   * should cost nothing.
+   */
+  const endTour = useCallback(
+    (stamp: boolean) => {
+      setTourIndex(null);
+      if (!stamp) {
+        setTourDismissed(true);
+        return;
+      }
+      /*
+        Optimistic locally, best-effort remotely. Stamping the local identity
+        first closes the window in which the auto-start effect could fire again
+        before the response lands. A failed write is swallowed deliberately: a
+        tour that could not be RECORDED must not interrupt the tour or the
+        session, and the worst outcome is one extra showing.
+      */
+      setIdentity((current) =>
+        current ? { ...current, tourCompletedAt: new Date().toISOString() } : current,
+      );
+      if (token) void completeTour(token).catch(() => undefined);
+    },
+    [token],
+  );
+
+  const tourNext = useCallback(() => {
+    if (tourIndex === null) return;
+    const next = nextShowable(TOUR_STEPS, tourIndex, activePolicy);
+    if (next === null) endTour(true);
+    else setTourIndex(next);
+  }, [tourIndex, activePolicy, endTour]);
+
+  const tourBack = useCallback(() => {
+    if (tourIndex === null) return;
+    const previous = prevShowable(TOUR_STEPS, tourIndex, activePolicy);
+    if (previous !== null) setTourIndex(previous);
+  }, [tourIndex, activePolicy]);
+
+  const tourDismiss = useCallback(() => endTour(false), [endTour]);
+  const tourSkip = useCallback(() => endTour(true), [endTour]);
+
+  /*
+    Replay from Profile. Deliberately does NOT clear the stamp — a replay asks to
+    see the tour now, not to be re-toured on every future sign-in.
+  */
+  const replayTour = useCallback(() => {
+    setTourDismissed(false);
+    const first = firstShowable(TOUR_STEPS, 0, activePolicy);
+    if (first !== null) setTourIndex(first);
+  }, [activePolicy]);
 
   const renderPage = () => {
     if (denied) {
@@ -594,7 +929,6 @@ export default function Shell() {
           <OverviewPage
             data={data}
             findings={activeFailures}
-            canAck={canAck}
             onAck={ackFinding}
             ackError={ackError}
             now={now}
@@ -628,7 +962,6 @@ export default function Shell() {
             finding={activeFailures.find((f) => f.id === route.param)}
             connectors={data.connectors}
             events={data.events}
-            canAck={canAck}
             onAck={ackFinding}
             ackError={ackError}
           />
@@ -636,7 +969,6 @@ export default function Shell() {
           <FindingsPage
             findings={activeFailures}
             connectors={data.connectors}
-            canAck={canAck}
             onAck={ackFinding}
             ackError={ackError}
             activePolicy={activePolicy}
@@ -649,7 +981,6 @@ export default function Shell() {
           <PaymentsPage
             events={data.events}
             recon={recon}
-            canWrite={access.payments.canEdit}
             mode={mode}
           />
         );
@@ -658,7 +989,6 @@ export default function Shell() {
           <SynchronizationPage
             connectors={data.connectors}
             events={data.events}
-            canWrite={access.payments.canEdit}
             onRefresh={() => (token ? void loadLive(token) : applyDemo())}
             syncing={refreshing}
           />
@@ -670,7 +1000,6 @@ export default function Shell() {
           <UsersPage
             identity={identity}
             token={token}
-            canEdit={access.users.canEdit}
             mode={mode}
             onRequireSignIn={requireSignIn}
           />
@@ -678,9 +1007,13 @@ export default function Shell() {
       case "settings":
         return (
           <ConfigPage
-            configs={DEMO_CONFIG}
-            webhook={DEMO_WEBHOOK}
-            canEdit={access.settings.canEdit}
+            /* No configuration endpoint exists, so these fixtures are the only
+               content the page can have — which is exactly why they are a
+               development-only stand-in. In a production build the page says it
+               has no source rather than presenting invented endpoints as the
+               deployment's own settings. */
+            configs={DEMO_ENABLED ? DEMO_CONFIG : []}
+            webhook={DEMO_ENABLED ? DEMO_WEBHOOK : null}
             mode={mode}
           />
         );
@@ -694,6 +1027,7 @@ export default function Shell() {
             now={now}
             onSignOut={handleSignOut}
             onManageUsers={() => navigate("users")}
+            onReplayTour={replayTour}
           />
         );
       default:
@@ -750,16 +1084,20 @@ export default function Shell() {
         onAuthenticated={handleAuthenticated}
         expired={sessionExpired}
         onForgotPassword={() => navigate("forgot")}
-        /* Offered only when there is genuinely no session: a signed-in user
-           should not be invited to browse synthetic data instead of their own. */
+        /*
+          Offered only when there is genuinely no session AND this is a
+          development build. A signed-in user should not be invited to browse
+          synthetic data instead of their own; a deployed console should not
+          offer synthetic data at all.
+        */
         onExploreDemo={
-          token
-            ? undefined
-            : () => {
+          DEMO_ENABLED && !token
+            ? () => {
                 setGuest(true);
                 setSessionExpired(false);
                 navigate(isConsoleRoute(route.name) ? route.name : "overview");
               }
+            : undefined
         }
         /* With a session already in hand, sign-in is a detour, so it needs a way
            back. Without one the user would be stranded on the form. */
@@ -770,51 +1108,56 @@ export default function Shell() {
 
   return (
     <div className="grid min-h-screen grid-cols-[260px_minmax(0,1fr)] bg-midnight max-2xl:grid-cols-[76px_minmax(0,1fr)] max-md:grid-cols-[minmax(0,1fr)]">
-      <a
-        className="absolute top-0 left-[-9999px] focus:left-0 focus:z-50 focus:bg-ink-1 focus:px-4 focus:py-2 focus:text-midnight"
-        href="#amb-main"
-      >
-        Skip to main content
-      </a>
+      {/*
+        ONE inert wrapper around the entire console, so the tour can remove the
+        page from the tab order and the accessibility tree in a single place.
+
+        `contents` is load-bearing, not decoration: this element must not become a
+        grid item or the two-column layout collapses to one. `display: contents`
+        takes it out of the BOX tree while leaving its children as grid items, and
+        `inert` still applies because inert works on the DOM tree, not the box
+        tree. It sits inside the grid rather than around it so the tour layer can
+        be a sibling of the inert subtree — an overlay rendered inside it would
+        inert its own controls.
+      */}
+      <div className="contents" inert={tourActive}>
+        <a
+          className="absolute top-0 left-[-9999px] focus:left-0 focus:z-50 focus:bg-ink-1 focus:px-4 focus:py-2 focus:text-midnight"
+          href="#amb-main"
+        >
+          Skip to main content
+        </a>
 
       {/* Sidebar */}
       <aside
         className={cx(
           "rail-scroll sticky top-0 flex h-screen flex-col gap-4 overflow-y-auto border-r border-rule-enamel bg-midnight-2 p-4",
           "max-md:fixed max-md:left-0 max-md:top-0 max-md:z-40 max-md:w-[260px]",
-          /* The closed drawer is meant to leave the tab order via `visibility`,
-             not just an off-screen transform — otherwise the ~12 nav controls
-             stay reachable while invisible.
-
-             KNOWN LIMITATION, inherited verbatim from the legacy sheet and NOT
-             introduced by the Tailwind conversion: the delayed visibility
-             transition on the way out (`visibility 0s linear 0.22s`) never
-             resolves in Chrome, so once the drawer has been opened and closed
-             the panel keeps `visibility: visible` and its controls stay
-             focusable. Measured: a synthetic element using the same declaration
-             still reports `visible` after 700ms, while an undelayed change
-             reports `hidden`. Preserved as-is because this conversion is a
-             visual no-op; fixing it means dropping the delay (the slide-out
-             then hides instantly) or adding `inert`/`aria-hidden` to the closed
-             panel. */
+          /* The closed drawer is hidden with `visibility` AND made inert (see
+             the `inert` attribute below). `visibility` alone was not enough:
+             the delayed `visibility 0s linear 0.22s` on the way out never
+             resolves in Chrome, so once the drawer had been opened and closed
+             its ~12 nav controls stayed focusable while off-screen. `inert`
+             removes the whole subtree from the tab order and the accessibility
+             tree regardless of what the transition settles on, and it is
+             applied only in the drawer tier — at desktop widths this is a
+             permanent column and must stay interactive. */
           sidebarOpen
             ? "max-md:visible max-md:translate-x-0 max-md:[transition:transform_0.22s_ease-out,visibility_0s_linear_0s]"
             : "max-md:invisible max-md:-translate-x-full max-md:[transition:transform_0.22s_ease-out,visibility_0s_linear_0.22s]",
         )}
         aria-label="Primary"
+        inert={drawerTier && !sidebarOpen}
       >
         <div className="flex items-center gap-3 px-1.5 pt-0.5 pb-3 max-2xl:justify-center max-2xl:px-0 max-md:justify-start max-md:px-1.5">
           <span
-            className="grid size-8 flex-none place-items-center rounded-panel border border-rule-enamel bg-midnight-3 transition-colors hover:border-primary"
+            className="grid size-8 flex-none place-items-center rounded-panel border border-rule-enamel bg-midnight-3 text-primary transition-colors hover:border-primary"
             aria-hidden
           >
-            <span
-              className="size-[11px] rounded-full bg-primary shadow-[0_0_0_2px_var(--color-primary-soft),0_0_10px_rgb(239_96_0/0.25)]"
-              aria-hidden
-            />
+            <IconLedger size={18} />
           </span>
           <div className="max-2xl:hidden max-md:block">
-            <div className="text-base font-semibold leading-[1.1] tracking-tight text-ink-1">Amber Pay</div>
+            <div className="text-base font-semibold leading-[1.1] tracking-tight text-ink-1">Amber Pay Ledger</div>
             <div className="text-xs text-ink-2 max-2xl:hidden max-md:block">Pay Operations</div>
           </div>
           <button
@@ -845,6 +1188,7 @@ export default function Shell() {
                     <button
                       key={n.id}
                       type="button"
+                      data-tour={navAnchor(n.id)}
                       className={cx(NAV_ITEM, active ? NAV_ITEM_ON : NAV_ITEM_OFF)}
                       onClick={() => navigate(n.id as RouteName)}
                       aria-current={active ? "page" : undefined}
@@ -886,7 +1230,7 @@ export default function Shell() {
           The labels collapse in the icon-rail tier like the nav items, so each
           control carries an aria-label and a title.
         */}
-        <div className="border-t border-rule-enamel pt-3">
+        <div className="border-t border-rule-enamel pt-3" data-tour={T_ANCHOR.sidebarIdentity}>
           <div className="flex w-full items-center gap-3 px-1.5 pt-1.5 pb-2 max-2xl:justify-center max-2xl:px-0">
             <span
               className="flex-none size-8 rounded-full border border-rule-enamel bg-midnight-3 text-micro font-semibold text-ink-1"
@@ -964,13 +1308,22 @@ export default function Shell() {
             */}
             <div className="mono inline-flex items-center gap-2 rounded-chip bg-midnight-3 px-2 py-1.5 text-xs text-ink-2 max-2xl:hidden">
               <span
-                className="size-2 rounded-full bg-line-green data-[tone=bad]:bg-state-suspended data-[tone=warn]:bg-state-delayed"
+                className={cx(
+                  "size-2 rounded-full",
+                  findingsKnown
+                    ? "bg-line-green data-[tone=bad]:bg-state-suspended data-[tone=warn]:bg-state-delayed"
+                    : /* Hollow, like the offline pill: shape carries "not known"
+                         as well as the wording does. */
+                      "border border-ink-3 bg-transparent",
+                )}
                 aria-hidden
                 data-tone={activeFailures.length === 0 ? "good" : criticalOpen > 0 ? "bad" : "warn"}
               />
-              {activeFailures.length === 0
-                ? "All clear"
-                : `${activeFailures.length} finding${activeFailures.length === 1 ? "" : "s"}`}
+              {!findingsKnown
+                ? "No live data"
+                : activeFailures.length === 0
+                  ? "All clear"
+                  : `${activeFailures.length} finding${activeFailures.length === 1 ? "" : "s"}`}
             </div>
           </div>
         </div>
@@ -992,9 +1345,17 @@ export default function Shell() {
           </button>
 
           <div className="flex min-w-0 items-baseline gap-3 max-md:flex-[1_1_auto]">
-            <h1 className="whitespace-nowrap text-xl font-semibold text-ink-1 max-2xl:hidden max-md:block max-md:truncate">
+            {/*
+              A label, not a document heading. This is the chrome's page title,
+              and the page itself supplies the real `h1` via PageHeader — so
+              making it an `h1` gave nine routes TWO top-level headings at
+              <=720px (both visible at that width) and made the heading outline
+              depend on the viewport. The heading hierarchy now comes from the
+              content, once.
+            */}
+            <div className="whitespace-nowrap text-xl font-semibold text-ink-1 max-2xl:hidden max-md:block max-md:truncate">
               {activeNav?.label ?? "Overview"}
-            </h1>
+            </div>
           </div>
 
           <div className="min-w-0 max-w-[320px] flex-1 max-5xl:max-w-[200px] max-2xl:hidden">
@@ -1083,7 +1444,9 @@ export default function Shell() {
                   ? "Checking whether the API is reachable"
                   : online
                     ? `API reachable${latencyMs !== null ? ` — ${latencyMs}ms round trip` : ""}`
-                    : "The API did not answer. Data shown may be stale or synthetic."
+                    : DEMO_ENABLED
+                      ? "The API did not answer. Data shown may be stale or synthetic."
+                      : "The API did not answer. Nothing is shown in place of it."
               }
             >
               <span
@@ -1098,12 +1461,24 @@ export default function Shell() {
 
             <button
               type="button"
-              className={cx("relative inline-grid place-items-center", ICON_BTN, "size-[30px]")}
+              data-tour={T_ANCHOR.findingsBell}
+              className={cx(
+                "relative inline-grid place-items-center",
+                ICON_BTN,
+                "size-[30px]",
+                "disabled:cursor-not-allowed disabled:opacity-60",
+              )}
               aria-label={
-                activeFailures.length === 0
-                  ? "No open findings"
-                  : `${activeFailures.length} open finding${activeFailures.length === 1 ? "" : "s"}`
+                !findingsKnown
+                  ? "Open findings unknown"
+                  : activeFailures.length === 0
+                    ? "No open findings"
+                    : `${activeFailures.length} open finding${activeFailures.length === 1 ? "" : "s"}`
               }
+              title={
+                findingsKnown ? "Open findings" : "Live monitoring data is unavailable, so this count is unknown"
+              }
+              disabled={!findingsKnown}
               onClick={() => navigate("findings")}
             >
               <IconBell />
@@ -1142,7 +1517,12 @@ export default function Shell() {
           </div>
         </header>
 
-        <main id="amb-main" className="min-w-0 px-6 pt-5 pb-10 max-sm:px-4 max-sm:pt-4 max-sm:pb-8">
+        <main
+          id="amb-main"
+          ref={mainRef}
+          tabIndex={-1}
+          className="min-w-0 px-6 pt-5 pb-10 max-sm:px-4 max-sm:pt-4 max-sm:pb-8 focus:outline-none"
+        >
           {/*
             A single polite live region owns every acknowledgement announcement
             and the tabular-data freshness stamp. Before this, a console that
@@ -1153,6 +1533,21 @@ export default function Shell() {
             {ackNotice ?? `Monitoring data last updated ${asOf}.`}
           </p>
 
+          {/*
+            Connectivity is the single most important thing this console
+            reports, and it was carried only by the pill's visible text and its
+            `title` — so "Offline" was silent to assistive tech (SC 4.1.3).
+            Only a transition is announced: the pill itself is not a live
+            region, so reading order still reports the current value on demand.
+          */}
+          <p className="sr-only" role="status" aria-live="polite">
+            {connectivityNotice}
+          </p>
+
+          <p className="sr-only" role="status" aria-live="polite">
+            {routeNotice}
+          </p>
+
           {awaitingLive && !liveUnavailable ? (
             <LoadingState label="Loading live monitoring data…" />
           ) : (
@@ -1160,12 +1555,30 @@ export default function Shell() {
               {liveUnavailable && (
                 <ErrorState
                   title="Live monitoring data is unavailable"
-                  lead={`${liveError ? `${liveError}. ` : ""}Showing synthetic demo data so the console stays usable — do not read these figures as live.`}
+                  lead={
+                    DEMO_ENABLED
+                      ? `${liveError ? `${liveError}. ` : ""}Showing synthetic demo data so the console stays usable — do not read these figures as live.`
+                      : `${liveError ? `${liveError}. ` : ""}No figures are shown in place of the ones that could not be read: this console reports live data only.`
+                  }
                   retryLabel="Retry live data"
                   onRetry={() => (token ? void loadLive(token) : navigate("signin"))}
                 />
               )}
-              {renderPage()}
+              {/*
+                The active policy is published to the rendered page, not just
+                computed here: a button inside a card asks the same object the
+                same question the nav asked, so a page and its controls cannot
+                disagree about what the policy grants. Nothing threads a
+                `canEdit` boolean down the tree any more.
+
+                The page itself is withheld when live data is unavailable and
+                there is no demo mode to fall back on: rendering it with empty
+                collections would paint "All clear" and "0 findings" over a
+                backend that never answered, which reads as health.
+              */}
+              {(!liveUnavailable || DEMO_ENABLED) && (
+                <PolicyProvider policy={activePolicy}>{renderPage()}</PolicyProvider>
+              )}
             </>
           )}
         </main>
@@ -1177,6 +1590,24 @@ export default function Shell() {
           className="hidden cursor-pointer border-none bg-[rgb(4_7_16/0.6)] max-md:fixed max-md:inset-0 max-md:z-30 max-md:block"
           aria-label="Close navigation"
           onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      </div>
+
+      {/*
+        The layer is a SIBLING of the inert wrapper, never a child: rendered
+        inside it, `inert` would make the tour's own controls unreachable.
+      */}
+      {tourActive && activeStep && (
+        <TourLayer
+          step={activeStep}
+          position={tourProgress.position}
+          total={tourProgress.total}
+          anchor={anchorState}
+          onNext={tourNext}
+          onBack={tourBack}
+          onSkip={tourSkip}
+          onDismiss={tourDismiss}
         />
       )}
     </div>

@@ -1,7 +1,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import { corsOrigins } from './config/env.js';
+import { corsOrigins, env } from './config/env.js';
 import { requestLogger } from './utils/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import {
@@ -34,13 +34,19 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
   const app = express();
   const repositories = deps.repositories ?? getRepositories();
 
+  // Must be set before any middleware that reads `req.ip` (rate limiters,
+  // `requestLogger`). Without it the console's per-IP throttles all collapse
+  // onto the reverse proxy's address, and express-rate-limit reports
+  // ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every throttled request.
+  app.set('trust proxy', env.TRUSTED_PROXY_HOPS);
+
   app.use(helmet());
   app.use(cors({ origin: corsOrigins }));
   app.use(requestLogger);
 
   // The webhook route verifies a signature over the RAW request body, so it
   // MUST be mounted before the global JSON body parser.
-  app.use('/api/v1', createWebhookRouter());
+  app.use('/api/v1', createWebhookRouter({ gateway: deps.gateway }));
 
   app.use(express.json());
 

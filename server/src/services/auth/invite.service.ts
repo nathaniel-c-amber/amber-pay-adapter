@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import { emailService } from '../shared/email.service.js';
+import { humanizeTtl, renderInviteEmail } from '../shared/email/index.js';
 import {
   ConflictError,
   UnauthorizedError,
@@ -42,11 +43,16 @@ export interface InviteEmailSender {
 /** SMTP-backed sender — delivers the invite link via `emailService`. */
 export const inviteEmailSender: InviteEmailSender = {
   async sendInvite(email: string, token: string): Promise<void> {
-    await emailService.sendEmail({
-      to: email,
-      subject: 'Your Amber Pay invite',
-      text: `Accept your invite: ${env.APP_BASE_URL}/accept-invite?token=${token}`,
-    });
+    await emailService.sendTemplate(
+      email,
+      renderInviteEmail({
+        token,
+        baseUrl: env.APP_BASE_URL,
+        // Read from the same TTL that sets the invite's `expiresAt`, so the
+        // message cannot promise a lifetime the service does not honour.
+        expiresIn: humanizeTtl(env.INVITE_TTL),
+      }),
+    );
   },
 };
 

@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import { emailService } from '../shared/email.service.js';
+import { humanizeTtl, renderPasswordResetEmail } from '../shared/email/index.js';
 import { UnauthorizedError } from '../../utils/errors.js';
 import { parseDurationMs } from '../../utils/duration.js';
 import { assertStrongPassword, hashPassword } from '../../utils/passwords.js';
@@ -23,11 +24,14 @@ export interface PasswordResetEmailSender {
 /** SMTP-backed sender — delivers the reset link via `emailService`. */
 export const passwordResetEmailSender: PasswordResetEmailSender = {
   async send(email: string, token: string): Promise<void> {
-    await emailService.sendEmail({
-      to: email,
-      subject: 'Reset your Amber Pay password',
-      text: `Reset your password: ${env.APP_BASE_URL}/#/reset/${token}\n\nThis link expires shortly and can only be used once. If you did not request it, no action is needed — your password has not changed.`,
-    });
+    await emailService.sendTemplate(
+      email,
+      renderPasswordResetEmail({
+        token,
+        baseUrl: env.APP_BASE_URL,
+        expiresIn: humanizeTtl(env.PASSWORD_RESET_TTL),
+      }),
+    );
   },
 };
 
@@ -107,30 +111,45 @@ export class PasswordResetService {
   }
 
   /**
-   * Redeem a reset token: validate it, replace the password, and consume the
-   * token so the link cannot be replayed.
+   * Redeem a reset token: claim it, then replace the password.
+   *
+   * The token is CONSUMED FIRST, in one atomic statement, and only the caller
+   * that wins that claim is allowed to write a password. The previous order —
+   * read the token, check `usedAt`, hash the password (bcrypt cost 12, hundreds
+   * of milliseconds), then stamp `usedAt` — gave two concurrent requests the
+   * same verdict and let both write; the last writer took the account.
+   *
+   * A failed claim is then explained precisely. That read is safe because the
+   * caller has already lost; the message cannot be used to probe for live
+   * links, since a token is only ever known to its recipient.
    */
   async resetPassword(token: string, password: string): Promise<void> {
     assertStrongPassword(password);
-    const reset = await this.resets.findByTokenHash(hashToken(token));
-    if (!reset) {
-      throw new UnauthorizedError('Invalid or expired password reset token');
-    }
-    if (reset.usedAt) {
-      throw new UnauthorizedError('This password reset link has already been used');
-    }
-    if (new Date(reset.expiresAt).getTime() <= Date.now()) {
-      await this.resets.markUsed(reset.id, new Date().toISOString());
-      throw new UnauthorizedError('This password reset link has expired');
+    const tokenHash = hashToken(token);
+
+    const userId = await this.resets.consume(tokenHash, new Date().toISOString());
+    if (!userId) {
+      throw new UnauthorizedError(await this.unusableTokenReason(tokenHash));
     }
 
     const hashedPassword = await hashPassword(password);
-    const updated = await this.userStore.updatePassword(reset.userId, hashedPassword);
+    const updated = await this.userStore.updatePassword(userId, hashedPassword);
     if (!updated) {
       throw new UnauthorizedError('Account no longer exists');
     }
-    await this.resets.markUsed(reset.id, new Date().toISOString());
-    logger.info({ userId: reset.userId }, 'Password reset completed');
+    logger.info({ userId }, 'Password reset completed');
+  }
+
+  /** Why a token could not be claimed. Called only after a failed claim. */
+  private async unusableTokenReason(tokenHash: string): Promise<string> {
+    const reset = await this.resets.findByTokenHash(tokenHash);
+    if (!reset) {
+      return 'Invalid or expired password reset token';
+    }
+    if (reset.usedAt) {
+      return 'This password reset link has already been used';
+    }
+    return 'This password reset link has expired';
   }
 }
 

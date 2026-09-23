@@ -37,6 +37,7 @@ import { FlowSpine } from "@/components/FlowSpine";
 import { ServiceWindow } from "@/components/ServiceWindow";
 import { IconChevronRight, IconStageIngested } from "@/components/icons";
 import { navigate } from "@/router";
+import { T_ANCHOR } from "@/tour/anchors";
 
 const STALE_MS = 2 * 60_000;
 
@@ -90,7 +91,6 @@ const FLOW_NOTE: Record<"stage" | "bad" | "muted", string> = {
 export function OverviewPage({
   data,
   findings,
-  canAck,
   onAck,
   ackError,
   now,
@@ -106,7 +106,6 @@ export function OverviewPage({
    * Acknowledge look broken here while the chrome silently changed.
    */
   findings: Failure[];
-  canAck: boolean;
   onAck: (id: string) => void;
   ackError: string | null;
   /** A ticking clock owned by the shell, so ages and uptime stay live. */
@@ -156,7 +155,15 @@ export function OverviewPage({
         <div className="min-w-0 grow shrink basis-auto">
           <div className="flex flex-wrap items-center gap-3">
             <HealthBadge health={HEALTH_OF_FLOW[flowHealth]} live={flowHealth === "healthy"} />
-            <h2 className="text-3xl text-ink-1">{verdictTitle(flowHealth, stuckStages)}</h2>
+            {/*
+              The page's real `h1`. It was an `h2`, and the only `h1` came from
+              the shell's chrome title — which is display:none at >=720px — so
+              the console's DEFAULT route had no level-one heading at all on
+              desktop, and heading navigation reported nothing to land on
+              (SC 1.3.1 / 2.4.6). The verdict is already the largest thing on
+              the page, so it is also the honest choice of heading.
+            */}
+            <h1 className="text-3xl text-ink-1">{verdictTitle(flowHealth, stuckStages)}</h1>
           </div>
           <p className="mt-2 max-w-[68ch] text-md text-ink-2">{verdictLead(flowHealth, stuckStages, blindStages)}</p>
         </div>
@@ -192,7 +199,17 @@ export function OverviewPage({
 
       {/* 2 — the flow spine (the hero) */}
       {stages ? (
-        <section className="flex flex-col gap-3" aria-label="Payment flow">
+        /*
+          The tour's `flow` anchor. It sits on the branch that actually renders
+          the ledger, so when the server returns no stage aggregate the anchor is
+          simply ABSENT and the step is skipped — rather than spotlighting an
+          error state and describing it as the payment pipeline.
+        */
+        <section
+          className="flex flex-col gap-3"
+          aria-label="Payment flow"
+          data-tour={T_ANCHOR.flowSpine}
+        >
           <header className="flex flex-wrap items-baseline justify-between gap-4">
             <h2 className="text-xl text-ink-1">Payment flow</h2>
             <span className="mono text-xs uppercase tracking-label text-ink-3">
@@ -257,7 +274,6 @@ export function OverviewPage({
                 <FindingCard
                   key={f.id}
                   finding={f}
-                  canAck={canAck}
                   onAck={onAck}
                   onOpen={(id) => navigate("findings", id)}
                 />

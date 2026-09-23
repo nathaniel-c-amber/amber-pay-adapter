@@ -73,7 +73,7 @@ export function ConnectionsPage({
 
       {/* Scope note: the map is read-only under every scope that can reach it. */}
       <p className="mono mt-3 text-xs text-ink-3">
-        <IconPolicy /> Connection state is reported by the adaptors and cannot be edited from this
+        <span className="inline-block"><IconPolicy /></span> Connection state is reported by the adaptors and cannot be edited from this
         console.
       </p>
     </div>

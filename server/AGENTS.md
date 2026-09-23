@@ -27,6 +27,27 @@ the layers below it, never above it (`services` must not import `controllers`).
 - **Mount order matters**: `app.ts` mounts routers under `/api/v1`. The webhook
   router MUST be mounted BEFORE `express.json()`, because it verifies a signature
   over the raw request body.
+- **Email is templated with Handlebars in `services/shared/email/`**:
+  `messages/*.hbs` (copy) + `partials/*.hbs` (components) + `styles.ts` (every
+  declaration) + `theme.ts` (every value) + `engine.ts` (the Handlebars environment).
+  A sender reads `env` and calls
+  `emailService.sendTemplate(to, renderXEmail(props))` — `email/` reads no environment
+  and builds no transport, and nothing outside `email/` builds markup.
+  - **Every message needs both `messages/<name>.hbs` and `messages/<name>.text.hbs`**;
+    the engine refuses to start without the pair. Its name must also appear in
+    `SUBJECTS` (`templates.ts`), which owns the envelope.
+  - Templates own **no styling**: declarations come from named recipes via
+    `{{styleAttr 'name'}}` (a `SafeString`), so nothing can be double-escaped, and an
+    unknown recipe throws rather than rendering an unstyled element. Values come from
+    `{{token 'color.primary'}}`; a literal hex in a `.hbs` file fails a test.
+  - Font families in `theme.ts` are **single-quoted**: they are inlined into a
+    `style="…"` attribute, and a double quote would end it early, silently dropping
+    every declaration after it.
+  - The environment is `strict`, so a typo'd `{{headng}}` throws instead of rendering
+    nothing. Optional partial params still work via `{{#if}}` / `default`.
+  - `.hbs` files are not TypeScript, so `npm run build` copies them into `dist` via
+    `scripts/copy-email-templates.mjs` (the `copy-migrations.mjs` precedent). The
+    runtime image ships `dist` and no `src`.
 - **Tests are colocated** (`*.test.ts`); jest `roots` is `src` and `setupFiles` is
   `src/test/setup-env.cjs`.
 - **Privacy**: `models/domain.ts` documents the rule — no amounts, no currency, no

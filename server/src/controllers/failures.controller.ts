@@ -8,15 +8,31 @@ import type { PolicyAttribute } from '../types/auth.js';
  * Derive the organization ids the caller is authorized to ACK for the
  * dashboard scope, from the token policy (C1). Never trusts the request body
  * or query for the authorized set — the repository enforces org-scoping.
+ *
+ * Mirrors the canonical engine in `utils/pbac.ts`: a wildcard `scope` or
+ * `organizationId` matches, and the action must still be named explicitly
+ * (`admin` does not imply `ack`).
+ *
+ * Returns `null` for an unrestricted caller, which the repository reads as
+ * "no organization filter". The previous exact-match version returned `[]` for
+ * a super admin holding `{scope:'*', organizationId:'*'}`, so the
+ * highest-privilege account in the system could not acknowledge anything; and
+ * when the scope did match, a literal `'*'` organization was passed to
+ * `WHERE organization_id = ANY($3)`, where it matched no row.
  */
-function ackOrganizationIds(policy: PolicyAttribute[]): string[] {
-  return [
-    ...new Set(
-      policy
-        .filter((attribute) => attribute.scope === 'dashboard' && attribute.actions.includes('ack'))
-        .map((attribute) => attribute.organizationId),
-    ),
-  ];
+function ackOrganizationIds(policy: PolicyAttribute[]): string[] | null {
+  const grants = policy.filter(
+    (attribute) =>
+      (attribute.scope === 'dashboard' || attribute.scope === '*') &&
+      attribute.actions.includes('ack'),
+  );
+  if (grants.length === 0) {
+    return [];
+  }
+  if (grants.some((attribute) => attribute.organizationId === '*')) {
+    return null;
+  }
+  return [...new Set(grants.map((attribute) => attribute.organizationId))];
 }
 
 export interface FailuresControllerDeps {
@@ -43,7 +59,7 @@ export function createFailuresController(deps: FailuresControllerDeps): Failures
         throw new UnauthorizedError('Authentication required');
       }
       const organizationIds = ackOrganizationIds(req.auth.policy);
-      if (organizationIds.length === 0) {
+      if (organizationIds !== null && organizationIds.length === 0) {
         throw new ForbiddenError('No policy grants ack on scope dashboard');
       }
       const failureId = req.params.id;

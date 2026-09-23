@@ -11,6 +11,9 @@ import {
 import type { ColumnDef } from "@tanstack/react-table";
 import { EVENT_LABEL } from "@/types/domain";
 import type { EventType, Failure, LifecycleEvent } from "@/types/domain";
+import { Can } from "./Can";
+import { IconSortAsc, IconSortAscDesc, IconSortDesc } from "./icons";
+import { ABILITY } from "@/utils/permissions";
 import { cx } from "./ui";
 
 /* ------------------------------------------------------------------ */
@@ -64,25 +67,16 @@ const sortSeverity = constructSortFn({
 /* Shared header cell: rules the column with a native sort button.     */
 /* ------------------------------------------------------------------ */
 
-const SORT_GLYPH: Record<"asc" | "desc", string> = {
-  asc: "M8 11 L4.5 6 M8 11 L11.5 6",
-  desc: "M8 5 L4.5 10 M8 5 L11.5 10",
+const SORT_GLYPH: Record<"asc" | "desc", typeof IconSortAsc> = {
+  asc: IconSortAsc,
+  desc: IconSortDesc,
 };
-const SORT_GLYPH_HINT = "M8 8 L5 6.2 M8 8 L11 6.2 M8 8 L5 9.8 M8 8 L11 9.8";
-/* Glyph geometry, shared by both states. */
-const SORT_GLYPH_BASE =
-  "size-3 flex-none fill-none stroke-current [stroke-width:1.5] [stroke-linecap:round] [stroke-linejoin:round]";
 
 function SortGlyph({ dir }: { dir: false | "asc" | "desc" }) {
-  const d = dir === false ? SORT_GLYPH_HINT : SORT_GLYPH[dir];
-  /* The unsorted "hint" glyph is the faint ink; the sorted glyph inherits the
+  const Glyph = dir === false ? IconSortAscDesc : SORT_GLYPH[dir];
+  /* The unsorted "hint" pair is the faint ink; an active direction inherits the
      header's own ink. */
-  const cls = dir === false ? `${SORT_GLYPH_BASE} text-ink-3` : SORT_GLYPH_BASE;
-  return (
-    <svg className={cls} width={12} height={12} viewBox="0 0 16 16" role="img" aria-hidden>
-      <path d={d} />
-    </svg>
-  );
+  return <Glyph size={12} className={cx("flex-none", dir === false && "text-ink-3")} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,7 +208,25 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
           role="row"
         >
           {row.getAllCells().map((cell) => (
-            <Fragment key={cell.id}>{table.FlexRender({ cell })}</Fragment>
+            <Fragment key={cell.id}>
+              {/*
+                `role="cell"` is required, not decorative. The row declares
+                role="row" inside a role="table", and an ARIA row with no cells
+                is worse than a plain list: assistive tech announces a table and
+                then contradicts itself — column association is lost and
+                row/column navigation fails (SC 1.3.1, 4.1.2). FlexRender emits
+                a bare span, so the role has to be supplied here.
+
+                `contents` is equally load-bearing: the row is a 5-column grid,
+                so a wrapper that generated a box would become a grid ITEM and
+                collapse the layout. `display: contents` keeps the box out of
+                the layout while leaving the element in the DOM as a child of
+                the row, which is what ARIA ownership requires.
+              */}
+              <span role="cell" className="contents">
+                {table.FlexRender({ cell })}
+              </span>
+            </Fragment>
           ))}
         </div>
       ))}
@@ -250,10 +262,7 @@ const FINDING_BTN_ACK =
 const FINDING_BTN_DETAIL =
   `${FINDING_BTN} cursor-pointer border border-rule-enamel bg-transparent text-state-arriving hover:bg-midnight-3`;
 
-function buildFindingsColumns(
-  canAck: boolean,
-  onAck: (id: string) => void,
-): ColumnDef<any, Failure, unknown>[] {
+function buildFindingsColumns(onAck: (id: string) => void): ColumnDef<any, Failure, unknown>[] {
   return [
     {
       id: "severity",
@@ -319,9 +328,11 @@ function buildFindingsColumns(
         const id = info.row.original.id;
         return (
           <span className="flex flex-wrap items-center gap-1.5">
-            <button className={FINDING_BTN_ACK} disabled={!canAck} onClick={() => onAck(id)}>
-              Acknowledge
-            </button>
+            <Can ability={ABILITY.findingAck}>
+              <button className={FINDING_BTN_ACK} onClick={() => onAck(id)}>
+                Acknowledge
+              </button>
+            </Can>
             <button className={FINDING_BTN_DETAIL}>Open detail</button>
           </span>
         );
@@ -332,14 +343,12 @@ function buildFindingsColumns(
 
 export function FindingsTable({
   findings,
-  canAck,
   onAck,
 }: {
   findings: Failure[];
-  canAck: boolean;
   onAck: (id: string) => void;
 }) {
-  const columns = useMemo(() => buildFindingsColumns(canAck, onAck), [canAck, onAck]);
+  const columns = useMemo(() => buildFindingsColumns(onAck), [onAck]);
   const table = useTable({
     key: "findings",
     features,
@@ -408,9 +417,11 @@ export function FindingsTable({
                 <span className="max-w-[46ch] text-xs leading-snug text-ink-2">{f.detail}</span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
-                <button className={FINDING_BTN_ACK} disabled={!canAck} onClick={() => onAck(f.id)}>
-                  Acknowledge
-                </button>
+                <Can ability={ABILITY.findingAck}>
+                  <button className={FINDING_BTN_ACK} onClick={() => onAck(f.id)}>
+                    Acknowledge
+                  </button>
+                </Can>
                 <button className={FINDING_BTN_DETAIL}>Open detail</button>
               </div>
             </div>

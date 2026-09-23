@@ -1,4 +1,5 @@
 import request from 'supertest';
+import { createHash } from 'node:crypto';
 import { createApp } from '../app.js';
 import { UserStore } from '../services/auth/user.service.js';
 import { InviteService } from '../services/auth/invite.service.js';
@@ -30,6 +31,17 @@ const operatorPolicy: PolicyAttribute[] = [
 ];
 
 /**
+ * A policy `adminPolicy` is allowed to hand out.
+ *
+ * `assertGrantableByAdmin` requires the same scope AND an action subset, so an
+ * admin scoped to `users` cannot invite anyone to `dashboard` — reusing
+ * `operatorPolicy` here would make every invite in this suite a silent 403.
+ */
+const grantablePolicy: PolicyAttribute[] = [
+  { scope: 'users', organizationId: 'org-1', actions: ['admin'] },
+];
+
+/**
  * A syntactically valid bcrypt digest that matches nothing.
  *
  * Most cases here only need an account to EXIST — they exercise the directory
@@ -43,6 +55,7 @@ const UNUSABLE_HASH = '$2a$12$00000000000000000000000000000000000000000000000000
 interface Harness {
   app: ReturnType<typeof createApp>;
   userStore: UserStore;
+  inviteRepository: InMemoryInviteRepository;
   resets: Array<{ email: string; token: string }>;
   invites: Array<{ email: string; token: string }>;
   codes: Array<{ email: string; code: string }>;
@@ -85,7 +98,7 @@ function buildHarness(): Harness {
     users: { usersService },
   });
 
-  return { app, userStore, resets, invites, codes };
+  return { app, userStore, inviteRepository, resets, invites, codes };
 }
 
 /**
@@ -329,6 +342,128 @@ describe('POST /users/:id/resend-invite', () => {
       .post('/api/v1/auth/accept-invite')
       .send({ token: firstToken, password: 'BrandNewPass2!' });
     expect(stale.status).not.toBe(200);
+  });
+});
+
+describe('GET /auth/invite/:token', () => {
+  /* The accept page reads the invite before rendering the password form, so it
+     can name the invitee and state what the invite grants. These cases pin the
+     two properties that make that safe: it tells the truth, and it is read-only. */
+  it('returns the invited address and granted policy without consuming the invite', async () => {
+    const { app, userStore, invites } = buildHarness();
+    const { token: adminToken } = await seedUser(userStore, 'admin@example.com', adminPolicy);
+
+    const created = await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: grantablePolicy,
+      });
+    expect(created.status).toBe(201);
+    const inviteToken = invites[0]?.token ?? '';
+
+    const res = await request(app).get(`/api/v1/auth/invite/${inviteToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.invite.email).toBe('invitee@example.com');
+    expect(res.body.invite.policyAttributes).toEqual(grantablePolicy);
+    expect(typeof res.body.invite.expiresAt).toBe('string');
+
+    // Reading is not accepting: the same link still creates the account, which
+    // is what makes a page reload safe.
+    const accepted = await request(app)
+      .post('/api/v1/auth/accept-invite')
+      .send({ token: inviteToken, password: 'BrandNewPass2!' });
+    expect(accepted.status).toBe(200);
+  });
+
+  it('exposes no token material, invite id or timestamps', async () => {
+    const { app, userStore, invites } = buildHarness();
+    const { token: adminToken } = await seedUser(userStore, 'admin@example.com', adminPolicy);
+    await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: grantablePolicy,
+      });
+    const inviteToken = invites[0]?.token ?? '';
+
+    const res = await request(app).get(`/api/v1/auth/invite/${inviteToken}`);
+    expect(Object.keys(res.body.invite).sort()).toEqual([
+      'email',
+      'expiresAt',
+      'policyAttributes',
+    ]);
+    // The raw token is the credential that was just used to reach this endpoint
+    // — echoing it, or its hash, would put it in a response body, a log and a
+    // browser cache for no benefit.
+    expect(JSON.stringify(res.body)).not.toContain(inviteToken);
+    expect(res.body.invite.tokenHash).toBeUndefined();
+    expect(res.body.invite.id).toBeUndefined();
+  });
+
+  it('refuses an unknown token (401)', async () => {
+    const { app } = buildHarness();
+    const res = await request(app).get('/api/v1/auth/invite/not-a-real-token');
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses an expired invite (401)', async () => {
+    const { app, inviteRepository } = buildHarness();
+    const expired = 'expired-token-value';
+    await inviteRepository.create({
+      id: 'invite-expired',
+      email: 'late@example.com',
+      policyAttributes: grantablePolicy,
+      tokenHash: createHash('sha256').update(expired).digest('hex'),
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+
+    const res = await request(app).get(`/api/v1/auth/invite/${expired}`);
+    expect(res.status).toBe(401);
+    expect(res.body.error.message).toMatch(/expired/i);
+  });
+
+  it('refuses an invite that has already been accepted (409)', async () => {
+    const { app, userStore, invites } = buildHarness();
+    const { token: adminToken } = await seedUser(userStore, 'admin@example.com', adminPolicy);
+    await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: grantablePolicy,
+      });
+    const inviteToken = invites[0]?.token ?? '';
+
+    await request(app)
+      .post('/api/v1/auth/accept-invite')
+      .send({ token: inviteToken, password: 'BrandNewPass2!' });
+
+    const res = await request(app).get(`/api/v1/auth/invite/${inviteToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toMatch(/already been accepted/i);
+  });
+
+  it('needs no session — the invitee has no account yet', async () => {
+    const { app, userStore, invites } = buildHarness();
+    const { token: adminToken } = await seedUser(userStore, 'admin@example.com', adminPolicy);
+    await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        email: 'invitee@example.com',
+        organizationId: 'org-1',
+        policyAttributes: grantablePolicy,
+      });
+
+    const res = await request(app).get(`/api/v1/auth/invite/${invites[0]?.token ?? ''}`);
+    expect(res.status).toBe(200);
   });
 });
 

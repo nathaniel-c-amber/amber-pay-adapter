@@ -8,8 +8,10 @@ import { useState } from "react";
 import type { Connector, Failure, LifecycleEvent, PolicyScope } from "@/types/domain";
 import { HEALTH_OF } from "@/utils/vocabulary";
 import { BTN, BTN_PRIMARY, Card, cx, EmptyState, FindingCard, HealthBadge, LINK_BTN, PageHeader, SearchBox, SeverityBadge } from "@/components/ui";
+import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { IconChevronRight, IconPolicy } from "@/components/icons";
+import { ABILITY } from "@/utils/permissions";
 import { navigate } from "@/router";
 
 type Filter = "all" | "critical" | "attention";
@@ -26,14 +28,12 @@ const FILTER_OFF = "font-medium text-ink-2";
 export function FindingsPage({
   findings,
   connectors,
-  canAck,
   onAck,
   ackError,
   activePolicy,
 }: {
   findings: Failure[];
   connectors: Connector[];
-  canAck: boolean;
   onAck: (id: string) => void;
   ackError: string | null;
   activePolicy: PolicyScope | null;
@@ -119,7 +119,6 @@ export function FindingsPage({
               <div className="flex flex-col gap-2" key={f.id}>
                 <FindingCard
                   finding={f}
-                  canAck={canAck}
                   onAck={onAck}
                   onOpen={(id) => navigate("findings", id)}
                 />
@@ -151,14 +150,12 @@ export function FindingDetailPage({
   finding,
   connectors,
   events,
-  canAck,
   onAck,
   ackError,
 }: {
   finding: Failure | undefined;
   connectors: Connector[];
   events: LifecycleEvent[];
-  canAck: boolean;
   onAck: (id: string) => void;
   ackError: string | null;
 }) {
@@ -251,27 +248,28 @@ export function FindingDetailPage({
       <Card
         title="Actions"
         className="fd-actions"
-        meta={canAck ? undefined : "read-only scope"}
+        meta={<Can ability={ABILITY.findingAck} fallback="read-only scope" />}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className={BTN_PRIMARY}
-            disabled={!canAck}
-            onClick={() => onAck(finding.id)}
-            title={canAck ? "Acknowledge this finding" : "Requires the ack action on the dashboard scope"}
-          >
-            Acknowledge
-          </button>
+          <Can ability={ABILITY.findingAck}>
+            <button
+              type="button"
+              className={BTN_PRIMARY}
+              onClick={() => onAck(finding.id)}
+              title="Acknowledge this finding"
+            >
+              Acknowledge
+            </button>
+          </Can>
           <button type="button" className={BTN} onClick={() => navigate("events")}>
             View event log
           </button>
         </div>
-        {!canAck && (
+        <Cannot ability={ABILITY.findingAck}>
           <p className="mono mt-3 text-xs text-ink-3">
             Acknowledging requires the <code>ack</code> action on the dashboard scope.
           </p>
-        )}
+        </Cannot>
         {ackError && <div className="mt-3 text-sm text-text-suspended" role="alert">{ackError}</div>}
       </Card>
 

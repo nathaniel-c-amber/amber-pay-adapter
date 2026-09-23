@@ -1,0 +1,48 @@
+{{!--
+  shell — the document frame: ground, centred card, wordmark, content, footer.
+
+  Block partial:
+    {{#> shell preheader='Inbox preview line.' title='Document title'}}
+      …components…
+    {{/shell}}
+
+  `preheader` is required; `title` falls back to it. Both are copy, so both come
+  from the message. The footer is not configurable — one system statement, one
+  "replies are not monitored" line, in every message.
+--}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{{!-- The console is dark-first; ask clients not to invert it. --}}
+<meta name="color-scheme" content="dark only">
+<meta name="supported-color-schemes" content="dark only">
+<title>{{default title preheader}}</title>
+<style>
+/* Only what inline styles cannot express: the preheader is hidden (the inline
+   copy of this rule covers clients that strip <style>) and the card stacks. */
+.email-preheader{display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;}
+@media only screen and (max-width:{{token 'layout.stackAt'}}){
+.email-card{width:100%!important;max-width:100%!important;}
+.email-pad{padding-left:20px!important;padding-right:20px!important;}
+}
+</style>
+</head>
+<body{{styleAttr 'shell.body'}}>
+<div class="email-preheader"{{styleAttr 'shell.preheader'}}>{{preheader}}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'shell.ground'}}>
+  <tr><td align="center"{{styleAttr 'shell.groundCell'}}>
+    <table role="presentation" width="{{token 'layout.cardWidth'}}" class="email-card" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'shell.card'}}>
+      <tr><td class="email-pad"{{styleAttr 'shell.cardCell'}}>
+        {{> brand-bar}}
+        {{> @partial-block}}
+      </td></tr>
+    </table>
+    <table role="presentation" width="{{token 'layout.cardWidth'}}" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'shell.footerTable'}}>
+      <tr><td{{styleAttr 'shell.footerCell'}}>{{token 'brand.system'}} &middot; automated message, replies are not monitored.</td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>

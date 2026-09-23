@@ -1,0 +1,16 @@
+{{!--
+  fallback-link — the "or paste this link" escape hatch.
+
+    {{> fallback-link href=url}}
+    {{> fallback-link href=url note='…'}}
+
+  `href` (required), `note` (optional, defaulted below).
+
+  A button is a table, and some clients strip the anchor's `href`, so the raw URL
+  is always printed as well. It is mono on ink-3: supporting information that must
+  not compete with the action.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'fallback.table'}}>
+  <tr><td{{styleAttr 'fallback.label'}}>{{default note 'Button not working? Paste this link into your browser:'}}</td></tr>
+  <tr><td{{styleAttr 'fallback.value'}}>{{> link href=href label=href}}</td></tr>
+</table>

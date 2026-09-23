@@ -25,8 +25,10 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  ArrowUpDown,
   BadgeCheck,
   Bell,
+  BookText,
   Boxes,
   Cable,
   ChevronDown,
@@ -90,6 +92,17 @@ function icon(Glyph: ComponentType<LucideProps>): ComponentType<IconProps> {
   return Wrapped;
 }
 
+/* -------------------------------------------------------------- brand */
+/**
+ * The product mark: an open accounting book.
+ *
+ * It replaces the abstract amber dot that used to fill the logo plates. A dot
+ * said nothing about what this console is; the ledger names the thing the whole
+ * product exists to keep reconciled. One glyph, so the console and the
+ * unauthenticated surface cannot drift apart.
+ */
+export const IconLedger = icon(BookText);
+
 /* ---------------------------------------------------------------- nav */
 export const IconOverview = icon(Gauge);
 export const IconConnections = icon(Cable);
@@ -124,6 +137,13 @@ export const IconDeltaUp = icon(ArrowUp);
 export const IconDeltaDown = icon(ArrowDown);
 export const IconDeltaFlat = icon(Minus);
 export const IconTrending = icon(TrendingUp);
+
+/* -------------------------------------------------------------- sort */
+/* One glyph per sorting state: a single arrow for the active direction and
+   the paired arrow for a sortable-but-unsorted column. */
+export const IconSortAsc = icon(ArrowUp);
+export const IconSortDesc = icon(ArrowDown);
+export const IconSortAscDesc = icon(ArrowUpDown);
 
 /* ------------------------------------------------------------- state */
 export const IconHealthy = icon(CircleCheck);

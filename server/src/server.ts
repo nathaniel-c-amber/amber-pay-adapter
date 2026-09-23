@@ -5,6 +5,7 @@ import { getRepositories, isDatabaseConfigured } from './repositories/index.js';
 import { runMigrations } from './db/migrator.js';
 import { seedSuperAdmin } from './db/seed.js';
 import { closePool } from './db/pool.js';
+import { connectConfiguredAdaptors } from './services/adaptors/health.service.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -31,6 +32,14 @@ async function start(): Promise<void> {
   const server = app.listen(env.PORT, () => {
     logger.info(`Server listening on port ${env.PORT} (${env.NODE_ENV})`);
   });
+
+  /*
+    Establish the accounting connections, without blocking startup and without
+    taking the API down if an upstream is unreachable: the console's whole job
+    is to report on that link, so it must be able to serve while the link is
+    broken. Each adaptor logs its own outcome (see `connectConfiguredAdaptors`).
+  */
+  void connectConfiguredAdaptors();
 
   function shutdown(signal: string): void {
     logger.info(`Received ${signal}, shutting down gracefully...`);

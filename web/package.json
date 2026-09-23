@@ -1,5 +1,5 @@
 {
-  "name": "amber-pay-monitor",
+  "name": "amber-pay-ledger",
   "private": true,
   "version": "0.1.0",
   "type": "module",

@@ -1,0 +1,11 @@
+{{!--
+  heading — the message's verdict, and the largest thing in it, exactly as the
+  verdict is the largest thing on a console page.
+
+    {{> heading text='You have been invited'}}
+
+  `text` (required).
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'heading.table'}}>
+  <tr><td{{styleAttr 'heading.cell'}}>{{text}}</td></tr>
+</table>

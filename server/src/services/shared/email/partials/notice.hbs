@@ -1,0 +1,17 @@
+{{!--
+  notice — a note qualifying the message ("if you did not request this…").
+
+    {{> notice tone='warn' label='Did not request this?' text='…'}}
+
+  `label`, `text` (required); `tone` is `info` | `warn` | `danger`, defaulting to
+  `info`. The tone selects the severity ink for the rule and the label.
+
+  Tone is carried by the label plus a 1px border, per DESIGN.md: a coloured rail
+  wider than 1px is explicitly a don't, and colour alone may never mark a state.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'notice.table'}}>
+  <tr><td{{styleAttr (concat 'notice.border.' (default tone 'info'))}}>
+    <div{{styleAttr (concat 'notice.label.' (default tone 'info'))}}>{{label}}</div>
+    <div{{styleAttr 'notice.text'}}>{{text}}</div>
+  </td></tr>
+</table>

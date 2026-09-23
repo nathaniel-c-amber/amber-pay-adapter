@@ -1,0 +1,20 @@
+{{!--
+  two-factor — sent during sign-in, before any session exists.
+
+  The code is the whole message, so it is rendered as the largest element. No link
+  anywhere: a code is not a click-through, and a one-tap link in a mail that arrives
+  unauthenticated is exactly what an attacker would want.
+
+  Context: code, expiresIn
+--}}
+{{#> shell preheader=(concat 'Your verification code expires in ' expiresIn '.') title='Your Amber Pay Ledger verification code'}}
+  {{> eyebrow text='Verification'}}
+  {{> heading text='Your verification code'}}
+  {{> paragraph text='Enter this code to finish signing in.'}}
+  {{> code value=code caption=(concat 'Expires in ' expiresIn)}}
+  {{#> facts}}
+    {{> facts-row label='Code expires' value=expiresIn}}
+    {{> facts-row label='Single use' value='One sign-in'}}
+  {{/facts}}
+  {{> notice tone='danger' label='Never share this code' text='Amber Pay Ledger staff will never ask you for a verification code. Anyone who does is attempting to take over the account.'}}
+{{/shell}}

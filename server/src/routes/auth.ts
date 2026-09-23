@@ -18,10 +18,35 @@ const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_LIMIT_MAX = 10;
 const TWO_FACTOR_RATE_LIMIT_MAX = 10;
 const ACCEPT_INVITE_RATE_LIMIT_MAX = 5;
+// Reading an invite is cheap, non-destructive and happens on every page load,
+// so it gets its own, looser budget: sharing accept-invite's five would let an
+// invitee lock themselves out of accepting by refreshing the page.
+const READ_INVITE_RATE_LIMIT_MAX = 60;
 // A reset request sends mail to a third party, so it is throttled per address:
 // without this the endpoint is a free amplifier for mailing a stranger.
 const FORGOT_PASSWORD_RATE_LIMIT_MAX = 5;
 const RESET_PASSWORD_RATE_LIMIT_MAX = 10;
+// Stamping the first-run tour is idempotent and writes one column, so the only
+// thing worth stopping is a hot loop. A real user reaches it once, or twice if
+// they replay from Profile.
+const TOUR_RATE_LIMIT_MAX = 20;
+// Per-IP ceilings. Deliberately LOOSER than the per-address caps above: an
+// office behind one NAT legitimately holds several sessions, so a tight per-IP
+// budget would lock out real users before it inconvenienced an attacker. The
+// pair is what works — the per-address cap stops a targeted lockout, the
+// per-IP cap stops the same host trying every address in turn.
+const LOGIN_IP_RATE_LIMIT_MAX = 50;
+const FORGOT_PASSWORD_IP_RATE_LIMIT_MAX = 20;
+
+/** Key a limiter on the request's email field, with a shared fallback bucket. */
+function emailKey(prefix: string) {
+  return (req: express.Request): string => {
+    const body = req.body as { email?: unknown } | undefined;
+    return typeof body?.email === 'string'
+      ? `${prefix}:${body.email.toLowerCase()}`
+      : `${prefix}:anonymous`;
+  };
+}
 
 function rateLimitHandler(_req: express.Request, res: express.Response): void {
   const { status, body } = toHttpError(new TooManyRequestsError());
@@ -51,19 +76,23 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
   });
   const router = express.Router();
 
-  const loginLimiter = rateLimit({
+  const loginEmailLimiter = rateLimit({
     windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
     max: LOGIN_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     handler: rateLimitHandler,
-    // Per-email throttling (fallback bucket for malformed/absent email).
-    keyGenerator: (req) => {
-      const body = req.body as { email?: unknown } | undefined;
-      return typeof body?.email === 'string'
-        ? `login:${body.email.toLowerCase()}`
-        : 'login:anonymous';
-    },
+    keyGenerator: emailKey('login'),
+  });
+
+  const loginIpLimiter = rateLimit({
+    windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+    max: LOGIN_IP_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
+    // Default keying on `req.ip`, which is only the real client because
+    // `app.set('trust proxy', TRUSTED_PROXY_HOPS)` is configured.
   });
 
   const twoFactorLimiter = rateLimit({
@@ -82,23 +111,42 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
     handler: rateLimitHandler,
   });
 
+  const readInviteLimiter = rateLimit({
+    windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+    max: READ_INVITE_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
+  });
+
   const forgotPasswordLimiter = rateLimit({
     windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
     max: FORGOT_PASSWORD_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     handler: rateLimitHandler,
-    keyGenerator: (req) => {
-      const body = req.body as { email?: unknown } | undefined;
-      return typeof body?.email === 'string'
-        ? `forgot:${body.email.toLowerCase()}`
-        : `forgot:${req.ip ?? 'anonymous'}`;
-    },
+    keyGenerator: emailKey('forgot'),
+  });
+
+  const forgotPasswordIpLimiter = rateLimit({
+    windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+    max: FORGOT_PASSWORD_IP_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
   });
 
   const resetPasswordLimiter = rateLimit({
     windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
     max: RESET_PASSWORD_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
+  });
+
+  const tourLimiter = rateLimit({
+    windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
+    max: TOUR_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     handler: rateLimitHandler,
@@ -118,8 +166,14 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
   // POST /api/v1/auth/accept-invite — public (token-gated). Only user-creation path.
   router.post('/auth/accept-invite', acceptInviteLimiter, controller.acceptInvite);
 
+  // GET /api/v1/auth/invite/:token — public (token-gated). Lets the accept page
+  // describe the invite before the password is set. Never consumes the invite.
+  router.get('/auth/invite/:token', readInviteLimiter, controller.getInvite);
+
   // POST /api/v1/auth/login — public. Password step only; 2FA still required.
-  router.post('/auth/login', loginLimiter, controller.login);
+  // Per-IP first: a host spraying many addresses must be stopped before the
+  // per-address bucket (which each new address would reset) is consulted.
+  router.post('/auth/login', loginIpLimiter, loginEmailLimiter, controller.login);
 
   // POST /api/v1/auth/2fa/verify — public. Verifies the code and issues a token.
   router.post('/auth/2fa/verify', twoFactorLimiter, controller.verifyTwoFactor);
@@ -127,8 +181,19 @@ export function createAuthRouter(deps: AuthRouteDeps = {}): express.Router {
   // GET /api/v1/auth/me — the caller's own identity and granted policy.
   router.get('/auth/me', requireAuth, controller.me);
 
+  // POST /api/v1/auth/me/tour-complete — stamp the caller's OWN first-run tour
+  // as seen. requireAuth only: this is deliberately NOT admin-gated, because
+  // every user owns their own tour state. Idempotent, so it answers 204 on a
+  // repeat as well as a first call.
+  router.post('/auth/me/tour-complete', requireAuth, tourLimiter, controller.completeTour);
+
   // POST /api/v1/auth/forgot-password — public. Always 202 (no enumeration).
-  router.post('/auth/forgot-password', forgotPasswordLimiter, controller.forgotPassword);
+  router.post(
+    '/auth/forgot-password',
+    forgotPasswordIpLimiter,
+    forgotPasswordLimiter,
+    controller.forgotPassword,
+  );
 
   // POST /api/v1/auth/reset-password — public, token-gated, single use.
   router.post('/auth/reset-password', resetPasswordLimiter, controller.resetPassword);

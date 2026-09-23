@@ -1,4 +1,4 @@
-# Amber Linked — Connector Monitor
+# Amber Pay Ledger — Payment Monitor & Reconciler
 
 Operational monitoring for the Amber Pay gateway and its accounting adaptors
 (QuickBooks, Sage). Backend API + monitoring dashboard.
@@ -44,7 +44,7 @@ Services and ports:
 | Service | Port (host) | Notes                                 |
 | --------- | ------------- | --------------------------------------- |
 | `web`   | `8080`      | Frontend SPA (nginx)                  |
-| `api`   | `3000`      | Backend API (`/health`, `/api/v1/*`)  |
+| `api`   | `3300`      | Backend API (`/health`, `/api/v1/*`)  |
 | `db`    | `5432`      | PostgreSQL 16 (internal to the stack) |
 
 The `api` service runs migrations on startup and waits for `db` to be healthy.
@@ -97,6 +97,24 @@ Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SMTP_*`, `APP_BASE_URL`.
 For internet testing, `NGROK_AUTHTOKEN` and (optionally) `NGROK_DOMAIN`.
 See `.env.example` for the full list. **Never commit real secrets.**
 
+### Connecting QuickBooks
+
+`QUICKBOOKS_CLIENT_ID` / `_SECRET` identify the app; they do **not** authorize a
+call. QuickBooks needs a bearer token, so set one of:
+
+- `QUICKBOOKS_ACCESS_TOKEN` — used as-is (Intuit issues these for ~1 hour), or
+- `QUICKBOOKS_REFRESH_TOKEN` — exchanged at Intuit's token endpoint on connect,
+  and re-exchanged automatically when an access token expires mid-run.
+
+Also set `QUICKBOOKS_REALM_ID` (the company id) and, for a sandbox company,
+`QUICKBOOKS_BASE_URL=https://sandbox-quickbooks.api.intuit.com`.
+
+The API connects every configured adaptor at startup and logs one line per
+adaptor — check it with `docker compose logs api | grep -i adaptor`. The console's
+**Backend service** panel reports the same state, and when an adaptor cannot
+connect it states the reason (missing credentials vs. missing grant vs. an
+upstream status) rather than a bare "not connected".
+
 ## Development (without Docker)
 
 Backend:
@@ -105,7 +123,7 @@ Backend:
 cd server
 cp .env.example .env   # set DATABASE_URL, JWT_SECRET, etc.
 npm install
-npm run dev            # tsx watch, port 3000
+npm run dev            # tsx watch, port 3300
 ```
 
 Frontend:
@@ -129,7 +147,7 @@ npm run build
   gate (email + password + email 2FA), then polls `/api/v1/dashboard/metrics`
   every 15s for live connector states, lifecycle events, and findings.
   Acknowledging a finding persists via `POST /api/v1/failures/:id/acknowledge`.
-- In development, the Vite server proxies `/api` to the backend at `:3000`; in
+- In development, the Vite server proxies `/api` to the backend at `:3300`; in
   the Docker stack, nginx proxies `/api` to the `api` service.
 - Backend tests run without a live DB (in-memory repositories); Postgres
   integration tests are skipped unless a real `DATABASE_URL` is configured.

@@ -1,0 +1,9 @@
+{{!--
+  brand-bar — the wordmark row: the product, the surface, a hairline under it.
+
+  It is a header, not a hero: it names where the message came from and never
+  outranks the message heading below it. No parameters.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'brandBar.table'}}>
+  <tr><td{{styleAttr 'brandBar.cell'}}>{{token 'brand.name'}}<span{{styleAttr 'brandBar.separator'}}> / </span>{{token 'brand.surface'}}</td></tr>
+</table>

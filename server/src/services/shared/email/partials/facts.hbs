@@ -1,0 +1,16 @@
+{{!--
+  facts — a definition list in the console's readout grammar: one hairline per row,
+  uppercase mono label on ink-3, value in tabular mono on ink-1.
+
+  Block partial; rows are `facts-row` calls:
+
+    {{#> facts}}
+      {{> facts-row label='Link expires' value=expiresIn}}
+    {{/facts}}
+
+  Use it for the facts a recipient needs in order to trust the message — what the
+  credential is for, when it expires — not as a general-purpose layout.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'facts.table'}}>
+{{> @partial-block}}
+</table>

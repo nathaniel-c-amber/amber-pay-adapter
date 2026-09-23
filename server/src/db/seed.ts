@@ -54,7 +54,15 @@ export async function seedSuperAdmin(
   assertStrongPassword(password);
   const hashedPassword = await hashPassword(password);
   try {
-    await repositories.users.create(email, hashedPassword, SUPER_ADMIN_POLICY_ATTRIBUTES);
+    const created = await repositories.users.create(
+      email,
+      hashedPassword,
+      SUPER_ADMIN_POLICY_ATTRIBUTES,
+    );
+    // The installer has already seen this console, so stamp the tour as done
+    // rather than walking them through it on first sign-in. Accounts created by
+    // INVITATION deliberately start unstamped — that is who the tour is for.
+    await repositories.users.markTourCompleted(created.id, new Date().toISOString());
   } catch (err) {
     // A concurrent instance may have created the user between our check and
     // the create. Treat that as "already exists" instead of crashing startup.

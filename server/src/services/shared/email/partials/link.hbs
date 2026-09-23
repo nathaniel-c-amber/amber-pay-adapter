@@ -1,0 +1,9 @@
+{{!--
+  link — an inline reference (a URL, a case number) in the text-safe amber.
+
+    {{> link href=url label=url}}
+
+  `href`, `label` (required). The ink is `primaryInk`, the same value the console
+  uses for its focus ring.
+--}}
+<a href="{{href}}"{{styleAttr 'link.anchor'}}>{{label}}</a>

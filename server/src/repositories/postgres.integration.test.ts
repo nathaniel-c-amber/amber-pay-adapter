@@ -177,13 +177,16 @@ runTests('Postgres repositories integration', () => {
     expect(acked?.acknowledgedAt).toBe('2026-01-03T00:00:00.000Z');
   });
 
-  it('two-phase dedup: failed webhooks stay retryable, successful ones dedup (M2)', async () => {
+  it('dedup: a claimed id is never claimable twice, and a processed one stays claimed (M2)', async () => {
     const dedup = repos.webhookDedup;
-    await dedup.markProcessing('wh-fail', '2026-01-01T00:00:00.000Z');
-    // Not processed yet -> retryable.
-    await expect(dedup.hasProcessed('wh-fail')).resolves.toBe(false);
 
-    await dedup.markProcessed('wh-ok', '2026-01-01T00:00:00.000Z');
-    await expect(dedup.hasProcessed('wh-ok')).resolves.toBe(true);
+    await expect(dedup.claim('wh-fail', '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
+    // Claimed but never marked processed -> still a duplicate on re-delivery,
+    // so a retry cannot double-process it.
+    await expect(dedup.claim('wh-fail', '2026-01-01T00:00:01.000Z')).resolves.toBe(false);
+
+    await expect(dedup.claim('wh-ok', '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
+    await dedup.markProcessed('wh-ok', '2026-01-01T00:00:02.000Z');
+    await expect(dedup.claim('wh-ok', '2026-01-01T00:00:03.000Z')).resolves.toBe(false);
   });
 });

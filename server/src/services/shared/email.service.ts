@@ -2,11 +2,19 @@ import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
+import type { RenderedEmail } from './email/templates.js';
 
 export interface EmailMessage {
   to: string;
   subject: string;
   text: string;
+  /**
+   * HTML body. Always sent alongside `text`, never instead of it: a plain-text
+   * part is the deliverability and accessibility fallback, and clients that
+   * cannot render the markup still need the link or the code. Templates in
+   * `./email/` emit both from the same props.
+   */
+  html?: string;
 }
 
 export interface SmtpConfig {
@@ -35,6 +43,10 @@ function defaultSmtpConfig(): SmtpConfig {
  * transporter is created; otherwise delivery is stubbed (logged, never the
  * body/code/token). Email delivery NEVER throws — SMTP errors are caught and
  * logged so auth is never blocked or crashed by email.
+ *
+ * Message copy and styling live in `./email/` as composable components and
+ * templates; this class only addresses the envelope. `sendEmail` remains the
+ * raw escape hatch.
  */
 export class EmailService {
   private readonly transporter: Transporter | null;
@@ -72,10 +84,27 @@ export class EmailService {
         to: message.to,
         subject: message.subject,
         text: message.text,
+        // Omitted rather than `undefined` so the outgoing message is identical
+        // to what it was before HTML was supported.
+        ...(message.html ? { html: message.html } : {}),
       });
     } catch (err) {
       logger.error({ err, to: message.to }, 'Failed to send email');
     }
+  }
+
+  /**
+   * Deliver a rendered template (`./email/templates.ts`). The template owns the
+   * copy and the styling; this method only addresses the envelope, so a new
+   * message never needs a new send path.
+   */
+  async sendTemplate(to: string, email: RenderedEmail): Promise<void> {
+    await this.sendEmail({
+      to,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+    });
   }
 }
 

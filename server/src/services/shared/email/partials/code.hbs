@@ -1,0 +1,15 @@
+{{!--
+  code — a one-time code as a readout on a raised plate.
+
+    {{> code value=code caption=(concat 'Expires in ' expiresIn)}}
+
+  `value`, `caption` (both required).
+
+  Mono, tabular, wide tracking, ink-1 — the same readout grammar as the console.
+  It is the largest element in its message for the obvious reason: it is the whole
+  point of the message.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'code.table'}}>
+  <tr><td{{styleAttr 'code.plate'}}>{{value}}</td></tr>
+  {{#if caption}}<tr><td{{styleAttr 'code.caption'}}>{{caption}}</td></tr>{{/if}}
+</table>

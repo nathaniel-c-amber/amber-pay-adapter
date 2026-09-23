@@ -37,6 +37,13 @@ export interface User {
   id: UserId;
   email: string;
   hashedPassword: string;
+  /**
+   * When the first-run guided tour was finished or explicitly skipped (ISO
+   * 8601), or `null` when it has not been offered yet. The console offers the
+   * tour once to an account that carries no stamp; Profile can replay it
+   * regardless. Operational metadata only — never PII, never financial data.
+   */
+  tourCompletedAt: string | null;
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
 }
@@ -109,7 +116,8 @@ export type LifecycleEventType =
   | 'sync-change'
   | 'webhook-received'
   | 'payment-declined'
-  | 'payment-failed';
+  | 'payment-failed'
+  | 'payment-refunded';
 
 export type LifecycleChannel = 'payment' | 'accounting' | 'webhook' | 'system';
 

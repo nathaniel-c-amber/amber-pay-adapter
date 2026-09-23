@@ -1,4 +1,4 @@
-/* Synthetic demonstration fixtures for the Amber Pay monitor redesign.
+/* Synthetic demonstration fixtures for the Amber Pay Ledger console.
    These stand in for live API data on surfaces that have no endpoint yet
    (users, system config, profile) or when the backend is not reachable.
 
@@ -15,6 +15,25 @@ import {
 import type { PolicyScope } from "@/types/domain";
 import type { ApiServiceStatus, ApiStageFlowSummary } from "@/types/api";
 import type { MappedMetrics } from "@/services/map.service";
+
+/**
+ * Is demo mode available at all?
+ *
+ * Vite compiles this from NODE_ENV at build time: `true` under `vite dev`
+ * (NODE_ENV=development), `false` in `vite build` (NODE_ENV=production), which
+ * is the mode every container ships. Synthetic figures and the "Explore with
+ * demo data" door therefore exist in development only.
+ *
+ * There is deliberately ONE switch and it is the build mode. A runtime toggle —
+ * a query parameter, a localStorage key, an env var read at boot — would let a
+ * deployed console be talked into presenting fabricated figures as live
+ * monitoring, which is the failure this console exists to avoid. Development is
+ * the only place where "show me what it looks like" costs nothing.
+ *
+ * Everything below this line is dead code in a production bundle: the guard
+ * sits at each call site, so the bundler drops the fixtures with it.
+ */
+export const DEMO_ENABLED: boolean = import.meta.env.DEV;
 
 /** Demo policies spanning the PBAC range, so navigation gating is observable. */export const DEMO_POLICIES: PolicyScope[] = [
   {
@@ -143,7 +162,7 @@ export function demoService(): ApiServiceStatus {
   const startedAt = new Date(now - 3 * 3600_000 - 12 * 60_000).toISOString();
   return {
     service: {
-      name: "amber-pay-monitor",
+      name: "amber-pay-ledger",
       version: "2.4.1",
       environment: "demo",
       nodeVersion: "v20.11.1",
@@ -193,7 +212,7 @@ export const DEMO_USERS: DemoUser[] = [
     organizationId: "acme",
     actions: "read, ack",
     status: "active",
-    invitedFor: "Connector monitor",
+    invitedFor: "Amber Pay Ledger",
     lastSeen: "14:02 today",
   },
   {

@@ -18,11 +18,13 @@
 
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { IconPolicy, IconShield, IconUser } from "@/components/icons";
+import { IconPolicy, IconRefresh, IconShield, IconUser } from "@/components/icons";
 import type { PolicyScope } from "@/types/domain";
 import { BTN, Card, DemoTag, Field, PageHeader, cx } from "@/components/ui";
-import { parseAttributes, isAdminCapability } from "@/utils/permissions";
+import { Can } from "@/components/Can";
+import { parseAttributes, isAdminCapability, ABILITY } from "@/utils/permissions";
 import { requestPasswordReset } from "@/services/client";
+import { T_ANCHOR } from "@/tour/anchors";
 import type { ApiIdentity } from "@/types/api";
 
 /** Format an ISO timestamp for display, or an em dash when absent. */
@@ -78,6 +80,7 @@ export function ProfilePage({
   now,
   onSignOut,
   onManageUsers,
+  onReplayTour,
 }: {
   identity: ApiIdentity | null;
   policies: PolicyScope[];
@@ -87,13 +90,18 @@ export function ProfilePage({
   now: Date;
   onSignOut: () => void;
   onManageUsers: () => void;
+  /**
+   * Replay the first-run tour. Deliberately does NOT clear the completion stamp:
+   * a replay is a request to see it now, not a request to be re-toured on every
+   * future sign-in.
+   */
+  onReplayTour: () => void;
 }) {
   const [resetState, setResetState] = useState<
     { kind: "idle" } | { kind: "sending" } | { kind: "sent" } | { kind: "error"; message: string }
   >({ kind: "idle" });
 
   const caps = activePolicy ? parseAttributes(activePolicy.attributes) : null;
-  const isAdmin = caps ? isAdminCapability(caps) : false;
   // The display cue is derived from the address: the product holds no name
   // field, and inventing one would be worse than showing nothing.
   const initial = identity?.email.slice(0, 1).toUpperCase() ?? "";
@@ -142,10 +150,15 @@ export function ProfilePage({
               <IdentityRow label="Created" value={formatWhen(identity.createdAt)} />
               <IdentityRow label="Credentials changed" value={formatWhen(identity.updatedAt)} />
             </dl>
-          ) : (
+          ) : mode === "demo" ? (
             <p className="m-0 max-w-[58ch] text-md leading-prose text-ink-2">
               You are viewing the console with <b className="text-ink-1">synthetic demo data</b> and
               no account, so there is no identity to show. Sign in to see your own account here.
+            </p>
+          ) : (
+            <p className="m-0 max-w-[58ch] text-md leading-prose text-ink-2">
+              No account is loaded for this session, so there is no identity to show. Signing in
+              again will reload it.
             </p>
           )}
         </Card>
@@ -179,6 +192,24 @@ export function ProfilePage({
             </dl>
           ) : (
             <p className="m-0 text-md text-ink-2">No policy scope selected.</p>
+          )}
+
+          {/*
+            Hidden in demo mode rather than disabled: there is no account to
+            stamp, so offering the control would promise something the session
+            cannot do. `mode` is a compile-time-gated value in production.
+          */}
+          {mode !== "demo" && (
+            <div className="mt-3 flex justify-end border-t border-rule-enamel pt-3">
+              <button
+                type="button"
+                className={BTN}
+                data-tour={T_ANCHOR.profileReplay}
+                onClick={onReplayTour}
+              >
+                <IconRefresh /> Replay the tour
+              </button>
+            </div>
           )}
         </Card>
       </div>
@@ -233,11 +264,11 @@ export function ProfilePage({
                 >
                   {resetState.kind === "sending" ? "Sending…" : "Send password reset link"}
                 </button>
-                {isAdmin && (
+                <Can ability={ABILITY.usersManage}>
                   <button type="button" className={BTN} onClick={onManageUsers}>
                     Manage users
                   </button>
-                )}
+                </Can>
                 <button type="button" className={BTN} onClick={onSignOut}>
                   Sign out
                 </button>
@@ -245,7 +276,7 @@ export function ProfilePage({
             ) : (
               <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
                 Password and session controls appear here once you sign in. Nothing on this page can
-                change an account while you are browsing demo data.
+                change an account without a session.
               </p>
             )}
           </div>

@@ -1,0 +1,20 @@
+{{!--
+  invite — sent by `POST /auth/invite` and `POST /users/:id/resend-invite`.
+
+  The only route into the product: there is no public registration, so this
+  message *is* the account.
+
+  Context: url, expiresIn
+--}}
+{{#> shell preheader='Set a password to activate your Amber Pay Ledger account.' title='Your Amber Pay Ledger invite'}}
+  {{> eyebrow text='Invitation'}}
+  {{> heading text='You have been invited'}}
+  {{> paragraph text='An administrator has created an Amber Pay Ledger account for you. Choose a password to activate it — the invitation is single-use and expires on its own.'}}
+  {{> button href=url label='Set up your account'}}
+  {{> fallback-link href=url}}
+  {{#> facts}}
+    {{> facts-row label='Link expires' value=expiresIn}}
+    {{> facts-row label='Sign-in' value='Email + 6-digit code'}}
+  {{/facts}}
+  {{> notice tone='info' label='Not expecting this?' text='No action is needed. An account cannot be created from this link without setting a password, and the invitation expires on its own.'}}
+{{/shell}}

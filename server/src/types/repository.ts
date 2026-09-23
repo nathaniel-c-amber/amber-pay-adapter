@@ -34,6 +34,19 @@ export interface UserRepository {
   ): Promise<AuthUser | undefined>;
   /** Replace a user's password hash. Returns false when no account matches. */
   updatePassword(id: string, hashedPassword: string): Promise<boolean>;
+  /**
+   * Stamp first-run tour completion.
+   *
+   * Idempotent and race-safe: the stamp is applied only when the account has
+   * none, so two concurrent calls cannot both write and a replay can never
+   * rewrite the original timestamp.
+   *
+   * @returns `true` when THIS call applied the stamp, `false` when the account
+   * is absent or was already stamped. Callers treat both as success — the
+   * endpoint is deliberately idempotent — so the flag is for logging and tests,
+   * not control flow.
+   */
+  markTourCompleted(id: string, at: string): Promise<boolean>;
 }
 
 export interface InviteRepository {
@@ -47,7 +60,16 @@ export interface InviteRepository {
 export interface PasswordResetRepository {
   create(reset: PasswordReset): Promise<PasswordReset>;
   findByTokenHash(tokenHash: string): Promise<PasswordReset | undefined>;
-  markUsed(id: string, usedAt: string): Promise<void>;
+  /**
+   * Atomically redeem a token, returning the owning user id, or `undefined`
+   * when the token is unknown, already used, or expired.
+   *
+   * The check and the mark MUST be one operation. Reading `usedAt`, hashing a
+   * password (bcrypt, cost 12 = hundreds of ms) and only then stamping `usedAt`
+   * left a window in which two concurrent requests redeemed the same link and
+   * both wrote a password — the last writer took the account.
+   */
+  consume(tokenHash: string, usedAt: string): Promise<string | undefined>;
   /** Invalidate every outstanding reset for a user (a new request supersedes). */
   invalidateForUser(userId: string, usedAt: string): Promise<void>;
 }
@@ -56,9 +78,22 @@ export interface PasswordResetRepository {
 export interface TwoFactorRepository {
   create(challenge: TwoFactorChallenge): Promise<TwoFactorChallenge>;
   findById(id: string): Promise<TwoFactorChallenge | undefined>;
-  /** Increment the attempt counter and return the new value. */
-  incrementAttempts(id: string): Promise<number>;
-  consume(id: string): Promise<void>;
+  /**
+   * Spend one verification attempt, returning the new count, or `undefined`
+   * when the challenge is already consumed or has NO attempts left.
+   *
+   * The cap is enforced inside the update on purpose: reading `attempts`,
+   * comparing it to the limit and then incrementing let concurrent requests
+   * each observe a count below the limit and overshoot it, so a 6-digit code
+   * could be brute-forced faster than the limit implies.
+   */
+  spendAttempt(id: string, maxAttempts: number): Promise<number | undefined>;
+  /**
+   * Atomically mark the challenge used. Returns true only for the caller that
+   * performed the transition, so a second concurrent verification cannot also
+   * be treated as successful.
+   */
+  consume(id: string): Promise<boolean>;
 }
 
 /**
@@ -92,15 +127,40 @@ export interface FailureRepository {
 }
 
 /**
- * Two-phase webhook dedup (M2): a webhook is marked `processing` before it is
- * handled and only flipped to `processed` once it succeeds. `hasProcessed`
- * returns true ONLY for fully-processed webhooks, so a failed webhook (left in
- * `processing`) is retried on the next delivery.
+ * How long a claim is honoured before another delivery may take it over.
+ * A process that dies between `claim` and `markProcessed`/`release` would
+ * otherwise leave the id claimed forever, so the transaction would never be
+ * pushed to accounting. This is the recovery window for that case.
+ */
+export const WEBHOOK_CLAIM_LEASE_MS = 5 * 60_000;
+
+/**
+ * Webhook idempotency and replay defence (M2).
+ *
+ * `claim` is the atomic gate and the whole point of this contract. It reports
+ * whether THIS caller now owns the id, and it succeeds only when:
+ * - the id has never been seen, or
+ * - a previous claim was released after a failure, or
+ * - a previous claim is older than `WEBHOOK_CLAIM_LEASE_MS` (the claimant died).
+ *
+ * It FAILS for an id that is already processed, or that another delivery is
+ * processing right now. That combination is what the earlier
+ * "check-processed, then mark-processing" pair could not express: it left a
+ * window in which two concurrent deliveries both proceeded, and it also let a
+ * replay of an already-processed event through whenever the first attempt had
+ * not finished.
  */
 export interface WebhookDedupRepository {
-  hasProcessed(id: string): Promise<boolean>;
-  markProcessing(id: string, processedAt: string): Promise<void>;
+  /** Atomically take ownership of `id`. False means duplicate or replay. */
+  claim(id: string, processedAt: string): Promise<boolean>;
+  /** Record success. The id is now permanently deduplicated. */
   markProcessed(id: string, processedAt: string): Promise<void>;
+  /**
+   * Give the claim back after a failure so the sender's retry is processed.
+   * Deliberately indistinguishable from "never seen" — a released delivery
+   * left no success behind, and must not be reported as one.
+   */
+  release(id: string): Promise<void>;
 }
 
 export interface ReconciliationRepository {

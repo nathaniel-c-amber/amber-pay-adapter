@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# Amber Pay — backend build (multi-stage)
+# Amber Pay Ledger — backend build (multi-stage)
 # Stage 1: compile the TypeScript server with Node 20.
 # Stage 2: minimal runtime with production deps + compiled dist.
 #
@@ -37,5 +37,5 @@ COPY --from=build /app/dist ./dist
 RUN addgroup -S app && adduser -S app -G app
 USER app
 
-EXPOSE 3000
+EXPOSE 3300
 CMD ["node", "dist/server.js"]

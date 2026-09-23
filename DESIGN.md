@@ -45,8 +45,11 @@ typography:
     letterSpacing: "0.05em"
     textTransform: "uppercase"
 rounded:
-  sm: "6px"
-  md: "8px"
+  # Keyed by token name (`--radius-panel` / `--radius-chip`), matching the
+  # semantic style of `colors:` above. A t-shirt scale would encode an ordering
+  # these two no longer have — see "Radii" further down.
+  panel: "4px"
+  chip: "6px"
 spacing:
   sm: "0.4rem"
   md: "0.8rem"
@@ -56,7 +59,7 @@ components:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.ink}"
     borderColor: "{colors.rule}"
-    rounded: "{rounded.sm}"
+    rounded: "{rounded.chip}"
 ---
 
 # Design System: Amber Pay API Adaptor & Monitor System
@@ -124,6 +127,10 @@ The Overview is organised around **payment flow**, not connection health. Connec
 ### Telling blind from healthy
 
 The Overview closes with the **service window** (`ServiceWindow`), a readout of the backend process itself: build, uptime, storage backend, event-window size, row counts, and adaptor reachability. Without it, "all healthy" and "the service stopped answering two hours ago" render identically — the console would re-display its last good snapshot as though it were current. When the status probe fails the panel switches to its `is-blind` variant and says the numbers are frozen, not healthy.
+
+**The Connections page answers the same question from the same facts.** The service window and the connections list must never disagree about whether a route works, so both derive from the adaptors' own state: `connector_states` holds stored rows, and the dashboard payload merges the live adaptor state over them (`server/src/services/adaptors/connectorState.service.ts`) — a stored row for an adaptor's terminus is overlaid, and an adaptor with no stored row gets one. That second case is the live deployment: a Postgres install creates the table empty and nothing ever writes to it, so the Connections page listed **nothing at all** while the panel beside it knew the answer.
+
+Two rules keep the merge honest. Reachability can only **downgrade** — a connected and reachable adaptor leaves a stored row's own operational status alone (the path may be degraded for its own reasons), while an unreachable one suspends it, because a path whose accounting system cannot be reached is carrying nothing. And the reason travels with it: the row's note carries the adaptor's own message ("QuickBooks is configured but not authorized: set QUICKBOOKS_ACCESS_TOKEN…") rather than a bare "unreachable", so the screen states the fix. The rows are shared, so the correction reaches the connection detail view, Synchronization's push/pull cards, the findings' affected connection, and the service map without any page forgetting to apply it.
 
 ## Colors
 
@@ -290,7 +297,9 @@ Depth is a low soft lift, not shadow drama. `--shadow-soft` (0 2px 8px) sits und
 
 ## Shapes
 
-Small radius: 8px for cards, controls, and inputs; 6px for chips and status pills. Circular only for the avatar and the notification dot. There is no pill-shaped comfort beyond status chips.
+Small radius: 4px for cards, controls, and inputs (`rounded-panel`); 6px for chips and status pills (`rounded-chip`). Circular only for the avatar and the notification dot. There is no pill-shaped comfort beyond status chips.
+
+> **Open decision — chip vs panel.** `rounded-chip` (6px) is now the *larger* of the two, so a status pill is rounder than the card holding it. The convention for a nested element is `inner ≤ outer`, and the previous pair (8px panel / 6px chip) satisfied it. Either resolve the chip to a value below the panel (`--radius-chip: 2px`, keeping two distinct tiers) or record here that the inversion is intentional. One knock-on: the stage-filter clear button is `rounded-[4px]` precisely because it is the concentric inner radius of a 6px chip — that value is derived from the chip, not from the panel, so it must move with any change to `--radius-chip`.
 
 ## Components
 
@@ -310,6 +319,18 @@ Lifecycle events and findings use the TanStack-backed `EventStream`; sortable he
 
 ### Gateway hub service map
 A radial hub diagram: Amber Pay's gateway sits at the centre of the plate and one straight spoke leaves it on a 45° diagonal for each connector, ending in a destination node. The spoke and node carry the route's **live state** — a solid green route when healthy, a dashed amber spoke with a dashed halo when degraded, a hatched node with a broken spoke when failed — so the plate answers *is it working?* at a glance, while the key underneath keeps the four line-inks as connector identity. Connectors that share a terminus are laid out as a pair, so one destination reached by two paths reads as a pair. Every node is a focusable button: activating one recedes the rest so a single route can be read alone, and each node writes its state as a word, never colour alone. Larger connector sets pull the ring in so no label leaves the plate; a failed spoke's pulse is suppressed under `prefers-reduced-motion`. `compact` renders the shortened Overview preview.
+
+### Transactional email
+
+Invitations, password resets, and verification codes are the only surfaces outside the console, and they belong to the same design system. They are rendered with Handlebars (`server/src/services/shared/email/`): `messages/*.hbs` carry copy, `partials/*.hbs` are the components, `styles.ts` holds every declaration and `theme.ts` every value — the tokens above, re-expressed as literals, because email clients strip stylesheets and ignore custom properties. The grammar is a console page's: a dark ground, a hairline card on a 560px measure, an uppercase mono eyebrow, a heading that outranks it, and exactly one amber action.
+
+- **Tokens are mirrored, never invented.** `theme.ts` names the Tailwind token behind every value, because a drifting email palette fails silently — no build step can see inside an HTML string. Templates reach them with `{{token 'color.primary'}}`; a literal hex in a `.hbs` file fails a test.
+- **Templates own no styling.** Every element draws its declarations from a named recipe (`{{styleAttr 'button.anchor'}}`), so styling cannot be re-decided inside markup.
+- **The action is amber carrying `on-primary` ink.** White on `#ef6000` is 3.31:1; the rule travels with the brand, including into a recipient's inbox.
+- **Mono carries readouts** — verification codes, expiry facts, references — with tabular figures, exactly as in the console. A code is the largest element in its message.
+- **Tone is a label plus a 1px border**, never a wide coloured rail; the notice inks are the severity inks.
+- **Copy is operational.** A message states what happened and what the recipient must do, quotes the same lifetime the backend enforces, and never implies an action that was not taken. Every message also ships a plain-text part.
+- **Trap:** a `style="…"` attribute is delimited by double quotes, so a double-quoted font family ends the attribute early and silently discards every declaration after it (the button lost its ink and underline the first time). The font stacks in `theme.ts` are single-quoted, and the serialiser escapes the attribute as well.
 
 ## Navigation & access
 

@@ -1,6 +1,8 @@
 /* Small shared presentational atoms for the Amber Daylight shell and pages. */
 import type { ReactNode } from "react";
-import { IconChevronRight, IconAlert, IconCheck, IconClock, IconPolicy, IconSearch, IconSync } from "./icons";
+import { IconChevronRight, IconAlert, IconCheck, IconClock, IconSearch, IconSync } from "./icons";
+import { Can } from "./Can";
+import { ABILITY } from "@/utils/permissions";
 import {
   HEALTH_OF,
   HEALTH_LABEL,
@@ -75,7 +77,7 @@ export const BTN_PRIMARY = `${BTN_BASE} border-primary bg-primary text-on-primar
 
 /* Secondary text button (the old `.amb-link-btn`). */
 export const LINK_BTN =
-  "cursor-pointer rounded-panel border border-rule-enamel bg-transparent px-2 py-1 text-xs text-primary-ink transition-colors hover:not-disabled:bg-primary-soft hover:not-disabled:text-primary-hover disabled:cursor-not-allowed disabled:opacity-45";
+  "inline-flex items-center gap-[2px] cursor-pointer rounded-panel border border-rule-enamel bg-transparent px-2 py-1 text-xs text-primary-ink transition-colors hover:not-disabled:bg-primary-soft hover:not-disabled:text-primary-hover disabled:cursor-not-allowed disabled:opacity-45";
 
 /* Uppercase micro-label: the most repeated type pattern in the app. */
 export const LABEL = "text-micro leading-snug uppercase tracking-label";
@@ -88,13 +90,16 @@ export function PageHeader({
   title,
   lead,
   actions,
+  tourId,
 }: {
   title: string;
   lead?: ReactNode;
   actions?: ReactNode;
+  /** `data-tour` anchor name. Lets the first-run tour point at this header. */
+  tourId?: string;
 }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
+    <header className="flex flex-wrap items-start justify-between gap-4" data-tour={tourId}>
       <div>
         <h1 className="text-2xl text-ink-1">{title}</h1>
         {lead ? <p className="mt-1.5 max-w-[60ch] text-md text-ink-2">{lead}</p> : null}
@@ -110,15 +115,24 @@ export function Card({
   children,
   className,
   actions,
+  tourId,
 }: {
   title?: ReactNode;
   meta?: ReactNode;
   children: ReactNode;
   className?: string;
   actions?: ReactNode;
+  /**
+   * `data-tour` anchor name. A prop rather than a raw attribute at the call site
+   * because the anchor has to land on the card's own element — passing
+   * `data-tour` to a component that spreads nothing would silently do nothing,
+   * and a step whose anchor never appears is skipped quietly by design.
+   */
+  tourId?: string;
 }) {
   return (
     <section
+      data-tour={tourId}
       className={cx(
         "rounded-panel border border-rule-enamel bg-midnight-2 px-5 py-4 shadow-panel transition-colors hover:border-ink-4",
         className,
@@ -288,15 +302,17 @@ export function ConnectionRow({
   );
 }
 
-/** A finding rendered as an incident/task card, not a table row. */
+/** A finding rendered as an incident/task card, not a table row.
+ *
+ * Acknowledge is gated on the active policy in place (see `Can`) rather than
+ * on a `canAck` boolean threaded down from the shell: the card already knows
+ * what it is, so every call site used to have to pass the same answer. */
 export function FindingCard({
   finding,
-  canAck,
   onAck,
   onOpen,
 }: {
   finding: Failure;
-  canAck: boolean;
   onAck: (id: string) => void;
   onOpen?: (id: string) => void;
 }) {
@@ -311,7 +327,9 @@ export function FindingCard({
         <span className="mono ml-auto text-xs text-ink-3">since {finding.since}</span>
       </header>
       <div>
-        <h3 className="text-lg text-ink-1">{finding.title}</h3>
+        {/* h2, not h3: this card sits directly under the page's h1 on the
+            findings surfaces, so h3 skipped a level. */}
+        <h2 className="text-lg text-ink-1">{finding.title}</h2>
         <div className="mt-1 text-xs text-ink-3">{finding.channel}</div>
         <p className="mt-1.5 max-w-[66ch] text-sm text-ink-2">{finding.detail}</p>
       </div>
@@ -321,15 +339,16 @@ export function FindingCard({
             View incident
           </button>
         )}
-        <button
-          type="button"
-          className={BTN_PRIMARY}
-          disabled={!canAck}
-          onClick={() => onAck(finding.id)}
-          title={canAck ? "Acknowledge this finding" : "Requires the ack action on the dashboard scope"}
-        >
-          Acknowledge
-        </button>
+        <Can ability={ABILITY.findingAck}>
+          <button
+            type="button"
+            className={BTN_PRIMARY}
+            onClick={() => onAck(finding.id)}
+            title="Acknowledge this finding"
+          >
+            Acknowledge
+          </button>
+        </Can>
       </footer>
     </article>
   );
@@ -400,36 +419,6 @@ export function ErrorState({
         </div>
       ) : null}
     </div>
-  );
-}
-
-/**
- * PermissionGuard — renders children only when the active PBAC scope allows
- * the action; otherwise renders a read-only explanation (state 12:
- * permission-restricted actions). The action is never silently hidden where
- * visibility itself communicates scope.
- */
-export function PermissionGuard({
-  allowed,
-  reason,
-  children,
-  hide = false,
-}: {
-  allowed: boolean;
-  reason: ReactNode;
-  children: ReactNode;
-  hide?: boolean;
-}) {
-  if (allowed) return <>{children}</>;
-  if (hide) return null;
-  return (
-    <span
-      className="inline-flex items-center gap-2 text-sm text-ink-3 [&_svg]:flex-none [&_svg]:text-line-amber"
-      title={typeof reason === "string" ? reason : undefined}
-    >
-      <IconPolicy />
-      {reason}
-    </span>
   );
 }
 

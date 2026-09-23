@@ -158,8 +158,29 @@ export interface ApiIdentity {
   policies: ApiPolicyScope[];
   createdAt: string | null;
   updatedAt: string | null;
+  /**
+   * When the first-run guided tour was finished or skipped, or `null` when this
+   * account has never been offered it. The console starts the tour only on
+   * `null` — the claim is about the account, not the browser, so a second device
+   * does not re-tour the same person.
+   */
+  tourCompletedAt: string | null;
   /** When the current access token stops working (ISO 8601). */
   tokenExpiresAt: string;
+}
+
+/**
+ * What an outstanding invite carries (GET /auth/invite/:token).
+ *
+ * No id, no timestamps and no token hash: the accept page needs the address it
+ * is inviting and the access it is offering, and nothing else about the invite
+ * is any of its business.
+ */
+export interface ApiInviteDetail {
+  email: string;
+  policyAttributes: ApiPolicyAttribute[];
+  /** When the link stops working (ISO 8601). */
+  expiresAt: string;
 }
 
 /**

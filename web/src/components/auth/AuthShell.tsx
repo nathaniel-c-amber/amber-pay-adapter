@@ -13,6 +13,8 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 
+import { IconLedger } from "../icons";
+
 export function AuthShell({
   title,
   lead,
@@ -42,11 +44,14 @@ export function AuthShell({
     <div className="grid min-h-dvh grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] bg-midnight max-xl:grid-cols-[minmax(0,1fr)]">
       <main className="mx-auto flex w-full max-w-[34rem] flex-col justify-center gap-5 p-10 max-xl:px-5 max-xl:py-8 max-xs:px-4 max-xs:py-5">
         <div className="flex items-center gap-3">
-          <span className="grid size-[34px] flex-none place-items-center rounded-panel bg-primary" aria-hidden>
-            <span className="size-[11px] rounded-[2px] bg-on-primary" aria-hidden />
+          <span
+            className="grid size-[34px] flex-none place-items-center rounded-panel bg-primary text-on-primary"
+            aria-hidden
+          >
+            <IconLedger size={19} />
           </span>
           <span className="flex flex-col">
-            <span className="text-lg font-semibold text-ink-1">Amber Pay</span>
+            <span className="text-lg font-semibold text-ink-1">Amber Pay Ledger</span>
             <span className="text-xs text-ink-3">Pay Operations</span>
           </span>
         </div>

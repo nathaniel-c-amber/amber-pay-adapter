@@ -9,7 +9,7 @@ dotenv.config();
  */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
-  PORT: z.coerce.number().int().positive().default(3000),
+  PORT: z.coerce.number().int().positive().default(3300),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
@@ -43,11 +43,28 @@ const envSchema = z.object({
   // CORS allowlist (comma-separated origins). Defaults to the Vite dev server.
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
 
+  // Number of reverse proxies in front of this process (nginx in the compose
+  // stack, plus ngrok when the tunnel profile is active).
+  //
+  // Load-bearing for rate limiting: with the default `false`, Express reports
+  // the PROXY's address as `req.ip`, so every client shares one bucket and
+  // express-rate-limit reports ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on each
+  // throttled request. Do NOT raise it casually — a value higher than the real
+  // hop count lets a client forge `X-Forwarded-For` and mint itself a fresh
+  // rate-limit bucket.
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).default(1),
+
   // QuickBooks
   QUICKBOOKS_CLIENT_ID: z.string().optional(),
   QUICKBOOKS_CLIENT_SECRET: z.string().optional(),
   QUICKBOOKS_BASE_URL: z.string().url().optional(),
   QUICKBOOKS_REALM_ID: z.string().optional(),
+  // A bearer token is what actually authorizes a call. Client id/secret alone
+  // cannot mint one — QuickBooks requires a user-authorized OAuth grant.
+  // Provide an access token directly (short-lived, ~1h), or a refresh token for
+  // the adaptor to exchange at connect time and again when the token expires.
+  QUICKBOOKS_ACCESS_TOKEN: z.string().optional(),
+  QUICKBOOKS_REFRESH_TOKEN: z.string().optional(),
 
   // Sage
   SAGE_CLIENT_ID: z.string().optional(),

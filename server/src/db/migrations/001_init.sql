@@ -1,5 +1,5 @@
 -- 001_init.sql
--- Amber Pay operational schema.
+-- Amber Pay Ledger operational schema.
 --
 -- PRIVACY (FR-2.3 / FR-5.2): this schema stores ONLY operational statuses and
 -- reference hashes. It MUST NOT contain financial amounts, currency values,

@@ -21,6 +21,7 @@ import type {
   UserRepository,
   WebhookDedupRepository,
 } from '../types/repository.js';
+import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
 
 /**
  * In-memory repository implementations. Used in tests (which MUST run without
@@ -46,6 +47,7 @@ export class InMemoryUserRepository implements UserRepository {
       id: randomUUID(),
       email: normalizedEmail,
       hashedPassword,
+      tourCompletedAt: null,
       createdAt: now,
       updatedAt: now,
       policyAttributes,
@@ -102,6 +104,24 @@ export class InMemoryUserRepository implements UserRepository {
     this.byEmail.set(updated.email, updated);
     return true;
   }
+
+  async markTourCompleted(id: string, at: string): Promise<boolean> {
+    const user = this.byId.get(id);
+    // Already stamped, or no such account: nothing to write. An existing stamp
+    // is never overwritten, so a replay cannot rewrite when the user was first
+    // toured.
+    if (!user || user.tourCompletedAt !== null) {
+      return false;
+    }
+    const updated: AuthUser = {
+      ...user,
+      tourCompletedAt: at,
+      updatedAt: new Date().toISOString(),
+    };
+    this.byId.set(id, updated);
+    this.byEmail.set(updated.email, updated);
+    return true;
+  }
 }
 
 export class InMemoryInviteRepository implements InviteRepository {
@@ -144,13 +164,16 @@ export class InMemoryPasswordResetRepository implements PasswordResetRepository 
     return this.byTokenHash.get(tokenHash);
   }
 
-  async markUsed(id: string, usedAt: string): Promise<void> {
-    for (const reset of this.byTokenHash.values()) {
-      if (reset.id === id) {
-        reset.usedAt = usedAt;
-        return;
-      }
+  async consume(tokenHash: string, usedAt: string): Promise<string | undefined> {
+    const reset = this.byTokenHash.get(tokenHash);
+    if (!reset || reset.usedAt) {
+      return undefined;
     }
+    if (new Date(reset.expiresAt).getTime() <= new Date(usedAt).getTime()) {
+      return undefined;
+    }
+    reset.usedAt = usedAt;
+    return reset.userId;
   }
 
   async invalidateForUser(userId: string, usedAt: string): Promise<void> {
@@ -174,17 +197,17 @@ export class InMemoryTwoFactorRepository implements TwoFactorRepository {
     return this.byId.get(id);
   }
 
-  async incrementAttempts(id: string): Promise<number> {
+  async spendAttempt(id: string, maxAttempts: number): Promise<number | undefined> {
     const challenge = this.byId.get(id);
-    if (!challenge) {
-      return 0;
+    if (!challenge || challenge.attempts >= maxAttempts) {
+      return undefined;
     }
     challenge.attempts += 1;
     return challenge.attempts;
   }
 
-  async consume(id: string): Promise<void> {
-    this.byId.delete(id);
+  async consume(id: string): Promise<boolean> {
+    return this.byId.delete(id);
   }
 }
 
@@ -240,20 +263,34 @@ export class InMemoryFailureRepository implements FailureRepository {
 }
 
 export class InMemoryWebhookDedupRepository implements WebhookDedupRepository {
-  private readonly processing = new Set<string>();
-  private readonly processed = new Set<string>();
+  /** id -> claim timestamp in ms, or null once processed. */
+  private readonly claims = new Map<string, number | null>();
 
-  async hasProcessed(id: string): Promise<boolean> {
-    return this.processed.has(id);
-  }
-
-  async markProcessing(id: string, _processedAt: string): Promise<void> {
-    this.processing.add(id);
+  async claim(id: string, _processedAt: string): Promise<boolean> {
+    const existing = this.claims.get(id);
+    if (existing === undefined) {
+      this.claims.set(id, Date.now());
+      return true;
+    }
+    if (existing === null) {
+      // Already processed — permanently deduplicated.
+      return false;
+    }
+    // Reclaim only a claim whose holder is presumed dead, mirroring the
+    // Postgres lease so both implementations agree on the contract.
+    if (Date.now() - existing > WEBHOOK_CLAIM_LEASE_MS) {
+      this.claims.set(id, Date.now());
+      return true;
+    }
+    return false;
   }
 
   async markProcessed(id: string, _processedAt: string): Promise<void> {
-    this.processing.delete(id);
-    this.processed.add(id);
+    this.claims.set(id, null);
+  }
+
+  async release(id: string): Promise<void> {
+    this.claims.delete(id);
   }
 }
 
@@ -283,7 +320,10 @@ export const DEFAULT_CONNECTOR_STATES: ConnectorState[] = [
     terminus: 'quickbooks',
     status: 'open',
     reading: 'Operational',
-    note: 'Adaptor connected (stub)',
+    // NOT "adaptor connected": the adaptor's connection is live state and is
+    // overlaid on this row by `applyAdaptorState` — a seeded claim about it was
+    // wrong the moment the credentials changed.
+    note: 'Awaiting adaptor state',
   },
   {
     id: 'sage',

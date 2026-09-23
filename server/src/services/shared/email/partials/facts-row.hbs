@@ -1,0 +1,8 @@
+{{!--
+  facts-row — one row of a `facts` list. Not used on its own.
+
+    {{> facts-row label='Link expires' value=expiresIn}}
+
+  `label`, `value` (required).
+--}}
+<tr><td{{styleAttr 'facts.label'}}>{{label}}</td><td{{styleAttr 'facts.value'}}>{{value}}</td></tr>

@@ -1,14 +1,14 @@
 {
-  "name": "amber-pay-server",
+  "name": "amber-pay-ledger-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Amber Pay API Adaptor & Monitor System - backend (monitoring only)",
+  "description": "Amber Pay Ledger - backend (monitoring only)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "postbuild": "node scripts/copy-migrations.mjs",
+    "postbuild": "node scripts/copy-migrations.mjs && node scripts/copy-email-templates.mjs",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "jest"
@@ -19,6 +19,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
+    "handlebars": "^4.7.9",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^10.0.7",

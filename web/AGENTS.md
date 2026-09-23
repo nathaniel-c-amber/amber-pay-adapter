@@ -44,7 +44,8 @@ TOKENS — every value comes from `@theme`. There are no raw hex/px values in co
   browsers defaulting `<b>`/`<th>` to 700 was a real defect, and the base layer re-points them.
 - Space: Tailwind's native 4px scale (`p-4` = 16px). The old `--space-N` ramp equalled this scale
   doubled, so old `space-6` is now `4`.
-- Radius `rounded-panel` (8px) / `rounded-chip` (6px); shadow `shadow-soft` / `shadow-panel`;
+- Radius `rounded-panel` (4px — cards, controls, inputs, panels) / `rounded-chip` (6px — chips,
+  status pills, badges); shadow `shadow-soft` / `shadow-panel`;
   `mono` (project utility: mono face + tabular, lining figures — replaces the old `.mono` class).
 
 BREAKPOINTS are `max-*`-only, and named by tier: `max-xs`480 `max-sm`640 `max-md`720 `max-lg`860

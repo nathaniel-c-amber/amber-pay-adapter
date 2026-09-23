@@ -17,6 +17,7 @@ import { AuthField, AuthShell } from "@/components/auth/AuthShell";
 import { login, verifyTwoFactor } from "@/services/client";
 import { setToken } from "@/services/auth.service";
 import { IconArrowRight, IconLock, IconShield } from "@/components/auth/authIcons";
+import { DEMO_ENABLED } from "@/utils/fixtures";
 
 type Stage = "credentials" | "second-factor";
 
@@ -35,6 +36,10 @@ export function SignInPage({
    * Present only when there is no session at all. Entering demo mode is an
    * explicit choice, never a default: a monitoring console must not present
    * fabricated figures to someone who opened it expecting their own.
+   *
+   * The shell already withholds the handler outside development, so the flag is
+   * belt-and-braces — it also lets the bundler drop the door (and its copy)
+   * from a production build, where no state can reach it.
    */
   onExploreDemo?: () => void;
   /** Opens credential recovery. Always available — a forgotten password is not
@@ -258,7 +263,7 @@ export function SignInPage({
           </button>
         )}
 
-        {onExploreDemo && (
+        {DEMO_ENABLED && onExploreDemo && (
           <button
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-left text-sm text-ink-3 underline underline-offset-[0.18em] hover:text-ink-1"

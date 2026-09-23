@@ -1,4 +1,4 @@
-/* Demonstration data for the Amber Pay monitoring console.
+/* Demonstration data for the Amber Pay Ledger monitoring console.
    These are SYNTHETIC fixtures standing in for live API data
    (see REQUIREMENTS.md v2.0.0 §5 /dashboard/metrics, §3.4 FR-5.1).
    They carry NO financial amounts, NO customer PII, and NO ledger

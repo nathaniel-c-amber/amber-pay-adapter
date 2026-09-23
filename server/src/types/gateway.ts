@@ -12,7 +12,8 @@ export type WebhookEventType =
   | 'payment.collected'
   | 'payment.declined'
   | 'payment.initiated'
-  | 'payment.failed';
+  | 'payment.failed'
+  | 'payment.refunded';
 
 /**
  * Input for creating a payment link. Privacy-safe: NO amount, NO PII — only

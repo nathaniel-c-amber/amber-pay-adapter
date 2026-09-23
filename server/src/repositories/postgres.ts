@@ -22,6 +22,7 @@ import type {
   UserRepository,
   WebhookDedupRepository,
 } from '../types/repository.js';
+import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
 
 /**
  * Postgres-backed repository implementations. Exercised at runtime when a
@@ -47,11 +48,13 @@ interface UserRow {
   email: string;
   hashed_password: string;
   policy_attributes: PolicyAttribute[];
+  tour_completed_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
 
-const USER_COLUMNS = 'id, email, hashed_password, policy_attributes, created_at, updated_at';
+const USER_COLUMNS =
+  'id, email, hashed_password, policy_attributes, tour_completed_at, created_at, updated_at';
 
 function toAuthUser(row: UserRow): AuthUser {
   return {
@@ -59,6 +62,9 @@ function toAuthUser(row: UserRow): AuthUser {
     email: row.email,
     hashedPassword: row.hashed_password,
     policyAttributes: row.policy_attributes,
+    // NULL means "never offered", which is the state every newly invited
+    // account starts in.
+    tourCompletedAt: row.tour_completed_at ? toIso(row.tour_completed_at) : null,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
@@ -136,6 +142,20 @@ export class PostgresUserRepository implements UserRepository {
     const result = await this.pool.query(
       'UPDATE users SET hashed_password = $2, updated_at = now() WHERE id = $1',
       [id, hashedPassword],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async markTourCompleted(id: string, at: string): Promise<boolean> {
+    // ONE conditional statement, never read-then-write: two concurrent calls
+    // cannot both win, and the `IS NULL` guard means an existing stamp is never
+    // rewritten by a replay. Same shape as the webhook claim and the reset-token
+    // consume, for the same reason.
+    const result = await this.pool.query(
+      `UPDATE users
+          SET tour_completed_at = $2, updated_at = now()
+        WHERE id = $1 AND tour_completed_at IS NULL`,
+      [id, at],
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -260,8 +280,22 @@ export class PostgresPasswordResetRepository implements PasswordResetRepository 
     return row ? toPasswordReset(row) : undefined;
   }
 
-  async markUsed(id: string, usedAt: string): Promise<void> {
-    await this.pool.query('UPDATE password_resets SET used_at = $2 WHERE id = $1', [id, usedAt]);
+  /**
+   * Single-statement redemption. `used_at IS NULL AND expires_at > now()` in
+   * the WHERE clause means the row is only updated by the first caller to get
+   * there, and `RETURNING user_id` tells that caller it won.
+   */
+  async consume(tokenHash: string, usedAt: string): Promise<string | undefined> {
+    const result = await this.pool.query<{ user_id: string }>(
+      `UPDATE password_resets
+          SET used_at = $2
+        WHERE token_hash = $1
+          AND used_at IS NULL
+          AND expires_at > now()
+        RETURNING user_id`,
+      [tokenHash, usedAt],
+    );
+    return result.rows[0]?.user_id;
   }
 
   async invalidateForUser(userId: string, usedAt: string): Promise<void> {
@@ -316,21 +350,34 @@ export class PostgresTwoFactorRepository implements TwoFactorRepository {
     return row ? toTwoFactorChallenge(row) : undefined;
   }
 
-  async incrementAttempts(id: string): Promise<number> {
+  /**
+   * Enforce the attempt cap inside the update, so the limit is authoritative
+   * rather than advisory. No row comes back once the cap is reached or the
+   * challenge has been consumed, and `undefined` tells the caller not to verify.
+   */
+  async spendAttempt(id: string, maxAttempts: number): Promise<number | undefined> {
     const result = await this.pool.query<{ attempts: number }>(
-      `UPDATE two_factor_challenges SET attempts = attempts + 1
-       WHERE id = $1
-       RETURNING attempts`,
-      [id],
+      `UPDATE two_factor_challenges
+          SET attempts = attempts + 1
+        WHERE id = $1
+          AND consumed_at IS NULL
+          AND attempts < $2
+        RETURNING attempts`,
+      [id, maxAttempts],
     );
-    return result.rows[0]?.attempts ?? 0;
+    return result.rows[0]?.attempts;
   }
 
-  async consume(id: string): Promise<void> {
-    await this.pool.query(
-      'UPDATE two_factor_challenges SET consumed_at = now() WHERE id = $1',
+  /** True only for the caller that transitioned the challenge to consumed. */
+  async consume(id: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE two_factor_challenges
+          SET consumed_at = now()
+        WHERE id = $1 AND consumed_at IS NULL
+        RETURNING id`,
       [id],
     );
+    return result.rowCount !== null && result.rowCount > 0;
   }
 }
 
@@ -475,20 +522,27 @@ export class PostgresFailureRepository implements FailureRepository {
 export class PostgresWebhookDedupRepository implements WebhookDedupRepository {
   constructor(private readonly pool: Pool) {}
 
-  async hasProcessed(id: string): Promise<boolean> {
+  /**
+   * Atomically claim a webhook id in ONE statement.
+   *
+   * A read-then-write pair cannot express this: two concurrent deliveries would
+   * both read "not processed". Here the insert either creates the row, or the
+   * `ON CONFLICT ... WHERE` clause updates it only when the previous claim has
+   * expired — so a processed id and a fresh in-flight id both yield no row, and
+   * therefore no ownership.
+   */
+  async claim(id: string, processedAt: string): Promise<boolean> {
     const result = await this.pool.query(
-      'SELECT 1 FROM processed_webhooks WHERE id = $1 AND state = $2',
-      [id, 'processed'],
+      `INSERT INTO processed_webhooks (id, state, processed_at) VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE
+         SET state = EXCLUDED.state, processed_at = EXCLUDED.processed_at
+         WHERE processed_webhooks.state = 'processing'
+           AND processed_webhooks.processed_at
+               < now() - ($4::bigint * interval '1 millisecond')
+       RETURNING id`,
+      [id, 'processing', processedAt, WEBHOOK_CLAIM_LEASE_MS],
     );
     return result.rowCount !== null && result.rowCount > 0;
-  }
-
-  async markProcessing(id: string, processedAt: string): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO processed_webhooks (id, state, processed_at) VALUES ($1, $2, $3)
-       ON CONFLICT (id) DO NOTHING`,
-      [id, 'processing', processedAt],
-    );
   }
 
   async markProcessed(id: string, processedAt: string): Promise<void> {
@@ -496,6 +550,10 @@ export class PostgresWebhookDedupRepository implements WebhookDedupRepository {
       `UPDATE processed_webhooks SET state = $2, processed_at = $3 WHERE id = $1`,
       [id, 'processed', processedAt],
     );
+  }
+
+  async release(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM processed_webhooks WHERE id = $1', [id]);
   }
 }
 

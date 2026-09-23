@@ -7,5 +7,9 @@ process.env.JWT_SECRET = 'test-secret-placeholder-0123456789';
 process.env.AMBER_PAY_WEBHOOK_SECRET = 'test-webhook-secret-placeholder';
 process.env.QUICKBOOKS_CLIENT_ID = 'test-qb-client-id';
 process.env.QUICKBOOKS_CLIENT_SECRET = 'test-qb-client-secret';
+// A bearer token (or refresh token) is what authorizes a call; client id/secret
+// alone cannot mint one, so `connect()` requires one of these to succeed.
+process.env.QUICKBOOKS_ACCESS_TOKEN = 'test-qb-access-token';
+process.env.QUICKBOOKS_REFRESH_TOKEN = 'test-qb-refresh-token';
 process.env.SAGE_CLIENT_ID = 'test-sage-client-id';
 process.env.SAGE_CLIENT_SECRET = 'test-sage-client-secret';

@@ -79,6 +79,42 @@ function parse(hash: string): Route {
   };
 }
 
+/*
+  The server emails links in the PATH form, with the secret in the query string
+  (`${APP_BASE_URL}/accept-invite?token=…`), not the hash form this router reads.
+  nginx's SPA fallback happily serves index.html for that path, so the request
+  arrives with an empty hash — which parses as "overview". An invitee with no
+  session was therefore sent to sign-in and the invite page was unreachable from
+  the only link that leads to it.
+
+  Adopting the path form on entry fixes that without asking the email to carry a
+  `#`, which is the first thing a mail client is liable to mangle. Any real hash
+  wins over the alias, so both link shapes work.
+*/
+const PATH_ALIASES: Record<string, RouteName> = {
+  "accept-invite": "invite",
+  "reset-password": "reset",
+};
+
+function adoptPathFormLink(): void {
+  if (window.location.hash) return;
+  const segment = window.location.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
+  const name = PATH_ALIASES[segment];
+  if (!name) return;
+
+  // The token moves into the hash, so the query string is dropped rather than
+  // left behind as a stale second copy of a single-use secret.
+  const url = new URL(window.location.href);
+  const token = new URLSearchParams(url.search).get("token");
+  url.search = "";
+  url.hash = token ? `/${name}/${token}` : `/${name}`;
+  // replaceState, not pushState: the tidied URL is the one this page load means,
+  // so going back should leave the flow rather than bounce through the alias.
+  window.history.replaceState(null, "", url);
+}
+
+adoptPathFormLink();
+
 function currentPath(): string {
   return window.location.hash.replace(/^#\/?/, "") || "overview";
 }

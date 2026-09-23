@@ -26,6 +26,9 @@ class RacingUserRepository implements UserRepository {
   async updatePassword(): Promise<boolean> {
     return false;
   }
+  async markTourCompleted(): Promise<boolean> {
+    return false;
+  }
 }
 
 describe('seedSuperAdmin', () => {
@@ -52,6 +55,10 @@ describe('seedSuperAdmin', () => {
     await expect(verifyPassword('SuperAdminPassw0rd!', user?.hashedPassword ?? '')).resolves.toBe(
       true,
     );
+    // The installer has already seen the console, so the guided tour must not
+    // greet them on first sign-in. Invited accounts are the opposite: they are
+    // created unstamped on purpose.
+    expect(user?.tourCompletedAt).not.toBeNull();
   });
 
   it('is idempotent — a second call does not overwrite the existing user', async () => {

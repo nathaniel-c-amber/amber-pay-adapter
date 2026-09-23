@@ -1,0 +1,11 @@
+{{!--
+  paragraph — body prose on the dark field: ink-2 at the prose leading.
+
+    {{> paragraph text='…'}}
+
+  `text` (required). One paragraph per component; two sentences that must stay
+  together belong in one call.
+--}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"{{styleAttr 'paragraph.table'}}>
+  <tr><td{{styleAttr 'paragraph.cell'}}>{{text}}</td></tr>
+</table>

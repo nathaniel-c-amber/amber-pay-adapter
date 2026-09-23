@@ -8,19 +8,19 @@
 import { useState } from "react";
 import type { LifecycleEvent } from "@/types/domain";
 import type { ReconciliationReport } from "@/services/client";
-import { BTN_PRIMARY, Card, EmptyState, Kpi, PageHeader, PermissionGuard, SearchBox } from "@/components/ui";
+import { BTN_PRIMARY, Card, EmptyState, Kpi, PageHeader, SearchBox } from "@/components/ui";
+import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { IconCard, IconRefresh } from "@/components/icons";
+import { ABILITY } from "@/utils/permissions";
 
 export function PaymentsPage({
   events,
   recon,
-  canWrite,
   mode,
 }: {
   events: LifecycleEvent[];
   recon: ReconciliationReport;
-  canWrite: boolean;
   mode: "demo" | "live";
 }) {
   const [query, setQuery] = useState("");
@@ -99,21 +99,19 @@ export function PaymentsPage({
         />
       </section>
 
-      <Card
-        title="Create a payment"
-        meta={canWrite ? "authorized" : "restricted"}
-        className="pm-create"
-      >
-        <PermissionGuard
-          allowed={canWrite}
-          reason="Creating a payment requires write access on the payments scope."
-        >
+      <Card title="Create a payment" className="pm-create">
+        <Can ability={ABILITY.paymentsWrite}>
           <div className="mb-3 flex gap-3">
             <button type="button" className={BTN_PRIMARY}>
               <IconCard /> Create payment link
             </button>
           </div>
-        </PermissionGuard>
+        </Can>
+        <Cannot ability={ABILITY.paymentsWrite}>
+          <p className="m-0 mono text-xs text-ink-3">
+            Creating a payment requires write access on the payments scope.
+          </p>
+        </Cannot>
       </Card>
 
       <Card

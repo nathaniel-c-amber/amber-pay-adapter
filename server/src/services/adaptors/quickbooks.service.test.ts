@@ -69,4 +69,46 @@ describe('QuickBooksAdaptor', () => {
     expect(result.ok).toBe(false);
     expect(typeof result.message).toBe('string');
   });
+
+  it('healthCheck asks the realm company record, with the bearer token', async () => {
+    const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect();
+    await adaptor.healthCheck();
+    const [method, url, , headers] = transport.mock.calls[0];
+    expect(method).toBe('GET');
+    expect(url).toContain('/v3/company/');
+    expect(url).toContain('/companyinfo/');
+    expect(headers).toMatchObject({ Authorization: 'Bearer test-qb-access-token' });
+  });
+
+  it('healthCheck surfaces the upstream reason instead of a bare status', async () => {
+    const transport = jest.fn().mockResolvedValue({
+      status: 401,
+      body: { Fault: { Error: [{ Message: 'AuthenticationFailed' }] } },
+    });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect();
+    const result = await adaptor.healthCheck();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('401');
+    expect(result.message).toContain('AuthenticationFailed');
+  });
+
+  it('healthCheck re-mints the token and retries once after a 401', async () => {
+    // Happy path is the second call only, so a retry is the difference between
+    // ok:true and ok:false here.
+    const transport = jest
+      .fn()
+      .mockResolvedValueOnce({ status: 401, body: {} })
+      .mockResolvedValue({ status: 200, body: {} });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect();
+    const result = await adaptor.healthCheck();
+    expect(result.ok).toBe(true);
+    const companyInfoCalls = transport.mock.calls.filter(([, url]) =>
+      String(url).includes('/companyinfo/'),
+    );
+    expect(companyInfoCalls).toHaveLength(2);
+  });
 });

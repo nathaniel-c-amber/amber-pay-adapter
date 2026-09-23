@@ -1,5 +1,40 @@
-import { createInMemoryRepositories, InMemoryConnectorStateRepository } from './inMemory.js';
+import {
+  createInMemoryRepositories,
+  InMemoryConnectorStateRepository,
+  InMemoryUserRepository,
+} from './inMemory.js';
 import type { Repositories } from '../types/repository.js';
+import type { PolicyAttribute } from '../types/auth.js';
+
+describe('InMemoryUserRepository.markTourCompleted', () => {
+  const policy: PolicyAttribute[] = [
+    { scope: 'dashboard', organizationId: 'org-1', actions: ['read'] },
+  ];
+
+  it('stamps once and reports whether THIS call did the writing', async () => {
+    const users = new InMemoryUserRepository();
+    const user = await users.create('ops@example.com', 'hash', policy);
+    // A newly created account has never been offered the tour.
+    expect(user.tourCompletedAt).toBeNull();
+
+    await expect(users.markTourCompleted(user.id, '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
+    // The second call applies nothing, so it reports false — and crucially the
+    // FIRST stamp survives, so a replay cannot rewrite when the user was toured.
+    await expect(users.markTourCompleted(user.id, '2030-01-01T00:00:00.000Z')).resolves.toBe(
+      false,
+    );
+
+    const stamped = await users.findById(user.id);
+    expect(stamped?.tourCompletedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('returns false for an unknown account', async () => {
+    const users = new InMemoryUserRepository();
+    await expect(
+      users.markTourCompleted('no-such-account', '2026-01-01T00:00:00.000Z'),
+    ).resolves.toBe(false);
+  });
+});
 
 describe('in-memory repositories org filtering', () => {
   let repositories: Repositories;

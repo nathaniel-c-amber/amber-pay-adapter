@@ -65,6 +65,17 @@ const DELTA_TONE: Record<"improved" | "steady" | "worse", string> = {
 
 const pct = (n: number): string => `${Math.round(n * 100)}%`;
 
+/* The row-label column. Fixed so the sticky label keeps one width in every tier. */
+const LABEL_COL = "108px";
+
+/* Shared by every stage column so the four stages are comparable by position,
+   not just by value: with auto layout each column took the width of its widest
+   cell, so "Ingested" sat wider than "Initiated" and the same reading appeared
+   to carry different weight depending on which stage it was in. `table-fixed`
+   plus one colgroup divides the space after the label evenly. */
+const stageColWidth = (stageCount: number): string =>
+  `calc((100% - ${LABEL_COL}) / ${Math.max(stageCount, 1)})`;
+
 export function FlowSpine({
   summary,
   comparison,
@@ -91,7 +102,19 @@ export function FlowSpine({
           horizontal room, so the table scrolls inside a pinned-label frame
           rather than being split into four unconnected cards. */}
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse max-2xl:min-w-[620px] max-md:min-w-[560px]">
+        {/* The narrow-tier floor is 600px, not 560: with equal columns at 560
+            the longest atomic reading ("oldest 47m 56s") ran 9px past its
+            column. The frame scrolls either way, so the 40px buys one clean
+            comparison instead of a spill onto the next stage. */}
+        <table className="w-full table-fixed border-collapse max-2xl:min-w-[620px] max-md:min-w-[600px]">
+        {/* Column widths live here and nowhere else: with `table-fixed`, a cell's
+            own width is ignored, so there is one place to change them. */}
+        <colgroup>
+          <col style={{ width: LABEL_COL }} />
+          {stages.map((stage) => (
+            <col key={stage.stage} style={{ width: stageColWidth(stages.length) }} />
+          ))}
+        </colgroup>
         <caption className="caption-top max-w-[92ch] px-4 pt-3 pb-2 text-left text-sm text-ink-2 [&_strong]:text-ink-1 max-md:text-xs">
           Payment flow by stage, from gateway initiation to the accounting record.
           {summary.mayBeTruncated && (
@@ -106,7 +129,7 @@ export function FlowSpine({
 
         <thead>
           <tr>
-            <td className="w-[108px]" />
+            <td />
             {stages.map((stage, index) => {
               const StageIcon = STAGE_ICON[stage.stage];
               return (
@@ -236,20 +259,31 @@ export function FlowSpine({
                     <span className="mono block text-sm text-ink-2 [&_b]:text-ink-1">
                       <b>{stage.completed.toLocaleString()}</b> posted
                       {stage.failed > 0 && (
-                        <span className="whitespace-nowrap text-text-suspended"> · {stage.failed} failed</span>
+                        <span className="text-text-suspended">
+                          {" "}
+                          · <span className="whitespace-nowrap">{stage.failed} failed</span>
+                        </span>
                       )}
                     </span>
                   ) : (
+                    /* The fragments wrap rather than being forced onto one line:
+                       the columns are a uniform width now, so a nowrap run would
+                       spill over its neighbour instead of the table growing to
+                       fit it. Each VALUE stays atomic ("oldest 47m 41s",
+                       "1 failed") and only the "·" separators are break points. */
                     <span className="mono block text-sm text-ink-2 [&_b]:text-ink-1">
                       <b>{stage.inFlight.toLocaleString()}</b> waiting
                       {stage.inFlight > 0 && stage.oldestInFlightAt && (
-                        <span className="whitespace-nowrap text-ink-3">
+                        <span className="text-ink-3">
                           {" "}
-                          · oldest {formatAge(stage.oldestInFlightAt, now)}
+                          · <span className="whitespace-nowrap">oldest {formatAge(stage.oldestInFlightAt, now)}</span>
                         </span>
                       )}
                       {stage.failed > 0 && (
-                        <span className="whitespace-nowrap text-text-suspended"> · {stage.failed} failed</span>
+                        <span className="text-text-suspended">
+                          {" "}
+                          · <span className="whitespace-nowrap">{stage.failed} failed</span>
+                        </span>
                       )}
                     </span>
                   )}

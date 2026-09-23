@@ -4,27 +4,58 @@ import { env } from '../../config/env.js';
 import { ValidationError } from '../../utils/errors.js';
 import { AdaptorConnectionError, adaptorErrorForStatus } from '../adaptors/errors.js';
 import type { AdaptorResponse, HttpMethod } from '../../types/adaptor.js';
+import type { PaymentStatus } from '../../models/domain.js';
 import type {
   AmberPayGateway,
   GatewayTransport,
   PaymentLinkInput,
   PaymentLinkResult,
-//   WebhookEvent,
+  WebhookEvent,
+  WebhookEventType,
 } from '../../types/gateway.js';
 
+/**
+ * Opaque reference pattern promised by `WebhookEvent.reference`. It is the
+ * backstop that stops customer PII (an email address, say) reaching the event
+ * log, so it is enforced on every reference we accept.
+ */
+const OPAQUE_REFERENCE = /^[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * Amber Pay's webhook wire payload.
+ *
+ * DELIBERATELY NARROW. The gateway also sends `Amount`, `CurrencyCode`,
+ * `CustomerReference` and `CardToken`; not declaring them here means zod drops
+ * them during parse, so financial data and card-adjacent identifiers cannot
+ * travel past this boundary into the event log, the adaptor push, or a log
+ * line (FR-2.3 / FR-5.2). Unknown extra fields are ignored rather than
+ * rejected, so a gateway-side addition cannot break ingestion.
+ */
 const webhookSchema = z.object({
   ClientId: z.string().min(1),
-  TransactionId: z.string().min(1),
-  OrderId: z.string().min(1),
+  TransactionId: z.string().regex(OPAQUE_REFERENCE),
+  OrderId: z.string().regex(OPAQUE_REFERENCE),
   PaymentStatus: z.enum(['Success', 'Failed', 'Refunded']),
-  Amount: z.string().regex(/^\d+(\.\d{2})?$/).transform(parseFloat).refine((v) => v > 0, 'Amount must be a positive number'),
-  CurrencyCode: z.string().length(3).toUpperCase(),
-  ResponseMsg: z.string().min(1).optional(),
-  OrderReceiptLink: z.string().url().optional(),
-  CustomMessage: z.string().min(1).optional(),
-  CustomerReference: z.string().min(1),
-  CardToken: z.string().min(1).optional(),
+  // Amber Pay does not document this field; when present it is the honest
+  // event time, and when absent the processor falls back to arrival time.
+  EventTimestamp: z.string().datetime().optional(),
 });
+
+type WirePaymentStatus = z.infer<typeof webhookSchema>['PaymentStatus'];
+
+/** Wire status -> the pipeline's event type. */
+const EVENT_TYPE_OF_STATUS: Record<WirePaymentStatus, WebhookEventType> = {
+  Success: 'payment.collected',
+  Failed: 'payment.failed',
+  Refunded: 'payment.refunded',
+};
+
+/** Wire status -> the domain payment status carried to the adaptor. */
+const PAYMENT_STATUS_OF_STATUS: Record<WirePaymentStatus, PaymentStatus> = {
+  Success: 'collected',
+  Failed: 'failed',
+  Refunded: 'refunded',
+};
 
 /**
  * Amber Pay gateway adaptor.
@@ -65,13 +96,28 @@ export class AmberPayGatewayImpl implements AmberPayGateway {
     return this.safeEqual(expected, signature);
   }
 
-//   parseWebhook(payload: unknown): WebhookEvent {
-  parseWebhook(payload: unknown): any {
+  /**
+   * Translate an Amber Pay wire payload into the pipeline's own event shape.
+   *
+   * This MAPPING is the whole point: the gateway's field names and its
+   * `PaymentStatus` vocabulary are not the pipeline's, and pretending otherwise
+   * (a cast, or a `any` return) made every downstream field read `undefined` —
+   * defeating deduplication and sending every event down the unhandled-type
+   * branch. The return type is the contract; the compiler enforces it.
+   */
+  parseWebhook(payload: unknown): WebhookEvent {
     const parsed = webhookSchema.safeParse(payload);
     if (!parsed.success) {
       throw new ValidationError('Invalid webhook payload');
     }
-    return parsed.data;
+    const wire = parsed.data;
+    return {
+      id: wire.TransactionId,
+      type: EVENT_TYPE_OF_STATUS[wire.PaymentStatus],
+      reference: wire.OrderId,
+      status: PAYMENT_STATUS_OF_STATUS[wire.PaymentStatus],
+      at: wire.EventTimestamp ?? new Date().toISOString(),
+    };
   }
 
   private safeEqual(a: string, b: string): boolean {

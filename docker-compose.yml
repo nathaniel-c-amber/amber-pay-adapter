@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# Amber Pay — full deployment stack
+# Amber Pay Ledger — full deployment stack
 #
 # Services:
 #   db    — PostgreSQL 16 (persistent volume, healthchecked)
@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 3300
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-amber}:${POSTGRES_PASSWORD:-amber}@db:5432/${POSTGRES_DB:-amber}
       JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret-0123456789abcdef}
@@ -53,6 +53,9 @@ services:
       INVITE_TTL: ${INVITE_TTL:-48h}
       TWO_FACTOR_TTL: ${TWO_FACTOR_TTL:-5m}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      # Reverse proxies in front of the API. Raise to 2 when the ngrok tunnel
+      # profile is active (nginx + ngrok). See server/.env.example.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
       # Super admin bootstrap (optional). Setting BOTH seeds a super admin
       # (all privileges, all scopes/orgs) on install.
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
@@ -65,6 +68,11 @@ services:
       QUICKBOOKS_CLIENT_SECRET: ${QUICKBOOKS_CLIENT_SECRET:-}
       QUICKBOOKS_BASE_URL: ${QUICKBOOKS_BASE_URL:-https://quickbooks.api.intuit.com}
       QUICKBOOKS_REALM_ID: ${QUICKBOOKS_REALM_ID:-}
+      # A bearer token is what authorizes a call; client id/secret alone cannot
+      # mint one. Set an access token, or a refresh token for the adaptor to
+      # exchange (and re-exchange when the access token expires).
+      QUICKBOOKS_ACCESS_TOKEN: ${QUICKBOOKS_ACCESS_TOKEN:-}
+      QUICKBOOKS_REFRESH_TOKEN: ${QUICKBOOKS_REFRESH_TOKEN:-}
       # Sage
       SAGE_CLIENT_ID: ${SAGE_CLIENT_ID:-}
       SAGE_CLIENT_SECRET: ${SAGE_CLIENT_SECRET:-}
@@ -86,14 +94,18 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://localhost:3300/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     ports:
-      - "3000:3000"
+      # Bound to loopback on purpose. The API is reached through the `web`
+      # service (nginx proxies /api to api:3300); publishing 3300 on every host
+      # interface would expose the backend directly and let a caller bypass
+      # nginx AND spoof `X-Forwarded-For` to evade the per-IP rate limits.
+      - "127.0.0.1:3300:3300"
     networks:
       - amber
 
@@ -105,7 +117,12 @@ services:
     depends_on:
       - api
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/ || exit 1"]
+      # 127.0.0.1, NOT localhost: nginx listens on IPv4 only (0.0.0.0:80) while
+      # `localhost` resolves to ::1 inside this Alpine image, so the check was
+      # refused and the container reported `unhealthy` while serving perfectly
+      # well. Measured: `wget http://127.0.0.1/` 200, `wget http://localhost/`
+      # connection refused, `netstat` shows 0.0.0.0:80 only.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -41,17 +41,25 @@ export class WebhookProcessor {
   ) {}
 
   async processWebhook(event: WebhookEvent): Promise<void> {
-    if (await this.dedup.hasProcessed(event.id)) {
+    const now = new Date().toISOString();
+
+    // CLAIM the id before doing any work. This single statement decides
+    // ownership, so two concurrent deliveries of one transaction cannot both
+    // proceed — the previous "check processed, then mark processing" pair left
+    // exactly that window. A false result means the id has already been seen in
+    // ANY state (duplicate or replay) and is dropped.
+    if (!(await this.dedup.claim(event.id, now))) {
       logger.warn({ webhookId: event.id }, 'Duplicate webhook ignored');
       return;
     }
-    const now = new Date().toISOString();
-    await this.dedup.markProcessing(event.id, now);
 
     try {
       switch (event.type) {
         case 'payment.collected':
           await this.handleCollected(event);
+          break;
+        case 'payment.refunded':
+          await this.handleRefunded(event);
           break;
         case 'payment.declined':
         case 'payment.failed':
@@ -68,6 +76,10 @@ export class WebhookProcessor {
       await this.dedup.markProcessed(event.id, now);
     } catch (err) {
       logger.error({ err }, 'Webhook processing failed');
+      // Give the claim back. Without this the id would stay claimed, so every
+      // subsequent delivery of a payment we failed to push would be dismissed
+      // as a duplicate and the accounting record would never be written.
+      await this.dedup.release(event.id);
     }
   }
 
@@ -80,6 +92,34 @@ export class WebhookProcessor {
       organizationId: this.organizationId,
     });
 
+    await this.pushToAdaptor(event, 'collected payment');
+  }
+
+  /**
+   * A refund corrects a record that was already posted, so it takes the same
+   * push path as a collection: the adaptor is told the new status ('refunded')
+   * rather than this service inventing a local reversal it cannot verify.
+   */
+  private async handleRefunded(event: WebhookEvent): Promise<void> {
+    await this.eventLog.recordEvent({
+      type: 'payment-refunded',
+      channel: 'webhook',
+      ref: event.reference,
+      detail: 'Payment refunded',
+      organizationId: this.organizationId,
+    });
+
+    await this.pushToAdaptor(event, 'refund');
+  }
+
+  /**
+   * Connect if needed, then push the payment to the active accounting adaptor.
+   *
+   * On failure a critical Failure is recorded (FR-5.3) and the error is
+   * rethrown so the webhook is NOT marked processed and stays retryable (M2).
+   * `processWebhook` catches it, so the pipeline still never throws outward.
+   */
+  private async pushToAdaptor(event: WebhookEvent, action: string): Promise<void> {
     try {
       const adaptor = this.adaptorResolver.get(this.activeAdaptorId);
       if ((await adaptor.status()) !== 'connected') {
@@ -93,17 +133,14 @@ export class WebhookProcessor {
         processedAt: event.at,
       });
     } catch (err) {
-      logger.error({ err }, 'Failed to push collected payment to adaptor');
+      logger.error({ err }, `Failed to push ${action} to adaptor`);
       await this.failureTracker.recordFailure({
         severity: 'critical',
         channel: 'accounting',
         title: 'Payment push to adaptor failed',
-        detail: 'Failed to push collected payment to accounting adaptor',
+        detail: `Failed to push ${action} to accounting adaptor`,
         organizationId: this.organizationId,
       });
-      // Rethrow so the webhook is NOT marked processed (M2): a failed push
-      // remains retryable on the next delivery. `processWebhook` catches this
-      // internally, so the pipeline still never throws to the caller.
       throw err;
     }
   }

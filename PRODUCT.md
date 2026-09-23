@@ -46,7 +46,7 @@ Explicitly undecided: none confirmed beyond the requirements doc; treat anything
 
 ## Brand Commitments
 
-Product name: **Amber Pay API Adaptor & Monitor System** (v2.0.0 required a monitoring console, not a reconciliation ledger). Owner: Amber Innovations Ltd. No logo or style assets have been provided. The visual world is the Amber Daylight multi-page operations console (light porcelain field, sidebar navigation, policy-gated surfaces — see DESIGN.md).
+Product name: **Amber Pay Ledger** (v2.0.0 required a monitoring console, not a reconciliation ledger). Owner: Amber Innovations Ltd. No logo or style assets have been provided. The visual world is the Amber Daylight multi-page operations console (light porcelain field, sidebar navigation, policy-gated surfaces — see DESIGN.md).
 
 ## Evidence on Hand
 

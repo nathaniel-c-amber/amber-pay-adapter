@@ -2,6 +2,7 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import { emailService } from '../shared/email.service.js';
+import { humanizeTtl, renderTwoFactorEmail } from '../shared/email/index.js';
 import { UnauthorizedError } from '../../utils/errors.js';
 import { parseDurationMs } from '../../utils/duration.js';
 import { getRepositories } from '../../repositories/index.js';
@@ -23,11 +24,13 @@ export interface EmailSender {
 /** SMTP-backed sender — delivers the 2FA code via `emailService`. */
 export const emailSender: EmailSender = {
   async send(email: string, code: string): Promise<void> {
-    await emailService.sendEmail({
-      to: email,
-      subject: 'Your Amber Pay verification code',
-      text: `Your verification code is ${code}`,
-    });
+    await emailService.sendTemplate(
+      email,
+      renderTwoFactorEmail({
+        code,
+        expiresIn: humanizeTtl(env.TWO_FACTOR_TTL),
+      }),
+    );
   },
 };
 
@@ -80,6 +83,14 @@ export class TwoFactorService {
   /**
    * Verify a code against the challenge identified by `challengeId`. Enforces
    * expiry and the attempt limit, and consumes the challenge on success.
+   *
+   * Two races are closed here, both of which let a 6-digit code be guessed
+   * faster than the attempt limit suggests:
+   * - the attempt cap is enforced inside the increment (`spendAttempt`), so
+   *   concurrent requests cannot each observe a count below the limit; and
+   * - the challenge is claimed with an atomic `consume` that reports whether
+   *   THIS caller won it, so two concurrent correct codes cannot both be
+   *   treated as a successful verification.
    */
   async verifyChallenge(challengeId: string, code: string): Promise<TwoFactorChallenge> {
     const challenge = await this.challenges.findById(challengeId);
@@ -90,16 +101,21 @@ export class TwoFactorService {
       await this.challenges.consume(challengeId);
       throw new UnauthorizedError('2FA challenge has expired');
     }
-    if (challenge.attempts >= MAX_TWO_FACTOR_ATTEMPTS) {
+
+    const attempts = await this.challenges.spendAttempt(challengeId, MAX_TWO_FACTOR_ATTEMPTS);
+    if (attempts === undefined) {
       throw new UnauthorizedError('Too many 2FA attempts');
     }
 
-    const attempts = await this.challenges.incrementAttempts(challengeId);
     if (!safeEqualHex(hashCode(code), challenge.codeHash)) {
       throw new UnauthorizedError('Invalid 2FA code');
     }
 
-    await this.challenges.consume(challengeId);
+    const claimed = await this.challenges.consume(challengeId);
+    if (!claimed) {
+      throw new UnauthorizedError('No active 2FA challenge');
+    }
+
     logger.info({ userId: challenge.userId }, '2FA challenge verified');
     return { ...challenge, attempts };
   }

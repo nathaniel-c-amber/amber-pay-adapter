@@ -30,6 +30,8 @@ import {
   cx,
 } from "@/components/ui";
 import { PolicyAttributeEditor } from "@/components/PolicyAttributeEditor";
+import { Can, Cannot, useCan } from "@/components/Can";
+import { ABILITY } from "@/utils/permissions";
 import {
   inviteUser,
   listUsers,
@@ -37,7 +39,7 @@ import {
   updateUserPermissions,
   UnauthorizedError,
 } from "@/services/client";
-import { DEMO_USERS } from "@/utils/fixtures";
+import { DEMO_ENABLED, DEMO_USERS } from "@/utils/fixtures";
 import type { DemoUser } from "@/utils/fixtures";
 import type { ApiDirectoryUser, ApiIdentity, ApiPolicyAttribute } from "@/types/api";
 
@@ -129,13 +131,11 @@ function actionTone(actions: string): "read" | "write" | "admin" {
 export function UsersPage({
   identity,
   token,
-  canEdit,
   mode,
   onRequireSignIn,
 }: {
   identity: ApiIdentity | null;
   token: string | null;
-  canEdit: boolean;
   mode: "demo" | "live";
   /** Called when the session turns out to be dead, so the shell can say so. */
   onRequireSignIn: () => void;
@@ -186,7 +186,9 @@ export function UsersPage({
 
   useEffect(() => {
     if (live) void load();
-    else setRows(DEMO_USERS.map(toDemoRow));
+    /* The synthetic directory is a development affordance — outside it, an
+       unauthenticated or un-loaded directory is empty, not invented. */
+    else setRows(DEMO_ENABLED ? DEMO_USERS.map(toDemoRow) : []);
   }, [live, load]);
 
   // A confirmation is announced politely and then cleared, so repeating the
@@ -264,6 +266,10 @@ export function UsersPage({
   );
 
   const editingRow = panel.kind === "edit" ? directory.find((r) => r.id === panel.id) : undefined;
+  /* The two administration panels are gated in place as well as at their
+     triggers: the active policy can change while a panel is open. */
+  const can = useCan();
+  const mayManage = can(ABILITY.usersManage);
 
   return (
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
@@ -277,25 +283,27 @@ export function UsersPage({
               <IconRefresh />
               {loading ? "Refreshing" : "Refresh"}
             </button>
-            <button
-              type="button"
-              className={BTN_PRIMARY}
-              disabled={!canEdit || !live}
-              title={live ? "Invite a user" : "Sign in to invite users"}
-              onClick={openInvite}
-            >
-              <IconPlus /> Invite user
-            </button>
+            <Can ability={ABILITY.usersManage}>
+              <button
+                type="button"
+                className={BTN_PRIMARY}
+                disabled={!live}
+                title={live ? "Invite a user" : "Sign in to invite users"}
+                onClick={openInvite}
+              >
+                <IconPlus /> Invite user
+              </button>
+            </Can>
           </>
         }
       />
 
-      {!canEdit && (
+      <Cannot ability={ABILITY.usersManage}>
         <div className="flex items-center gap-2 rounded-panel border border-[rgb(230_161_42/0.4)] bg-state-tint-delayed px-3 py-2 text-sm text-text-delayed [&_svg]:animate-warn">
           Managing users requires the <code>admin</code> action. Your active scope can view this
           directory but not modify it.
         </div>
-      )}
+      </Cannot>
 
       {mode === "demo" && (
         <div className="rounded-panel border border-[rgb(230_161_42/0.4)] bg-state-tint-delayed px-3 py-2 text-sm text-text-delayed">
@@ -320,7 +328,7 @@ export function UsersPage({
         {notice ?? ""}
       </p>
 
-      {panel.kind === "invite" && (
+      {mayManage && panel.kind === "invite" && (
         <Card
           title={inviteEmail.trim() ? `Invite ${inviteEmail.trim()}` : "Invite a user"}
           meta="The invited account receives the policy attributes below"
@@ -390,7 +398,7 @@ export function UsersPage({
         </Card>
       )}
 
-      {panel.kind === "edit" && editingRow && (
+      {mayManage && panel.kind === "edit" && editingRow && (
         <Card
           title={`Permissions · ${editingRow.email}`}
           meta={
@@ -519,35 +527,37 @@ export function UsersPage({
                     <span className="mono text-xs text-ink-3">{row.meta}</span>
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    {row.status === "invite pending" ? (
-                      <button
-                        type="button"
-                        className={LINK_BTN}
-                        disabled={!canEdit || !live || busyId === row.id}
-                        title={live ? "Issue a fresh invite link" : "Sign in to manage accounts"}
-                        onClick={() =>
-                          void runAction(
-                            row.id,
-                            async () => {
-                              await resendInvite(token ?? "", row.id);
-                            },
-                            `A fresh invite link was sent to ${row.email}.`,
-                          )
-                        }
-                      >
-                        {busyId === row.id ? "Sending…" : "Resend invite"}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className={LINK_BTN}
-                        disabled={!canEdit || !live}
-                        title={live ? "Edit access" : "Sign in to manage accounts"}
-                        onClick={() => openEdit(row)}
-                      >
-                        Edit
-                      </button>
-                    )}
+                    <Can ability={ABILITY.usersManage}>
+                      {row.status === "invite pending" ? (
+                        <button
+                          type="button"
+                          className={LINK_BTN}
+                          disabled={!live || busyId === row.id}
+                          title={live ? "Issue a fresh invite link" : "Sign in to manage accounts"}
+                          onClick={() =>
+                            void runAction(
+                              row.id,
+                              async () => {
+                                await resendInvite(token ?? "", row.id);
+                              },
+                              `A fresh invite link was sent to ${row.email}.`,
+                            )
+                          }
+                        >
+                          {busyId === row.id ? "Sending…" : "Resend invite"}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={LINK_BTN}
+                          disabled={!live}
+                          title={live ? "Edit access" : "Sign in to manage accounts"}
+                          onClick={() => openEdit(row)}
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </Can>
                   </td>
                 </tr>
               ))}

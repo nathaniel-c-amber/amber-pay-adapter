@@ -14,20 +14,20 @@
 import { useState } from "react";
 import type { Connector, LifecycleEvent } from "@/types/domain";
 import { HEALTH_OF, HEALTH_IMPACT } from "@/utils/vocabulary";
-import { BTN_PRIMARY, Card, EmptyState, HealthBadge, PageHeader, PermissionGuard } from "@/components/ui";
+import { BTN_PRIMARY, Card, EmptyState, HealthBadge, PageHeader } from "@/components/ui";
+import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { IconRefresh, IconSync } from "@/components/icons";
+import { ABILITY } from "@/utils/permissions";
 
 export function SynchronizationPage({
   connectors,
   events,
-  canWrite,
   onRefresh,
   syncing,
 }: {
   connectors: Connector[];
   events: LifecycleEvent[];
-  canWrite: boolean;
   onRefresh: () => void;
   syncing: boolean;
 }) {
@@ -101,21 +101,14 @@ export function SynchronizationPage({
         </div>
       </section>
 
-      <Card
-        title="Manual synchronization"
-        meta={canWrite ? "authorized" : "restricted"}
-        className="sync-actions"
-      >
-        <PermissionGuard
-          allowed={canWrite}
-          reason="Running a sync requires write access on the payments scope."
-        >
+      <Card title="Manual synchronization" className="sync-actions">
+        <Can ability={ABILITY.paymentsWrite}>
           <div className="mb-3 flex gap-3">
             <button type="button" className={BTN_PRIMARY} onClick={runSync} disabled={syncing}>
               <IconRefresh /> {syncing ? "Requesting…" : "Run sync now"}
             </button>
           </div>
-        </PermissionGuard>
+        </Can>
         {requested && (
           <p className="mono mt-3 text-xs text-ink-3" role="status">
             <IconSync /> Monitoring data refreshed. This deployment exposes no manual-sync endpoint,
@@ -123,12 +116,12 @@ export function SynchronizationPage({
             endpoint ships.
           </p>
         )}
-        {!canWrite && (
-          <p className="mono mt-3 text-xs text-ink-3">
+        <Cannot ability={ABILITY.paymentsWrite}>
+          <p className="m-0 mono text-xs text-ink-3">
             The action is hidden from read-only scopes rather than shown disabled, so the interface
             never offers a control the policy cannot honour.
           </p>
-        )}
+        </Cannot>
       </Card>
 
       <Card

@@ -66,6 +66,18 @@ export class UserStore {
   async updatePassword(id: UserId, hashedPassword: string): Promise<boolean> {
     return this.users.updatePassword(id, hashedPassword);
   }
+
+  /**
+   * Stamp first-run tour completion for an account.
+   *
+   * Self-service: the caller passes its OWN subject from the verified token, so
+   * there is no authorization check to make here — a user stamping their own
+   * row is the whole point. Idempotent (see the repository contract), which is
+   * what lets the route answer 204 on a retry.
+   */
+  async markTourCompleted(id: UserId, at: string): Promise<boolean> {
+    return this.users.markTourCompleted(id, at);
+  }
 }
 
 /** Singleton user store backed by the shared repository container. */

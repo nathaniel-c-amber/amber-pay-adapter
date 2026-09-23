@@ -27,7 +27,19 @@ related_targets: []
 
 **FORM:** The chosen form is the Midnight Transit Diagonal, the winning challenger (SOURCE ID wayfinding-cartography-signage-midnight-transit-diagram) fused over the assigned Relay Room roll (seed key ca7932b5). Raised by the challengers it beat: the Signal Box's throw-the-route alive control (the focused line burns as you move between it) and the Relay Room's stamped message-tape event log (each lifecycle event arrives as a stamped entry). Breaks the grid-rut: hard geometric 45/90 line discipline, never a rounded-utility-card layout.
 
-**FINISH:** unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+## Direction contract
+
+**THESIS:** This console is the operating network read on a light, porcelain operations board: the health of every connector between Amber Pay and an accounting adaptor is answered on first sight, and every other surface (transactions, alerts, config, users, profile) is one navigation step behind a carded grid. It refuses the dark-theme operator-monitor default and the single-page KPI-wall; this is a multi-page surface whose navigation itself enforces policy.
+
+**OWN-WORLD:** A fixed sidebar (Monitor / Operations / Administration / Account) on a porcelain field, white carded panels with hairline rules, midnight ink, and the four line-inks darkened to hold 4.5:1 on light. Scarlet/cobalt/amber/green are spent only on connector routes and service states. Status renders a text label plus a shape mark (and a hatch on the suspended line) — never colour alone. Every readout is monospaced with tabular figures.
+
+**STORY:** An operator signs in under a policy scope and opens Health & status: overall connection health answered, four operational readouts, a connector health list, a compact findings panel, the signature service map, and the lifecycle stream. The scope selector in the top rebate re-shapes the whole console — narrower scopes collapse the navigation and drop acknowledge/edit to read-only; a super-admin scope reveals System configuration and Users.
+
+**FIRST VIEWPORT:** Fixed sidebar with grouped navigation and the live alerts count. Top rebate: page title, data-mode tag (Live / Demo), "as of" stamp, active scope selector, sign-in/refresh. Content: a health hero (status ring + overall verdict), a four-tile KPI strip, connector health | open findings cards, the service map, and the lifecycle event stream. Synthetic demonstration data is amber-tagged Demo wherever it could be mistaken for live.
+
+**FORM:** The chosen form is a light multi-page operations console (SalesOps-style sidebar + KPI + card surfaces), user-pinned as the redesign direction and re-inked into the Amber line palette. Replaces the prior single-surface Midnight Transit Diagonal dark world; the service map is retained and re-themed as the signature plate.
+
+**FINISH:** unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
 
 ## Unresolved
 

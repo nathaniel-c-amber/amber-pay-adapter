@@ -1,9 +1,10 @@
-/* Minimal typed API client for the Amber Pay backend.
+/* Minimal typed API client for the Amber Pay Ledger backend.
    Uses fetch. All endpoints are under /api/v1. */
 
 import type {
   ApiDirectoryUser,
   ApiIdentity,
+  ApiInviteDetail,
   ApiPolicyAttribute,
   ApiServiceStatus,
   MetricsResponse,
@@ -197,6 +198,22 @@ export function getServiceStatus(token: string): Promise<ApiServiceStatus> {
 }
 
 /**
+ * GET /auth/invite/:token — what an outstanding invite carries.
+ *
+ * Reading is not accepting: this validates the token exactly as accept-invite
+ * does (so an expired or already-used link is caught here, before the invitee
+ * types a password) but consumes nothing, which is what makes reloading the
+ * page safe.
+ */
+export async function getInvite(token: string): Promise<ApiInviteDetail> {
+  const body = await request<{ invite: ApiInviteDetail }>(
+    `/auth/invite/${encodeURIComponent(token)}`,
+    { method: "GET" },
+  );
+  return body.invite;
+}
+
+/**
  * POST /auth/accept-invite — the only user-creation path in the product.
  *
  * Public and token-gated. The invite carries the policy attributes the account
@@ -252,6 +269,21 @@ export async function resetPassword(
 export function getCurrentUser(token: string): Promise<ApiIdentity> {
   return request<ApiIdentity>("/auth/me", {
     method: "GET",
+    headers: authHeaders(token),
+  });
+}
+
+/**
+ * POST /auth/me/tour-complete — stamp the caller's own first-run tour as seen.
+ *
+ * Self-service and idempotent: the API answers 204 whether or not the stamp was
+ * already there, so a retry after a dropped response is safe and cannot fail on
+ * "already done". Errors are the caller's to swallow — a tour that could not be
+ * recorded must not interrupt the tour itself.
+ */
+export async function completeTour(token: string): Promise<void> {
+  await request<void>("/auth/me/tour-complete", {
+    method: "POST",
     headers: authHeaders(token),
   });
 }

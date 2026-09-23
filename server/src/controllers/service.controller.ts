@@ -68,7 +68,7 @@ export function createServiceController(): ServiceController {
 
       res.status(200).json({
         service: {
-          name: 'amber-pay-adaptor-monitor',
+          name: 'amber-pay-ledger',
           version: process.env['npm_package_version'] ?? '0.0.0',
           environment: env.NODE_ENV,
           nodeVersion: process.version,
