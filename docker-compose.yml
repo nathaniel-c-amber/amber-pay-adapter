@@ -72,6 +72,10 @@ services:
       # generated policy attribute must agree on this value; when they disagree
       # the symptom is an empty console rather than an error.
       ORGANIZATION_ID: ${ORGANIZATION_ID:-default}
+      # The ONE accounting system this deployment integrates with. The other one
+      # stays in the image but is never probed, listed or pushed to, so an
+      # operator is not shown a connection they never chose.
+      ADAPTOR_ID: ${ADAPTOR_ID:-quickbooks}
       # Credential encryption (needed once the onboarding wizard stores a gateway
       # or accounting credential). Generate with `openssl rand -hex 32`. Blank is
       # accepted: the API still starts, it just cannot store credentials.

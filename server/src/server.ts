@@ -6,6 +6,7 @@ import { runMigrations } from './db/migrator.js';
 import { seedSuperAdmin } from './db/seed.js';
 import { closePool } from './db/pool.js';
 import { connectConfiguredAdaptors } from './services/adaptors/health.service.js';
+import { syncConfiguredAdaptor } from './services/adaptors/activeAdaptor.service.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -29,12 +30,17 @@ async function start(): Promise<void> {
   }
 
   /*
-    Name the organization this deployment serves. Every stored row and every
-    generated policy attribute must agree on this value, and when they disagree
-    the symptom is a console that reads EMPTY rather than an error — so state it
-    once, at boot, where an operator will actually see it.
+    Name what this deployment serves: one organization, and ONE accounting
+    system. Both were previously literals in the webhook processor — and a
+    hardcoded organization id makes stored rows invisible to the users they are
+    about, with no error at all — so state them once, at boot, where an operator
+    will actually read them.
   */
-  logger.info({ organizationId: env.ORGANIZATION_ID }, 'Serving a single organization');
+  const configuredAdaptorId = await syncConfiguredAdaptor();
+  logger.info(
+    { organizationId: env.ORGANIZATION_ID, adaptorId: configuredAdaptorId },
+    'Serving one organization with one accounting system',
+  );
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

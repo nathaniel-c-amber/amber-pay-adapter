@@ -1,4 +1,5 @@
 import { withAdaptorConnections } from './connectorState.service.js';
+import { adaptorRegistry } from './registry.js';
 import { env } from '../../config/env.js';
 import type { AdaptorRuntimeState } from './health.service.js';
 import type { ConnectorState } from '../../models/domain.js';
@@ -38,6 +39,52 @@ async function merged(
 ): Promise<ConnectorState[]> {
   return withAdaptorConnections(stored, ['org-1'], readerFor(state));
 }
+
+describe('one accounting system per deployment', () => {
+  // The registry is a module singleton, so a restriction set here would leak into
+  // every later test in this file.
+  afterEach(() => adaptorRegistry.setActiveAdaptorId(null));
+
+  it('derives no row for the accounting system this deployment does not use', async () => {
+    // Unrestricted — the default, and the behaviour the defect was reported from:
+    // a QuickBooks organization saw a second, suspended route for Sage.
+    const unrestricted = await merged(connected);
+    expect(unrestricted.map((r) => r.terminus)).toContain('sage');
+
+    adaptorRegistry.setActiveAdaptorId('quickbooks');
+    const scoped = await merged(connected);
+
+    expect(scoped.map((r) => r.terminus)).toEqual(['quickbooks']);
+  });
+
+  it('reports only the chosen system, even when the chosen system is the one that is down', async () => {
+    // The same rule must hold on the path that reports a problem: a deployment
+    // that cannot reach its accounting system must be told about THAT system, and
+    // not also be handed a second failure for one it never chose.
+    adaptorRegistry.setActiveAdaptorId('sage');
+
+    const rows = await withAdaptorConnections([row()], ['org-1'], async () => unauthorized);
+
+    expect(rows.map((r) => r.terminus)).toEqual(['sage']);
+    expect(rows[0]?.status).toBe('suspended');
+    expect(rows[0]?.note).toBe(unauthorized.message);
+  });
+
+  it('drops a stored row belonging to the other system, but keeps rows that are not adaptors', async () => {
+    adaptorRegistry.setActiveAdaptorId('quickbooks');
+    const stored = [
+      row(),
+      // Stale: written when the deployment still preferred the other system.
+      row({ id: 'sage', terminus: 'sage', label: 'Sage Accounting' }),
+      // Not an accounting adaptor at all — someone else's connector, untouched.
+      row({ id: 'audit-trail', terminus: 'audit-trail', label: 'Audit trail' }),
+    ];
+
+    const rows = await merged(connected, stored);
+
+    expect(rows.map((r) => r.id)).toEqual(['quickbooks', 'audit-trail']);
+  });
+});
 
 function find(rows: ConnectorState[], id: string): ConnectorState {
   return rows.find((r) => r.id === id) as ConnectorState;

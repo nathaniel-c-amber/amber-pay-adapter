@@ -481,6 +481,50 @@ branch cannot be unit-tested until the settings write API exists to seed it. Tod
 on the environment-fallback branch. Phase 5 must add a test that stores credentials and asserts the
 provider prefers them.
 
+**Phase 4 — done.** A deployment integrates with **one** accounting system, chosen at setup.
+
+- **The failure this fixes is a phantom.** An unrestricted registry drew a second, suspended route on a
+  QuickBooks-only console reading *"Sage credentials are not configured"* — nothing was broken, but an
+  operator is handed a fault to chase that does not exist, on the page that matters most.
+- `registry.isActive(id)` / `setActiveAdaptorId(id)` / `activeAdaptorId()` (new). The distinction that
+  was missing is between *which adaptors exist* and *which one this deployment uses*: **`list()` stays
+  the full catalogue** — it is the choice the wizard offers — and everything that probes, displays or
+  pushes to a *connection* filters on `isActive()`. A registry that was never activated is
+  **unrestricted**, meaning null is not "none": boot is the one place that restricts it, and no existing
+  caller changes behaviour by accident.
+- `services/adaptors/activeAdaptor.service.ts` (new) — `resolveConfiguredAdaptorId()` (**stored choice
+  first, environment second**, the same transitional shape as the credential fallback) and
+  `syncConfiguredAdaptor()`, which restricts the registry and **resets the newly active adaptor** when
+  the choice changes — its cached instance holds the credentials it connected with, including a rotated
+  refresh token, so carrying it across a switch reports the previous system's failure.
+- Restricted at three surfaces, which is every way an accounting system can be observed: the **probe**
+  (no finding is filed for a system this deployment does not use), the **connection list** (no derived
+  row, and a *stored* row attributable to the other system is dropped as stale — rows whose terminus is
+  not an adaptor pass through untouched), and the **push target**.
+- The processor no longer guesses. `activeAdaptorId` became an explicit **test-only override** with no
+  default, and the push path resolves from configuration per delivery, so a Sage deployment stops
+  pushing its completed payments to QuickBooks. With nothing configured it **throws
+  `AdaptorConnectionError`** rather than guessing: a completed payment with nowhere to go is a real
+  operational failure, and the existing catch files it as a critical Failure instead of letting the
+  event look processed and vanish.
+- **R2 was still live, in the very file this plan exists to fix.** The `webhookProcessor` singleton
+  passed `'quickbooks'` *and* `'org-1'` as explicit arguments, and an explicit argument **beats a
+  default parameter** — so Phase 1's configured-organization default was defeated for the actual
+  production singleton, and every row it wrote was invisible to the organization that owned it, with no
+  error anywhere and a wildcard super admin as the only reader. Both literals are gone; `undefined` is
+  passed explicitly for the adaptor so the shared dedup repository keeps its position (omitting it would
+  silently substitute a throwaway in-memory one and break deduplication across restarts).
+- 11 tests added, and the number that matters is not the count but that **the filter had none before**:
+  the suite was green and unchanged when this phase landed, because every existing test used the
+  unrestricted default. Added: the phantom row asserted **before and after** restriction (so the test
+  states the defect, not just the fix); the chosen system still reported on the *failure* path; a stored
+  row of the other system dropped while a non-adaptor row survives; the unchosen system never contacted
+  by a probe; and **the singleton's records filed under the configured organization** — asserted by
+  re-importing it against an overridden `ORGANIZATION_ID`, which is the only shape that would have
+  caught the original bug, since the test suite's own value is the same `'org-1'` literal.
+
+Suite after Phase 4: **361 passed / 5 skipped / 0 failed** (from 350).
+
 ### Critical path
 
 **Phase 1 → 3 → 5 → 6.** Phase 1 is small but gates the wizard's invites. Phase 3 gates the verify

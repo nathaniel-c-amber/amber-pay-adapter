@@ -1,5 +1,6 @@
 import { AdaptorRegistry } from './registry.js';
 import { QuickBooksAdaptor } from './quickbooks.service.js';
+import { SageAdaptor } from './sage.service.js';
 import { AdaptorAuthError } from './errors.js';
 import { connectConfiguredAdaptors, probeAdaptors, resetConnectAttempts } from './health.service.js';
 import { AdaptorEventRecorder } from '../events/adaptorEventRecorder.service.js';
@@ -35,6 +36,42 @@ const ok: AdaptorResponse = { status: 200, body: {} };
 beforeEach(() => {
   resetConnectAttempts();
   respond = () => unauthorized;
+});
+
+describe('probeAdaptors: one accounting system per deployment', () => {
+  it('never probes the accounting system this deployment does not use', async () => {
+    const { registry, recorder } = harness();
+    // Sage is registered exactly as it is in the shipped image…
+    let sageProbed = false;
+    registry.register('sage', () =>
+      new SageAdaptor(async () => {
+        sageProbed = true;
+        return ok;
+      }),
+    );
+    // …but the deployment integrates with QuickBooks only.
+    registry.setActiveAdaptorId('quickbooks');
+
+    const status = await probeAdaptors(registry, recorder);
+
+    expect(status).toHaveLength(1);
+    expect(status[0]?.message).toContain('401');
+    // The unchosen system was not contacted at all, so it cannot raise a finding
+    // an operator would be told to fix.
+    expect(sageProbed).toBe(false);
+  });
+
+  it('probes the chosen system when it is not the first registered', async () => {
+    const { registry, recorder } = harness();
+    registry.register('sage', () => new SageAdaptor(async () => ok));
+    registry.setActiveAdaptorId('sage');
+
+    const status = await probeAdaptors(registry, recorder);
+
+    expect(status).toHaveLength(1);
+    // The chosen system is the one probed and reported, whatever the order.
+    expect(status[0]?.reachable).toBe(true);
+  });
 });
 
 describe('probeAdaptors', () => {

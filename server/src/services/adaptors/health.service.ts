@@ -103,7 +103,10 @@ export async function probeAdaptors(
   registry: AdaptorRegistry = adaptorRegistry,
   recorder: AdaptorEventRecorder = adaptorEventRecorder,
 ): Promise<ServiceStatusAdaptors[]> {
-  const ids = registry.list();
+  // Only the ACTIVE accounting system. An organization integrates with exactly
+  // one, so probing the other one produces a failure nobody can act on and a
+  // row that should not exist.
+  const ids = registry.list().filter((id) => registry.isActive(id));
   const probes = await Promise.all(ids.map((id) => probeAdaptor(registry, id)));
   // Recorded as one batch once every probe has resolved: the outcomes are then
   // complete, and the recorder can decide "changed state" from a consistent set.
@@ -225,7 +228,10 @@ export async function connectConfiguredAdaptors(
 ): Promise<void> {
   const failures: AdaptorOutcome[] = [];
   await Promise.all(
-    registry.list().map(async (id) => {
+    registry
+      .list()
+      .filter((id) => registry.isActive(id))
+      .map(async (id) => {
       const adaptor = registry.get(id);
       try {
         await connectAdaptor(adaptor);

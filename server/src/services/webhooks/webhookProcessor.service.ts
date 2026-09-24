@@ -1,6 +1,8 @@
 import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import { connectAdaptor } from '../adaptors/credentials.provider.js';
+import { resolveConfiguredAdaptorId } from '../adaptors/activeAdaptor.service.js';
+import { AdaptorConnectionError } from '../adaptors/errors.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
@@ -37,7 +39,12 @@ export class WebhookProcessor {
     private readonly failureTracker: FailureTracker,
     private readonly adaptorResolver: AdaptorResolver = adaptorRegistry,
     private readonly pushTimeoutMs = 5000,
-    private readonly activeAdaptorId: AdaptorId = 'quickbooks',
+    /*
+      An OVERRIDE for tests. Left undefined in production so the push target comes
+      from configuration: this used to default to the literal 'quickbooks', which
+      meant a Sage deployment pushed its completed payments to QuickBooks.
+    */
+    private readonly activeAdaptorId?: AdaptorId,
     private readonly dedup: WebhookDedupRepository = new InMemoryWebhookDedupRepository(),
     /*
       The organization every event and failure is filed under. Defaults to the
@@ -142,7 +149,19 @@ export class WebhookProcessor {
    */
   private async pushToAdaptor(event: WebhookEvent, action: string): Promise<void> {
     try {
-      const adaptor = this.adaptorResolver.get(this.activeAdaptorId);
+      const adaptorId = this.activeAdaptorId ?? (await resolveConfiguredAdaptorId());
+      if (!adaptorId) {
+        /*
+          Nothing to push to. Throwing is deliberate: a completed payment with
+          nowhere to go is a real operational failure, and the surrounding catch
+          records it as a critical Failure rather than letting the event look
+          processed and disappear.
+        */
+        throw new AdaptorConnectionError(
+          'No accounting system is configured for this deployment, so a completed payment cannot be recorded',
+        );
+      }
+      const adaptor = this.adaptorResolver.get(adaptorId);
       if ((await adaptor.status()) !== 'connected') {
         // Through the provider: the adaptor reads no environment, and the same
         // call is what persists a rotated credential.
@@ -232,13 +251,24 @@ export class WebhookProcessor {
   }
 }
 
-/** Singleton webhook processor wired to the default services and repositories. */
+/**
+ * Singleton webhook processor wired to the default services and repositories.
+ *
+ * IT PASSES NO HARDCODED CHOICES. Both used to be literals — `'quickbooks'` for
+ * the push target and `'org-1'` for the organization — and the second silently
+ * DEFEATED the configured-organization default, because an explicit argument
+ * beats a default parameter. Every choice now comes from configuration.
+ *
+ * `undefined` is passed for the adaptor rather than omitted, so the dedup
+ * repository keeps its position: dropping it would quietly swap the shared
+ * container for a throwaway in-memory one and break webhook deduplication across
+ * restarts.
+ */
 export const webhookProcessor = new WebhookProcessor(
   eventLog,
   failureTracker,
   adaptorRegistry,
   5000,
-  'quickbooks',
+  undefined,
   getRepositories().webhookDedup,
-  'org-1',
 );

@@ -203,6 +203,19 @@ export class SettingsService {
     return (await this.repository.get()).configuredAt !== null;
   }
 
+  /**
+   * The chosen accounting system, whether or not its credentials are set yet.
+   *
+   * Separate from `resolveCredentials()`, which returns an adaptor only when the
+   * credentials are present too. The CHOICE has to be readable on its own: the
+   * console must be able to say "Sage is selected but not yet connected" rather
+   * than fall back to guessing, and mid-wizard it is exactly the state the
+   * operator is in.
+   */
+  async configuredAdaptorId(): Promise<ConfiguredAdaptorId | null> {
+    return (await this.repository.get()).adaptorId;
+  }
+
   async updateGateway(update: GatewayUpdate): Promise<PublicDeploymentSettings> {
     const patch: DeploymentSettingsPatch = {};
     const changed: string[] = [];

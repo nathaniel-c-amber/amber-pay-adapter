@@ -2,6 +2,7 @@ import { WebhookProcessor } from './webhookProcessor.service.js';
 import { EventLog } from '../events/eventLog.service.js';
 import { FailureTracker } from '../events/failureTracker.service.js';
 import { QuickBooksAdaptor } from '../adaptors/quickbooks.service.js';
+import { env } from '../../config/env.js';
 import type { WebhookEvent } from '../../types/gateway.js';
 import type { AccountingAdaptor } from '../../types/adaptor.js';
 
@@ -28,6 +29,57 @@ function makeAdaptor(overrides?: Partial<AccountingAdaptor>): AccountingAdaptor 
     ...overrides,
   };
 }
+
+describe('the push target is configured, not assumed', () => {
+  it('resolves which accounting system to push to instead of defaulting to QuickBooks', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const resolver = { get: jest.fn().mockReturnValue(makeAdaptor()) };
+    // No adaptor id passed: the processor must ask configuration.
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+
+    await processor.processWebhook(collectedEvent);
+
+    // A Sage deployment used to push its completed payments to QuickBooks,
+    // because the class defaulted to the literal 'quickbooks'.
+    expect(resolver.get).toHaveBeenCalledWith(env.ADAPTOR_ID);
+  });
+
+  it('still honours an explicitly supplied adaptor id (the test seam)', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const resolver = { get: jest.fn().mockReturnValue(makeAdaptor()) };
+    const processor = new WebhookProcessor(eventLog, failureTracker, resolver, 5000, 'sage');
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(resolver.get).toHaveBeenCalledWith('sage');
+  });
+
+  it('files the singleton\'s records under the configured organization, not a literal', async () => {
+    /*
+      The bug this pins was silent: the singleton passed the literal 'org-1' as
+      its organization, which OVERRODE the configured default (an explicit
+      argument beats a default parameter). Every row it wrote was then invisible
+      to the organization that owned it — no error anywhere, just a console that
+      read empty for everyone except a wildcard super admin.
+    */
+    const original = process.env.ORGANIZATION_ID;
+    process.env.ORGANIZATION_ID = 'org-check';
+    try {
+      // A fresh module registry, so the configuration is parsed again with the
+      // value above and the singleton is constructed against it.
+      jest.resetModules();
+      const fresh = await import('./webhookProcessor.service.js');
+      const scope = (fresh.webhookProcessor as unknown as { organizationId: string })
+        .organizationId;
+
+      expect(scope).toBe('org-check');
+    } finally {
+      process.env.ORGANIZATION_ID = original;
+    }
+  });
+});
 
 describe('WebhookProcessor', () => {
   it('records a collected event and pushes to the adaptor', async () => {

@@ -140,6 +140,24 @@ const envSchema = z.object({
   */
   ORGANIZATION_ID: z.string().min(1).default('default'),
 
+  /*
+    The ONE accounting system this deployment integrates with, chosen at setup.
+
+    An organization integrates with exactly one, so this value selects what is
+    probed, what the Connections page draws, and where a completed payment is
+    pushed — three surfaces that previously each assumed BOTH adaptors existed.
+    A QuickBooks-only organization was shown a suspended Sage route reading "Sage
+    credentials are not configured": a fault that is not real, on the console's
+    most important page.
+
+    Stored configuration wins once the onboarding wizard has set a choice. The
+    default preserves what the webhook push path previously hardcoded.
+  */
+  ADAPTOR_ID: z.preprocess(
+    blankAsAbsent,
+    z.enum(['quickbooks', 'sage']).default('quickbooks'),
+  ),
+
   // Number of reverse proxies in front of this process (nginx in the compose
   // stack, plus ngrok when the tunnel profile is active).
   //

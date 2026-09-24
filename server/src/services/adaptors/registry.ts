@@ -18,6 +18,23 @@ export class AdaptorRegistry {
   private readonly factories = new Map<AdaptorId, AdaptorFactory>();
   private readonly instances = new Map<AdaptorId, AccountingAdaptor>();
 
+  /**
+   * The accounting system this deployment integrates with, or null when it has
+   * not been restricted yet.
+   *
+   * "Which adaptors exist" and "which adaptor this deployment USES" are two
+   * different questions, and conflating them is what put a suspended Sage row on
+   * a QuickBooks-only console. `list()` answers the first — the catalogue the
+   * onboarding wizard offers as a choice. `isActive()` answers the second, and
+   * everything that probes, displays or pushes to a CONNECTION filters on it.
+   *
+   * Null means UNRESTRICTED rather than "none": a registry that was never
+   * activated behaves exactly as it did before, so no test needs to activate one,
+   * and boot activates explicitly. An organization integrates with exactly one
+   * system, so production is always restricted.
+   */
+  private activeId: AdaptorId | null = null;
+
   register(id: AdaptorId, factory: AdaptorFactory): void {
     if (this.factories.has(id)) {
       throw new ConflictError(`Adaptor already registered: ${id}`);
@@ -62,6 +79,26 @@ export class AdaptorRegistry {
    */
   reset(id: AdaptorId): void {
     this.instances.delete(id);
+  }
+
+  /**
+   * Restrict this deployment to one accounting system. `null` lifts the
+   * restriction.
+   *
+   * MUST also be followed by `reset(id)` when the CHOICE changes, or the newly
+   * chosen adaptor's cached instance (and its credentials) survives a switch.
+   */
+  setActiveAdaptorId(id: AdaptorId | null): void {
+    this.activeId = id;
+  }
+
+  activeAdaptorId(): AdaptorId | null {
+    return this.activeId;
+  }
+
+  /** May this deployment probe, display or push to this adaptor? */
+  isActive(id: AdaptorId): boolean {
+    return this.activeId === null || this.activeId === id;
   }
 }
 

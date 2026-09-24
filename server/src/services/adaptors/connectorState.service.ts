@@ -102,13 +102,24 @@ export async function withAdaptorConnections(
   organizationIds: string[] | null,
   read: AdaptorStateReader = readAdaptorState,
 ): Promise<ConnectorState[]> {
-  const registered = adaptorRegistry.list();
+  /*
+    Only the ACTIVE accounting system. An organization integrates with exactly
+    one, so a stored row attributable to the other one is stale by definition —
+    keeping it would reproduce, on the Connections page, the phantom route this
+    filter exists to remove. Rows whose terminus is not an adaptor at all belong
+    to something else and pass through untouched.
+  */
+  const active = stored.filter((row) => {
+    const adaptorId = ADAPTOR_BY_TERMINUS[row.terminus];
+    return adaptorId === undefined || adaptorRegistry.isActive(adaptorId);
+  });
+  const registered = adaptorRegistry.list().filter((id) => adaptorRegistry.isActive(id));
   const covered = new Set(
-    stored.map((row) => ADAPTOR_BY_TERMINUS[row.terminus]).filter(Boolean) as AdaptorId[],
+    active.map((row) => ADAPTOR_BY_TERMINUS[row.terminus]).filter(Boolean) as AdaptorId[],
   );
 
   const merged = await Promise.all(
-    stored.map(async (row): Promise<ConnectorState> => {
+    active.map(async (row): Promise<ConnectorState> => {
       const adaptorId = ADAPTOR_BY_TERMINUS[row.terminus];
       if (!adaptorId || !registered.includes(adaptorId)) return row;
 
