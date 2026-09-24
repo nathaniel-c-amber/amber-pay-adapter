@@ -11,11 +11,12 @@ import {
   createPaymentRouter,
   createReportRouter,
   createServiceRouter,
+  createSettingsRouter,
   createUsersRouter,
   createWebhookRouter,
 } from './routes/index.js';
 import { getRepositories } from './repositories/index.js';
-import type { AuthRouteDeps, UsersRouteDeps } from './routes/index.js';
+import type { AuthRouteDeps, SettingsRouteDeps, UsersRouteDeps } from './routes/index.js';
 import type { Repositories } from './types/repository.js';
 import type { AmberPayGateway } from './types/gateway.js';
 
@@ -24,6 +25,8 @@ export interface CreateAppDeps {
   auth?: AuthRouteDeps;
   /** Optional user-directory service override (tests inject a stub). */
   users?: UsersRouteDeps;
+  /** Optional settings service/registry override (tests inject seams). */
+  settings?: SettingsRouteDeps;
   /** Optional repository container override (tests inject in-memory). */
   repositories?: Repositories;
   /** Optional gateway override (tests inject a stub). */
@@ -70,6 +73,10 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
 
   // Administrator-only user directory and permission management.
   app.use('/api/v1', createUsersRouter(deps.users));
+
+  // Deployment configuration — the onboarding wizard writes through these, and
+  // the console reads them to show presence and last-four of each credential.
+  app.use('/api/v1', createSettingsRouter(deps.settings));
 
   // The console's window into its own backend: process, storage and adaptor
   // reachability, so "pipeline healthy" is distinguishable from "console blind".

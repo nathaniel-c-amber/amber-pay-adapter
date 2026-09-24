@@ -9,6 +9,7 @@ export { createFailuresRouter } from './failures.js';
 export { createPaymentRouter } from './payments.js';
 export { createReportRouter } from './reports.js';
 export { createServiceRouter } from './service.js';
+export { createSettingsRouter } from './settings.js';
 export { createUsersRouter } from './users.js';
 export { createWebhookRouter } from './webhooks.js';
 
@@ -17,4 +18,5 @@ export type { DashboardRouteDeps } from './dashboard.js';
 export type { FailuresRouteDeps } from './failures.js';
 export type { PaymentRouteDeps } from './payments.js';
 export type { ReportRouteDeps } from './reports.js';
+export type { SettingsRouteDeps } from './settings.js';
 export type { UsersRouteDeps } from './users.js';

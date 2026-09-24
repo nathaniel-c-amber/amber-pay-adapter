@@ -20,6 +20,22 @@ import { settingsService } from '../settings/settings.service.js';
 import { adaptorRegistry } from './registry.js';
 import type { AdaptorId } from '../../types/adaptor.js';
 import type { AdaptorRegistry } from './registry.js';
+import type { ConfiguredAdaptorId } from '../../models/deploymentSettings.js';
+
+/**
+ * Just the one question this file needs answered, so a caller can pass the
+ * settings service IT is using.
+ *
+ * Passing the instance rather than reaching for the module singleton matters
+ * because the two can genuinely differ — any test, and any future caller holding
+ * its own service, would otherwise have its WRITE go to one row while the active
+ * accounting system was decided from another. That is the same hidden coupling
+ * that makes the stored-credentials branch of `credentials.provider.ts` hard to
+ * test, and the fix is the same: name the dependency.
+ */
+export type ConfiguredAdaptorReader = {
+  configuredAdaptorId(): Promise<ConfiguredAdaptorId | null>;
+};
 
 /**
  * The accounting system this deployment should use.
@@ -28,9 +44,11 @@ import type { AdaptorRegistry } from './registry.js';
  * corrupt settings row must not take the accounting link offline when a usable
  * value is configured next to it.
  */
-export async function resolveConfiguredAdaptorId(): Promise<AdaptorId | null> {
+export async function resolveConfiguredAdaptorId(
+  reader: ConfiguredAdaptorReader = settingsService,
+): Promise<AdaptorId | null> {
   try {
-    const stored = await settingsService.configuredAdaptorId();
+    const stored = await reader.configuredAdaptorId();
     if (stored) {
       return stored;
     }
@@ -51,8 +69,9 @@ export async function resolveConfiguredAdaptorId(): Promise<AdaptorId | null> {
  */
 export async function syncConfiguredAdaptor(
   registry: AdaptorRegistry = adaptorRegistry,
+  reader: ConfiguredAdaptorReader = settingsService,
 ): Promise<AdaptorId | null> {
-  const id = await resolveConfiguredAdaptorId();
+  const id = await resolveConfiguredAdaptorId(reader);
   const previous = registry.activeAdaptorId();
   registry.setActiveAdaptorId(id);
   if (id && previous !== id) {

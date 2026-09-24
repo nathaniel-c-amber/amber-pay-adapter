@@ -288,11 +288,12 @@ flowchart TD
 
 | Method | Path | Gate | Notes |
 |---|---|---|---|
-| `GET` | `/api/v1/settings` | `SYSTEM_MANAGE` (read) | Presence + last-4 only. Includes `organizationId` (from D1) |
-| `PUT` | `/api/v1/settings/gateway` | `SYSTEM_MANAGE` | Write-only credentials; throttled; audited |
-| `PUT` | `/api/v1/settings/adaptor` | `SYSTEM_MANAGE` | Adaptor id + realm + write-only credentials |
-| `POST` | `/api/v1/settings/adaptor/verify` | `SYSTEM_MANAGE` | Transient probe; persists nothing (D6) |
-| `POST` | `/api/v1/settings/complete` | `SYSTEM_MANAGE` | Stamps `configured_at`; idempotent |
+| `GET` | `/api/v1/settings` | `system` `read` \| `write` \| `admin` | Presence + last-4 only. Includes `organizationId` (from D1) |
+| `PUT` | `/api/v1/settings/gateway` | `system` `write` \| `admin` | Write-only credentials; throttled; audited |
+| `PUT` | `/api/v1/settings/adaptor` | `system` `write` \| `admin` | Adaptor id + realm + write-only credentials; takes effect immediately |
+| `PUT` | `/api/v1/settings/preferences` | `system` `write` \| `admin` | Organization name, sync cadence, alert target |
+| `POST` | `/api/v1/settings/adaptor/verify` | `system` `write` \| `admin` | Transient probe; records no lifecycle event. Writes nothing it TESTED (D6) |
+| `POST` | `/api/v1/settings/complete` | `system` `write` \| `admin` | Stamps `configured_at`; idempotent |
 | `POST` | `/api/v1/webhooks/amber-pay` | public | Signature verification restored; secret injected from settings |
 
 Every mutation throttled and audited. The webhook route must fail closed when no secret is configured
@@ -524,6 +525,67 @@ provider prefers them.
   caught the original bug, since the test suite's own value is the same `'org-1'` literal.
 
 Suite after Phase 4: **361 passed / 5 skipped / 0 failed** (from 350).
+
+**Phase 5 — done.** The settings API: `routes/settings.ts`, `controllers/settings.controller.ts`, and
+`services/settings/verify.service.ts` (new).
+
+- **The gate is one idea with two spellings.** New `requirePolicyAnyAction` in
+  `middleware/auth.middleware.ts`. The console identifies an operator who may manage this deployment
+  with `SYSTEM_MANAGE` — `system.write` OR `system.admin` — and two gates in sequence would require
+  BOTH, so an administrator holding only `admin` would be refused a control the console had just
+  invited. Reads take `read` too (a read-only system holder renders the page with locked controls, so
+  the page must be *fetchable* or it renders empty for the one person who should see it); writes take
+  `write` or `admin`.
+- **The PBAC resource is FIXED** — `system` for `env.ORGANIZATION_ID` — and not read from the request.
+  There is no parameter to tamper with in order to reach another deployment's configuration, and a
+  system administrator of a *different* organization is refused (asserted).
+- **Mutations are throttled at 30/15min; verification separately at 10/15min**, because it is the one
+  settings call whose cost a third party pays. Sharing the budget would let a console left open burn an
+  accounting provider's rate limit with retries.
+- **Every mutation schema is STRICT, so a misspelled key is a 400.** Zod strips unknown keys by
+  default, which answers "saved" to a request that changed nothing — worse than an error, because the
+  operator's next move is to leave believing it worked.
+- **Verify honours D6, and the one deviation is deliberate.** It builds a TRANSIENT instance with
+  `createAdaptor()` and never `get()`: `get()` returns the instance production connects, probes and
+  pushes through, so trying a mistyped credential against it would replace a working connection with a
+  broken one — the wizard would damage the thing it was asked to check. Proved by test (the live
+  instance is untouched and not reset). It also files **no lifecycle event and no finding**, which is
+  the R4 mitigation: a typo being corrected must not look like an outage.
+  The deviation: the table above says "persists nothing", and the STORED mode does write. SUPPLIED
+  credentials (the wizard, before saving) record nothing at all; STORED credentials (the console's
+  re-verify) stamp `verifiedAt` and persist a rotation. Without that, `verifiedAt` could never be
+  refreshed, and discarding a rotation there would kill the connection on the next restart one token
+  lifetime after a screen that said "healthy" (R5).
+- **A failed verification is a 200 with `ok:false` and a classified `reason`.** A rejected credential is
+  the expected result of an operator typing one, so it is an answer rather than a transport failure,
+  and the wizard needs the reason to distinguish "fix the value" from "try again later".
+- **A saved adaptor configuration takes effect immediately** — `syncConfiguredAdaptor` then
+  `reset(activeId)` — or the operator watches a correction change nothing and enters it again.
+- **Two defects the new tests caught while being written:**
+  1. **`complete()` was not idempotent.** A reloaded wizard, a retried request or a double-clicked
+     Finish rewrote when the deployment was configured. It now reads before it writes; the test covers
+     the promise the plan had already made.
+  2. **`resolveConfiguredAdaptorId()` read the module singleton while the route used an injected
+     service** — so a WRITE could land in one settings row while the active accounting system was
+     decided from another. It now takes the reader explicitly. This is the same hidden-coupling shape
+     as the Phase 3 gap below, and it is why the provider file's fix is structural rather than a test
+     workaround.
+- Also: a credential write on a deployment with no `SECRETS_KEY` returned a **500 from inside
+  `sealSecret`**, which reads as a bug in the API rather than as one missing environment variable. Now
+  a 503 naming the command that fixes it. *Untested — the suite has a key; worth a case when the env
+  schema gains a seam.* An orphaned doc comment that described credential-change clearing had come to
+  rest above `complete()`; it is back on `clearVerification`, which it describes.
+- 24 tests added (17 route, 7 provider). Suite after Phase 5: **385 passed / 5 skipped / 0 failed**
+  (from 361). `db/seed.test.ts` also gained `jest.setTimeout(30_000)`: under the now-larger suite it
+  failed on CPU contention (bcrypt cost 12) while passing alone, and the repo already carries exactly
+  this remedy in `accounts.test.ts`. A red baseline that is really a timeout misleads the next person.
+
+**The Phase 3 gap is now CLOSED.** `services/adaptors/credentials.provider.test.ts` (new) exercises the
+stored branch that had none: a stored credential beats the environment (asserted against a non-empty
+environment, so precedence is what is proven); the merge is per field, so a partially filled set still
+connects; one system is never handed the other's credentials; an **undecryptable** stored row falls
+back to the environment instead of crashing the probe; a rotation is written back to the row; and a
+rotation that arrived on an ENVIRONMENT fallback does **not** invent a stored credential set.
 
 ### Critical path
 

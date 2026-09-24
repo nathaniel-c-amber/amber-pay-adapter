@@ -6,6 +6,16 @@ import type { Repositories } from '../types/repository.js';
 import type { UserRepository } from '../types/repository.js';
 import type { AuthUser } from '../types/auth.js';
 
+/*
+  bcrypt runs at cost 12 — deliberately, and weakening a production constant to
+  make a test faster would be the wrong trade. But a hash is hundreds of
+  milliseconds of real CPU, so these cases are timing-sensitive to MACHINE LOAD
+  rather than to anything they assert: under the full parallel suite they were
+  observed failing here while passing in isolation, every time. The budget is for
+  contention, not for how long seeding is allowed to take.
+*/
+jest.setTimeout(30_000);
+
 /** Simulates a concurrent instance: findByEmail misses, create hits a conflict. */
 class RacingUserRepository implements UserRepository {
   async findByEmail(): Promise<AuthUser | undefined> {

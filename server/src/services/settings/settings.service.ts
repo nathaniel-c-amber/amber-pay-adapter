@@ -21,7 +21,7 @@
 
 import { logger } from '../../utils/logger.js';
 import { parseDurationMs } from '../../utils/duration.js';
-import { ValidationError } from '../../utils/errors.js';
+import { AppError, ValidationError } from '../../utils/errors.js';
 import { lastFourOf, openSecret, sealSecret, secretsConfigured } from '../../utils/secrets.js';
 import { getRepositories } from '../../repositories/index.js';
 import { env } from '../../config/env.js';
@@ -159,6 +159,26 @@ function assertNonEmpty(value: string, field: string): void {
   }
 }
 
+/**
+ * Refuse a credential write this deployment cannot honour.
+ *
+ * WITHOUT THIS the first write fails inside `sealSecret` with a 500, which reads
+ * as a bug in the API rather than as one missing environment variable — and the
+ * operator's next move is to report it instead of generating a key. A missing
+ * `SECRETS_KEY` is a deployment state, not an internal fault: the API is
+ * deliberately allowed to boot without one (an upgrade must not take a working
+ * install offline), so the refusal belongs at the write, where it is actionable.
+ */
+function assertStorable(): void {
+  if (!secretsConfigured()) {
+    throw new AppError(
+      503,
+      'SECRETS_NOT_CONFIGURED',
+      'This deployment has no SECRETS_KEY, so credentials cannot be stored. Generate one with `openssl rand -hex 32` and set it in the environment.',
+    );
+  }
+}
+
 function assertHttpUrl(value: string, field: string): void {
   let parsed: URL;
   try {
@@ -226,6 +246,7 @@ export class SettingsService {
       changed.push('gateway.clientId');
     }
     if (update.webhookSecret !== undefined) {
+      if (update.webhookSecret !== null) assertStorable();
       patch.gatewayWebhookSecret =
         update.webhookSecret === null ? null : sealSecret(assertNonEmptySecret(update.webhookSecret, 'gateway.webhookSecret'));
       // The VALUE is never named in the audit line — only that it changed.
@@ -253,6 +274,7 @@ export class SettingsService {
       changed.push('adaptor.baseUrl');
     }
     if (update.credentials !== undefined) {
+      if (update.credentials !== null) assertStorable();
       patch.adaptorCredentials =
         update.credentials === null
           ? null
@@ -293,17 +315,36 @@ export class SettingsService {
   }
 
   /**
-   * A credential change invalidates the last verification.
+   * Stamp the deployment as configured. IDEMPOTENT BY DESIGN.
    *
-   * Clearing it here rather than asking every caller to remember means the
-   * console can never show "verified" for a credential that has since been
-   * replaced — a stale tick on the one page whose job is to say whether the
-   * connection works.
+   * The first stamp is a fact about the deployment, and the console gates the
+   * whole wizard on its presence — so a second call must NOT move it. A reloaded
+   * wizard, a retried request or a double-clicked Finish button would otherwise
+   * rewrite when this deployment was first set up, which is exactly the kind of
+   * recorded fact an operator later reasons from.
+   *
+   * Reads before writing so the ordinary repeat is a no-op. Two CONCURRENT first
+   * calls could still both write, since the repository's `update` is
+   * unconditional; the consequence is a timestamp differing by milliseconds,
+   * which does not justify a conditional-UPDATE method the way the tour's
+   * per-user stamp did (there the answer "did THIS call write?" drove the UI).
    */
   async complete(now: string = new Date().toISOString()): Promise<PublicDeploymentSettings> {
+    const current = await this.repository.get();
+    if (current.configuredAt !== null) {
+      return toPublic(current, env.ORGANIZATION_ID, secretsConfigured());
+    }
     return this.apply({ configuredAt: now }, ['configuredAt']);
   }
 
+  /**
+   * Forget that the connection was ever verified.
+   *
+   * Called when a credential changes, rather than asking every caller to
+   * remember: a caller that forgets leaves the console showing "verified" for a
+   * credential that has since been replaced — a stale tick on the one page whose
+   * job is to say whether the connection works.
+   */
   async clearVerification(): Promise<void> {
     await this.repository.update({ verifiedAt: null });
   }

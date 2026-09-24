@@ -56,6 +56,41 @@ export function requirePolicy(
 }
 
 /**
+ * Build middleware requiring AT LEAST ONE of `actions` on a single resource.
+ *
+ * WHY ANY, NOT EACH: an operator who may manage this deployment is identified by
+ * ONE idea — the console spells it `SYSTEM_MANAGE` — which is satisfied by
+ * `system.write` OR `system.admin`. Expressed here as two gates in sequence it
+ * would require BOTH, so an administrator holding only `admin` would be shown a
+ * control the API then refuses. That mismatch is the same failure the console's
+ * `has()` was tightened to remove, and it runs in the direction that wastes an
+ * operator's time, so the gate matches the intention rather than the spelling.
+ */
+export function requirePolicyAnyAction(
+  actions: PolicyAction[],
+  resourceOf: (req: Request) => Omit<PolicyResource, 'action'>,
+): RequestHandler {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const auth = req.auth;
+    if (!auth) {
+      return next(new UnauthorizedError('Authentication required'));
+    }
+    const base = resourceOf(req);
+    const allowed = actions.some(
+      (action) => evaluatePolicy(auth.policy, { ...base, action }).allowed,
+    );
+    if (!allowed) {
+      return next(
+        new ForbiddenError(
+          `No policy attribute grants '${actions.join("' or '")}' on scope '${base.scope}' for organization '${base.organizationId}'`,
+        ),
+      );
+    }
+    next();
+  };
+}
+
+/**
  * Build middleware requiring `action` on `scope` for AT LEAST ONE organization.
  *
  * `requirePolicy` needs a concrete resource, which works for a request that
