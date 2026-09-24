@@ -49,8 +49,14 @@ const EVENT_ORDER: Record<EventType, number> = {
   "record-updated": 2,
   "sync-change": 3,
   initiated: 4,
-  "payment-declined": 5,
-  "payment-failed": 6,
+  "payment-refunded": 5,
+  "payment-declined": 6,
+  "payment-failed": 7,
+  // Adaptor reachability is infrastructure, not a payment phase: sorted below
+  // the payment trail so one payment's own events stay together.
+  "adaptor-restored": 8,
+  "adaptor-unreachable": 9,
+  "adaptor-auth-failed": 10,
 };
 const sortEventType = constructSortFn({
   sort: (a, b) =>

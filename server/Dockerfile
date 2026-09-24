@@ -35,6 +35,10 @@ COPY --from=build /app/dist ./dist
 
 # Run as a non-root user for security.
 RUN addgroup -S app && adduser -S app -G app
+# The log sink writes to <LOG_DIR> (default `logs`, i.e. /app/logs) and runs as
+# `app`, so the directory must exist and be owned by it. Without this the file
+# sink would fall back to stdout-only with a permission error at startup.
+RUN mkdir -p /app/logs && chown app:app /app/logs
 USER app
 
 EXPOSE 3300

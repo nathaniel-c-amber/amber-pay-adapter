@@ -1,4 +1,5 @@
 import { AppError } from '../../utils/errors.js';
+import type { AdaptorFailureReason } from '../../types/adaptor.js';
 
 /**
  * Base adaptor error. Extends AppError so it flows through `toHttpError` and
@@ -58,4 +59,38 @@ export function adaptorErrorForStatus(status: number, message: string): AdaptorE
     return new AdaptorConnectionError(message);
   }
   return new AdaptorError(status, 'ADAPTOR_ERROR', message);
+}
+
+/**
+ * Classify an upstream HTTP status for reporting (the `HealthCheckResult`
+ * counterpart of `adaptorErrorForStatus`, which throws instead of reporting).
+ */
+export function failureReasonForStatus(status: number): AdaptorFailureReason {
+  if (status === 401 || status === 403) {
+    return 'auth';
+  }
+  if (status === 429) {
+    return 'rate-limited';
+  }
+  if (status >= 500) {
+    return 'unreachable';
+  }
+  return 'upstream';
+}
+
+/**
+ * Classify a thrown adaptor error for reporting.
+ *
+ * A non-`AdaptorError` (a `TypeError` from `fetch`, a DNS failure) is reported
+ * as `unreachable`: the call did not produce an HTTP answer at all, which is
+ * what "we could not reach it" means.
+ */
+export function failureReasonForError(error: unknown): AdaptorFailureReason {
+  if (error instanceof AdaptorAuthError) {
+    return 'auth';
+  }
+  if (error instanceof AdaptorRateLimitError) {
+    return 'rate-limited';
+  }
+  return 'unreachable';
 }

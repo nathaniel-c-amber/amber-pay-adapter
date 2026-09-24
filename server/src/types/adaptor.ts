@@ -42,6 +42,16 @@ export interface PushResult {
 }
 
 /**
+ * Why an adaptor probe failed, as a value rather than a sentence.
+ *
+ * The lifecycle event recorder has to tell "the token expired" from "the
+ * network is down" because they need opposite responses, and scraping a status
+ * code out of a human-readable `message` with a regex is exactly the kind of
+ * coupling that silently breaks when someone rewords the message.
+ */
+export type AdaptorFailureReason = 'auth' | 'rate-limited' | 'unreachable' | 'upstream';
+
+/**
  * Health probe result. Unlike push/sync, health checks REPORT rather than
  * throw: `ok:false` + `message` is returned on a non-2xx response so callers
  * can distinguish healthy from unhealthy without exception handling.
@@ -50,6 +60,8 @@ export interface HealthCheckResult {
   ok: boolean;
   latencyMs: number;
   message?: string;
+  /** Present when `ok` is false; classifies the failure for callers. */
+  reason?: AdaptorFailureReason;
 }
 
 /**

@@ -15,6 +15,8 @@ import type {
 import {
   AdaptorConnectionError,
   adaptorErrorForStatus,
+  failureReasonForError,
+  failureReasonForStatus,
 } from './errors.js';
 import { httpTransport } from './httpTransport.js';
 import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
@@ -139,6 +141,10 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
           ok: false,
           latencyMs,
           message: `QuickBooks answered ${response.status}${describeResponseError(response)}`,
+          // The status code is the authoritative signal for "the token is no
+          // good", and it is what the event log classifies on — see
+          // `failureReasonForStatus`.
+          reason: failureReasonForStatus(response.status),
         };
       }
       return { ok: true, latencyMs };
@@ -147,6 +153,7 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
         ok: false,
         latencyMs: Date.now() - started,
         message: err instanceof Error ? err.message : 'QuickBooks health check failed',
+        reason: failureReasonForError(err),
       };
     }
   }

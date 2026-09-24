@@ -4,6 +4,22 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 /**
+ * Boolean env var.
+ *
+ * NOT `z.coerce.boolean()`: that is `Boolean(value)`, and `Boolean('false')` is
+ * `true` — so `LOG_TO_FILE=false` would have silently switched file logging ON,
+ * the opposite of what the operator asked for. Only these spellings count; an
+ * empty value falls back to the default.
+ */
+function envBoolean(defaultValue: boolean) {
+  const fallback = defaultValue ? 'true' : 'false';
+  return z
+    .enum(['true', 'false', '1', '0', ''])
+    .default(fallback)
+    .transform((value) => (value === '' ? defaultValue : value === 'true' || value === '1'));
+}
+
+/**
  * Environment schema. Required vars fail fast on missing/invalid values;
  * optional vars fall back to sensible defaults.
  */
@@ -13,6 +29,19 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
+
+  // --- File logging ------------------------------------------------------
+  // The process always logs to stdout (docker/k8s collect that). This adds a
+  // durable, size-rotated file sink as well, so the record survives a container
+  // restart and can be read without attaching to the container.
+  //
+  // Off in tests: a test run must not write log files into the repository.
+  LOG_TO_FILE: envBoolean(true),
+  LOG_DIR: z.string().min(1).default('logs'),
+  LOG_FILE_NAME: z.string().min(1).default('server.log'),
+  // Rotate at 5 MiB and keep 5 files, so one instance is bounded at ~25 MiB.
+  LOG_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+  LOG_MAX_FILES: z.coerce.number().int().min(1).default(5),
 
   // Database (PostgreSQL 16)
   DATABASE_URL: z.string().min(1),

@@ -24,7 +24,13 @@ export type LifecycleEventType =
   | "sync-change"
   | "webhook-received"
   | "payment-declined"
-  | "payment-failed";
+  | "payment-failed"
+  | "payment-refunded"
+  // Adaptor reachability is part of the lifecycle log: "the accounting link is
+  // down" and "a payment never reached the ledger" are one story.
+  | "adaptor-unreachable"
+  | "adaptor-auth-failed"
+  | "adaptor-restored";
 
 export type LifecycleChannel = "payment" | "accounting" | "webhook" | "system";
 

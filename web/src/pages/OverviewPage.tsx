@@ -71,6 +71,14 @@ const EVENT_FLOW_NOTE: Record<EventType, { text: string; tone: "stage" | "bad" |
   "payment-declined": { text: "Halted", tone: "bad" },
   "payment-failed": { text: "Halted", tone: "bad" },
   "sync-change": { text: "Cadence", tone: "muted" },
+  // A refund is a delivered outcome, not a fault: it reads as muted so it is
+  // not mistaken for the Halted events it sits next to.
+  "payment-refunded": { text: "Reversed", tone: "muted" },
+  // The accounting link itself. "Link" is the word the rest of the console uses
+  // for an adaptor connection, so these rows cannot be read as payment faults.
+  "adaptor-unreachable": { text: "Link down", tone: "bad" },
+  "adaptor-auth-failed": { text: "Link rejected", tone: "bad" },
+  "adaptor-restored": { text: "Link restored", tone: "muted" },
 };
 
 /** Tone → the "changed" detail's ink. `steady` rows never render (the list
@@ -87,6 +95,23 @@ const FLOW_NOTE: Record<"stage" | "bad" | "muted", string> = {
   bad: "text-text-suspended bg-state-tint-suspended",
   muted: "text-ink-3 bg-midnight-3",
 };
+
+type EventNote = { text: string; tone: "stage" | "bad" | "muted" };
+
+/**
+ * Fallback for a lifecycle event type this build does not know.
+ *
+ * NOT hypothetical: the API and the console ship as separate images, and a
+ * backend that starts recording a NEW event type (the adaptor lifecycle events,
+ * for instance) will feed an older cached bundle. Without this the lookup below
+ * returned `undefined` and reading `.tone` threw, taking the whole Overview
+ * down — a deployment-order skew is not a reason to blank the console.
+ */
+const UNKNOWN_EVENT_NOTE: EventNote = { text: "Event", tone: "muted" };
+
+function flowNoteFor(type: string): EventNote {
+  return (EVENT_FLOW_NOTE as Record<string, EventNote | undefined>)[type] ?? UNKNOWN_EVENT_NOTE;
+}
 
 export function OverviewPage({
   data,
@@ -371,7 +396,7 @@ export function OverviewPage({
         ) : (
           <ol className="m-0 list-none p-0">
             {events.slice(0, 6).map((e) => {
-              const note = EVENT_FLOW_NOTE[e.type];
+              const note = flowNoteFor(e.type);
               return (
                 <li className="grid grid-cols-[66px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-rule-enamel-soft px-1 py-3 last:border-b-0 max-md:grid-cols-[54px_minmax(0,1fr)] max-md:gap-y-1.5" key={e.id}>
                   <span className="mono text-xs text-ink-3">{e.at}</span>

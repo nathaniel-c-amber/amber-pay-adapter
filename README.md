@@ -94,8 +94,28 @@ docker-compose reads a root `.env` file automatically. Required vars:
 - `AMBER_PAY_WEBHOOK_SECRET`
 
 Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SMTP_*`, `APP_BASE_URL`.
+Runtime mode: `NODE_ENV` (default `production`).
+Logging: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_DIR`, `LOG_FILE_NAME`,
+`LOG_MAX_SIZE_BYTES`, `LOG_MAX_FILES`.
 For internet testing, `NGROK_AUTHTOKEN` and (optionally) `NGROK_DOMAIN`.
 See `.env.example` for the full list. **Never commit real secrets.**
+
+### Development mode and the 2FA code
+
+`NODE_ENV` selects the runtime mode of the `api` service. Under `development`
+the API returns the 2FA code — and invite and password-reset tokens — in its
+responses, so the sign-in flow can be completed without a mailbox; the console
+fills the code into the form for you. Set it in `.env` and recreate the
+container:
+
+```bash
+NODE_ENV=development
+docker compose up -d
+```
+
+Those values are credentials. Keep `development` for machines only you can
+reach; anything shared or public stays on `production` (the default), where the
+server emails the code and never returns it.
 
 ### Connecting QuickBooks
 
@@ -114,6 +134,31 @@ adaptor — check it with `docker compose logs api | grep -i adaptor`. The conso
 **Backend service** panel reports the same state, and when an adaptor cannot
 connect it states the reason (missing credentials vs. missing grant vs. an
 upstream status) rather than a bare "not connected".
+
+Adaptor state also lands in the **Event log**: a connection that starts failing
+(rejected credentials and unreachable are recorded as different types, because
+they need different remedies), a failure whose reason changes, and a recovery.
+Only state *changes* are recorded — the console polls every few seconds and
+logging each poll would bury the incident in its own repetition.
+
+### Logs
+
+The API writes every line to stdout **and** to a rotating file, so the log
+outlives the container:
+
+- `LOG_LEVEL` applies to both sinks.
+- `LOG_TO_FILE` (default `true`), `LOG_DIR` (the compose stack uses
+  `/app/logs`, backed by the `api-logs` volume), `LOG_FILE_NAME`
+  (default `server.log`), `LOG_MAX_SIZE_BYTES` (5 MiB) and `LOG_MAX_FILES` (5).
+
+```bash
+docker compose exec api tail -f /app/logs/server.log    # live
+docker compose exec api cat /app/logs/server.log.1      # the previous file
+```
+
+If the log directory cannot be written, the API says so once on stderr and
+continues with stdout-only logging — a log sink must never stop the API it is
+observing, and tests never write log files.
 
 ## Development (without Docker)
 

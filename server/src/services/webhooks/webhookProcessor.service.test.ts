@@ -40,8 +40,15 @@ describe('WebhookProcessor', () => {
     await processor.processWebhook(collectedEvent);
 
     const events = await eventLog.list(['org-1']);
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe('collected');
+    // The complete pipeline trail for one collection: the money moved, the
+    // notification was ingested, and the record reached the accounting system.
+    // Compared sorted: `list` orders newest-first by timestamp, and two events
+    // written inside the same millisecond keep insertion order instead.
+    expect(events.map((e) => e.type).sort()).toEqual([
+      'collected',
+      'record-updated',
+      'webhook-received',
+    ]);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
     expect(await failureTracker.list(['org-1'])).toHaveLength(0);
   });
@@ -83,7 +90,7 @@ describe('WebhookProcessor', () => {
     await processor.processWebhook(collectedEvent);
     await processor.processWebhook(collectedEvent);
 
-    expect(await eventLog.list(['org-1'])).toHaveLength(1);
+    expect(await eventLog.list(['org-1'])).toHaveLength(3);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
   });
 
@@ -131,7 +138,7 @@ describe('WebhookProcessor', () => {
     await Promise.all([first, second]);
 
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
-    expect(await eventLog.list(['org-1'])).toHaveLength(1);
+    expect(await eventLog.list(['org-1'])).toHaveLength(3);
     expect(await failureTracker.list(['org-1'])).toHaveLength(0);
   });
 
@@ -150,8 +157,7 @@ describe('WebhookProcessor', () => {
     });
 
     const events = await eventLog.list(['org-1']);
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe('payment-refunded');
+    expect(events.map((e) => e.type).sort()).toEqual(['payment-refunded', 'record-updated']);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'refunded' }),
     );
@@ -167,7 +173,7 @@ describe('WebhookProcessor', () => {
     await processor.processWebhook(collectedEvent);
     await processor.processWebhook(collectedEvent);
 
-    expect(await eventLog.list(['org-1'])).toHaveLength(1);
+    expect(await eventLog.list(['org-1'])).toHaveLength(3);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
   });
 

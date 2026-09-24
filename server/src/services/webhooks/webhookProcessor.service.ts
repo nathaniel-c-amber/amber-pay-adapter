@@ -91,6 +91,19 @@ export class WebhookProcessor {
       detail: 'Payment collected',
       organizationId: this.organizationId,
     });
+    // The flow ledger's "ingested" stage is derived from `webhook-received`, and
+    // NOTHING wrote that event — so a fully working pipeline still reported the
+    // ingested stage as "not reporting", and the Overview's hero panel was
+    // permanently blank in the middle. The collection notification IS the
+    // ingestion: it is recorded here rather than at claim time so the stages
+    // stay in ledger order (collected before ingested).
+    await this.eventLog.recordEvent({
+      type: 'webhook-received',
+      channel: 'webhook',
+      ref: event.reference,
+      detail: 'Webhook accepted by the pipeline',
+      organizationId: this.organizationId,
+    });
 
     await this.pushToAdaptor(event, 'collected payment');
   }
@@ -131,6 +144,17 @@ export class WebhookProcessor {
         externalInvoiceId: event.reference,
         status: event.status,
         processedAt: event.at,
+      });
+      // The terminal stage of the ledger: the record now exists in the
+      // accounting system. Derived from `record-updated`, which (like
+      // `webhook-received`) nothing ever wrote, so a successful push left no
+      // trace and the flow's final stage could never report.
+      await this.eventLog.recordEvent({
+        type: 'record-updated',
+        channel: 'accounting',
+        ref: event.reference,
+        detail: `Record updated in ${adaptor.name}`,
+        organizationId: this.organizationId,
       });
     } catch (err) {
       logger.error({ err }, `Failed to push ${action} to adaptor`);

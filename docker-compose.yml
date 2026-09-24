@@ -44,9 +44,21 @@ services:
       dockerfile: server/Dockerfile
     restart: unless-stopped
     environment:
-      NODE_ENV: production
+      # Runtime mode, read from the root `.env`. Under `development` the API
+      # returns the 2FA code (and invite/reset tokens) in its responses so the
+      # sign-in flow can be completed without a mailbox; the console fills the
+      # code into the form. Those values are credentials — keep the default
+      # `production` on anything shared or public.
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3300
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Rotating file log, kept on a named volume so it survives a
+      # `docker compose up --build` and can be read with
+      # `docker compose exec api cat /app/logs/server.log`.
+      LOG_TO_FILE: ${LOG_TO_FILE:-true}
+      LOG_DIR: /app/logs
+      LOG_MAX_SIZE_BYTES: ${LOG_MAX_SIZE_BYTES:-5242880}
+      LOG_MAX_FILES: ${LOG_MAX_FILES:-5}
       DATABASE_URL: postgres://${POSTGRES_USER:-amber}:${POSTGRES_PASSWORD:-amber}@db:5432/${POSTGRES_DB:-amber}
       JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret-0123456789abcdef}
       JWT_TTL: ${JWT_TTL:-1h}
@@ -106,6 +118,8 @@ services:
       # interface would expose the backend directly and let a caller bypass
       # nginx AND spoof `X-Forwarded-For` to evade the per-IP rate limits.
       - "127.0.0.1:3300:3300"
+    volumes:
+      - api-logs:/app/logs
     networks:
       - amber
 
@@ -169,6 +183,11 @@ services:
 
 volumes:
   db-data:
+  # The API's rotating log files (see LOG_DIR). A named volume, not a bind
+  # mount: the container image creates /app/logs owned by the non-root `app`
+  # user, and Docker seeds a named volume from that directory with its
+  # ownership intact -- a bind mount would take the host's permissions instead.
+  api-logs:
 
 networks:
   amber:

@@ -117,7 +117,15 @@ export type LifecycleEventType =
   | 'webhook-received'
   | 'payment-declined'
   | 'payment-failed'
-  | 'payment-refunded';
+  | 'payment-refunded'
+  // Adaptor reachability. These belong in the lifecycle log because "the
+  // accounting link is down" and "a payment did not reach the ledger" are the
+  // same story told from two ends, and an operator debugging a missing posting
+  // needs both. `adaptor-auth-failed` is split from `adaptor-unreachable`
+  // because a rejected token and an unreachable host have opposite remedies.
+  | 'adaptor-unreachable'
+  | 'adaptor-auth-failed'
+  | 'adaptor-restored';
 
 export type LifecycleChannel = 'payment' | 'accounting' | 'webhook' | 'system';
 

@@ -16,6 +16,8 @@ import {
   AdaptorAuthError,
   AdaptorConnectionError,
   adaptorErrorForStatus,
+  failureReasonForError,
+  failureReasonForStatus,
 } from './errors.js';
 
 /**
@@ -82,16 +84,26 @@ export class SageAdaptor implements AccountingAdaptor {
   async healthCheck(): Promise<HealthCheckResult> {
     this.assertConnected();
     const started = Date.now();
-    const response = await this.request('GET', '/health');
-    const latencyMs = Date.now() - started;
-    if (response.status < 200 || response.status >= 300) {
+    try {
+      const response = await this.request('GET', '/health');
+      const latencyMs = Date.now() - started;
+      if (response.status < 200 || response.status >= 300) {
+        return {
+          ok: false,
+          latencyMs,
+          message: `Health check failed with status ${response.status}`,
+          reason: failureReasonForStatus(response.status),
+        };
+      }
+      return { ok: true, latencyMs };
+    } catch (err) {
       return {
         ok: false,
-        latencyMs,
-        message: `Health check failed with status ${response.status}`,
+        latencyMs: Date.now() - started,
+        message: err instanceof Error ? err.message : 'Sage health check failed',
+        reason: failureReasonForError(err),
       };
     }
-    return { ok: true, latencyMs };
   }
 
   private assertConnected(): void {
