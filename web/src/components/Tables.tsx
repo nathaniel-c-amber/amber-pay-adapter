@@ -13,6 +13,7 @@ import { EVENT_LABEL } from "@/types/domain";
 import type { EventType, Failure, LifecycleEvent } from "@/types/domain";
 import { Can } from "./Can";
 import { IconSortAsc, IconSortAscDesc, IconSortDesc } from "./icons";
+import { formatDate, formatDateTime, formatTimeOfDay } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
 import { cx } from "./ui";
 
@@ -25,21 +26,21 @@ const features = tableFeatures({
   sortedRowModel: createSortedRowModel(),
 });
 
-/* Clock times written "HH:MM:SS" (or "HH:MM"), compared as seconds since
-   midnight. Also handles full ISO timestamps (contains a date separator) by
-   parsing with Date, so sorting is correct for both display formats (M1). */
-const toSeconds = (t: string) => {
+/* Timestamps arrive as ISO 8601 instants, so sort on the parsed instant rather
+   than on the rendered text — the display format carries no ordering ("Sep 24"
+   sorts before "Sep 3" as a string). A legacy clock-only reading ("14:58:02")
+   is still accepted and compared as seconds since midnight, so a stale payload
+   cannot silently scramble the order. */
+const toInstant = (t: string) => {
   const value = String(t ?? "");
-  if (value.includes("T") || value.includes("-")) {
-    const ms = new Date(value).getTime();
-    if (!Number.isNaN(ms)) return ms;
-  }
+  const ms = new Date(value).getTime();
+  if (!Number.isNaN(ms)) return ms;
   const [h, m, s] = (value || "00:00:00").split(":").map(Number);
   return ((h || 0) * 60 + (m || 0)) * 60 + (s || 0);
 };
 
 const sortClock = constructSortFn({
-  sort: (a, b) => toSeconds(String(a ?? "")) - toSeconds(String(b ?? "")),
+  sort: (a, b) => toInstant(String(a ?? "")) - toInstant(String(b ?? "")),
 });
 
 /* Event stream type order: newest lifecycle phase first. */
@@ -90,7 +91,7 @@ function SortGlyph({ dir }: { dir: false | "asc" | "desc" }) {
 /* ------------------------------------------------------------------ */
 
 const EVENT_HEAD_LABEL: Record<string, string> = {
-  at: "Time",
+  at: "Date & time",
   type: "Event",
   ref: "Ref",
   channel: "Channel",
@@ -102,11 +103,24 @@ function buildEventColumns(): ColumnDef<any, LifecycleEvent, unknown>[] {
     {
       id: "at",
       accessorKey: "at",
-      header: "Time",
+      header: "Date & time",
       sortFn: sortClock,
-      cell: (info) => (
-        <span className="mono text-sm whitespace-nowrap text-ink-3">{String(info.getValue())}</span>
-      ),
+      /*
+        Date over time, stacked. A single-line "Sep 24, 2026, 2:58:02 PM" needs
+        ~190px of a fixed column that only has ~100 to give, and dropping the
+        seconds to make it fit would lose information the log exists to hold.
+        Both lines come from the shared formatter, so the pairing rule (a time
+        never appears without its date) is still satisfied.
+      */
+      cell: (info) => {
+        const iso = String(info.getValue());
+        return (
+          <span className="flex flex-col">
+            <span className="mono text-sm whitespace-nowrap text-ink-3">{formatDate(iso)}</span>
+            <span className="mono text-sm whitespace-nowrap text-ink-3">{formatTimeOfDay(iso)}</span>
+          </span>
+        );
+      },
     },
     {
       id: "type",
@@ -177,7 +191,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
   return (
     <div role="table" aria-label="Lifecycle event stream">
       <div
-        className="grid grid-cols-[86px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] gap-x-3 border-b border-ink-2 bg-midnight-3 px-3 py-2 max-3xl:hidden"
+        className="grid grid-cols-[108px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] gap-x-3 border-b border-ink-2 bg-midnight-3 px-3 py-2 max-3xl:hidden"
         role="row"
       >
         {headers.map((header) => {
@@ -210,7 +224,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
       {table.getRowModel().rows.map((row) => (
         <div
           key={row.id}
-          className="grid grid-cols-[86px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] items-center gap-x-3 border-b border-rule-enamel bg-midnight-2 px-3 py-2 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[74px_1fr_minmax(120px,1.4fr)] max-md:grid-cols-[74px_1fr]"
+          className="grid grid-cols-[108px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] items-center gap-x-3 border-b border-rule-enamel bg-midnight-2 px-3 py-2 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[108px_1fr_minmax(120px,1.4fr)] max-md:grid-cols-[108px_1fr]"
           role="row"
         >
           {row.getAllCells().map((cell) => (
@@ -323,7 +337,7 @@ function buildFindingsColumns(onAck: (id: string) => void): ColumnDef<any, Failu
       header: "Since",
       sortFn: sortClock,
       cell: (info) => (
-        <span className="mono text-xs whitespace-nowrap text-ink-3">{String(info.getValue())}</span>
+        <span className="mono text-xs whitespace-nowrap text-ink-3">{formatDateTime(String(info.getValue()))}</span>
       ),
     },
     {
@@ -416,7 +430,7 @@ export function FindingsTable({
                 </span>
                 <span className="mono text-sm font-semibold whitespace-nowrap text-ink-1">{f.id}</span>
                 <span className="text-xs whitespace-nowrap text-ink-2">{f.channel}</span>
-                <span className="mono text-xs whitespace-nowrap text-ink-3">{f.since}</span>
+                <span className="mono text-xs whitespace-nowrap text-ink-3">{formatDateTime(f.since)}</span>
               </div>
               <div className="flex flex-col items-start gap-1">
                 <span className="text-md font-semibold leading-[1.3] text-ink-1">{f.title}</span>

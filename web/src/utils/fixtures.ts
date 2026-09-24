@@ -193,6 +193,11 @@ export function demoService(): ApiServiceStatus {
   };
 }
 
+/** Demo instants are anchored to module load, so the fixture reads as
+ *  "recently" instead of aging into a date that was once the current one. */
+const minutesAgo = (minutes: number): string =>
+  new Date(Date.now() - minutes * 60_000).toISOString();
+
 export interface DemoUser {
   id: string;
   email: string;
@@ -201,7 +206,8 @@ export interface DemoUser {
   actions: string;
   status: "active" | "invite pending";
   invitedFor: string;
-  lastSeen: string;
+  /** ISO 8601 instant, or null when the account has never been seen. */
+  lastSeenAt: string | null;
 }
 
 export const DEMO_USERS: DemoUser[] = [
@@ -213,7 +219,7 @@ export const DEMO_USERS: DemoUser[] = [
     actions: "read, ack",
     status: "active",
     invitedFor: "Amber Pay Ledger",
-    lastSeen: "14:02 today",
+    lastSeenAt: minutesAgo(2),
   },
   {
     id: "u-8033",
@@ -223,7 +229,7 @@ export const DEMO_USERS: DemoUser[] = [
     actions: "read, write",
     status: "active",
     invitedFor: "Payment operations",
-    lastSeen: "13:40 today",
+    lastSeenAt: minutesAgo(24),
   },
   {
     id: "u-8061",
@@ -233,7 +239,7 @@ export const DEMO_USERS: DemoUser[] = [
     actions: "read",
     status: "active",
     invitedFor: "Audit trail",
-    lastSeen: "09:18 today",
+    lastSeenAt: minutesAgo(5 * 60),
   },
   {
     id: "u-8090",
@@ -243,7 +249,7 @@ export const DEMO_USERS: DemoUser[] = [
     actions: "read, write, admin",
     status: "invite pending",
     invitedFor: "System configuration",
-    lastSeen: "—",
+    lastSeenAt: null,
   },
 ];
 

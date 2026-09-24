@@ -6,6 +6,7 @@
 
 import type { Connector, Failure, LifecycleEvent } from "@/types/domain";
 import { HEALTH_OF, HEALTH_IMPACT, healthCounts } from "@/utils/vocabulary";
+import { formatDateTime } from "@/utils/datetime";
 import { BTN, Card, ConnectionRow, EmptyState, HealthBadge, PageHeader, SeverityBadge } from "@/components/ui";
 import { NetworkMap } from "@/components/NetworkMap";
 import { EventStream } from "@/components/Tables";
@@ -73,7 +74,7 @@ export function ConnectionsPage({
 
       {/* Scope note: the map is read-only under every scope that can reach it. */}
       <p className="mono mt-3 text-xs text-ink-3">
-        <span className="inline-block"><IconPolicy /></span> Connection state is reported by the adaptors and cannot be edited from this
+        <span className="inline-block -mb-1"><IconPolicy /></span> Connection state is reported by the adaptors and cannot be edited from this
         console.
       </p>
     </div>
@@ -173,7 +174,7 @@ export function ConnectionDetailPage({
                   <button type="button" className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_14px] items-center gap-3 rounded-panel border-b border-rule-enamel-soft bg-transparent px-1.5 py-2 text-left transition-colors hover:bg-midnight-3 [&_svg]:text-ink-3" onClick={() => navigate("findings", f.id)}>
                     <SeverityBadge severity={f.severity} />
                     <span className="text-md text-ink-1">{f.title}</span>
-                    <span className="mono text-xs text-ink-3">{f.since}</span>
+                    <span className="mono text-xs text-ink-3">{formatDateTime(f.since)}</span>
                     <IconChevronRight />
                   </button>
                 </li>

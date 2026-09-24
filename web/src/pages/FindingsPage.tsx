@@ -7,6 +7,7 @@
 import { useState } from "react";
 import type { Connector, Failure, LifecycleEvent, PolicyScope } from "@/types/domain";
 import { HEALTH_OF } from "@/utils/vocabulary";
+import { formatDateTime } from "@/utils/datetime";
 import { BTN, BTN_PRIMARY, Card, cx, EmptyState, FindingCard, HealthBadge, LINK_BTN, PageHeader, SearchBox, SeverityBadge } from "@/components/ui";
 import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
@@ -191,7 +192,7 @@ export function FindingDetailPage({
 
       <PageHeader
         title={finding.title}
-        lead={`${finding.channel} · started ${finding.since} · ongoing`}
+        lead={`${finding.channel} · started ${formatDateTime(finding.since)} · ongoing`}
         actions={<SeverityBadge severity={finding.severity} />}
       />
 
@@ -211,7 +212,7 @@ export function FindingDetailPage({
             </div>
             <div className="flex items-baseline justify-between gap-4 border-b border-rule-enamel px-0.5 py-2 last:border-b-0">
               <dt className="mono min-w-0 text-xs uppercase tracking-label text-ink-3 wrap-anywhere">Started</dt>
-              <dd className="mono m-0 min-w-0 text-right text-md text-ink-1 wrap-anywhere">{finding.since}</dd>
+              <dd className="mono m-0 min-w-0 text-right text-md text-ink-1 wrap-anywhere">{formatDateTime(finding.since)}</dd>
             </div>
             <div className="flex items-baseline justify-between gap-4 border-b border-rule-enamel px-0.5 py-2 last:border-b-0">
               <dt className="mono min-w-0 text-xs uppercase tracking-label text-ink-3 wrap-anywhere">State</dt>

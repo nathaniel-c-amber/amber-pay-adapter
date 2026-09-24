@@ -22,24 +22,13 @@ import { IconPolicy, IconRefresh, IconShield, IconUser } from "@/components/icon
 import type { PolicyScope } from "@/types/domain";
 import { BTN, Card, DemoTag, Field, PageHeader, cx } from "@/components/ui";
 import { Can } from "@/components/Can";
+import { formatDateTime } from "@/utils/datetime";
 import { parseAttributes, isAdminCapability, ABILITY } from "@/utils/permissions";
 import { requestPasswordReset } from "@/services/client";
 import { T_ANCHOR } from "@/tour/anchors";
 import type { ApiIdentity } from "@/types/api";
 
-/** Format an ISO timestamp for display, or an em dash when absent. */
-function formatWhen(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+/** How long is left on the current access token, in words. */
 
 /** How long is left on the current access token, in words. */
 function describeExpiry(iso: string | null | undefined, now: Date): string {
@@ -147,8 +136,8 @@ export function ProfilePage({
             <dl className="m-0 flex flex-col">
               <IdentityRow label="Email" value={identity.email} />
               <IdentityRow label="Account id" value={identity.id} />
-              <IdentityRow label="Created" value={formatWhen(identity.createdAt)} />
-              <IdentityRow label="Credentials changed" value={formatWhen(identity.updatedAt)} />
+              <IdentityRow label="Created" value={formatDateTime(identity.createdAt)} />
+              <IdentityRow label="Credentials changed" value={formatDateTime(identity.updatedAt)} />
             </dl>
           ) : mode === "demo" ? (
             <p className="m-0 max-w-[58ch] text-md leading-prose text-ink-2">

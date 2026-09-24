@@ -34,6 +34,7 @@ import { mapMetrics } from "@/services/map.service";
 import type { MappedMetrics } from "@/services/map.service";
 import { compareFlows } from "@/utils/flow";
 import type { FlowComparison } from "@/utils/flow";
+import { formatDateTimeSeconds } from "@/utils/datetime";
 import { accessFor, isBroadest } from "@/utils/permissions";
 import type { PageId } from "@/utils/permissions";
 import { navigate, useRoute } from "@/router";
@@ -225,15 +226,6 @@ const CONSOLE_ROUTES: readonly PageId[] = [
 
 function isConsoleRoute(name: RouteName): name is PageId {
   return (CONSOLE_ROUTES as readonly string[]).includes(name);
-}
-
-function formatClock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "--:--:--";
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
 }
 
 /*
@@ -750,7 +742,7 @@ export default function Shell() {
     () => (DEMO_ENABLED && mode === "demo" ? demoService() : service),
     [mode, service],
   );
-  const asOf = formatClock(data.generatedAt);
+  const asOf = formatDateTimeSeconds(data.generatedAt);
 
   /*
     Authorization that is invisible is indistinguishable from authorization

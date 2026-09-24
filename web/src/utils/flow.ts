@@ -108,15 +108,6 @@ export function formatAge(iso: string | null, now: Date = new Date()): string {
   return formatDuration(ms);
 }
 
-/** Clock time (HH:MM:SS) in local time. */
-export function formatClockTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 /**
  * How far a stage's dwell sits against its own fail threshold, as a 0..1
  * fraction used to size the bar. Capped at 1: a stage 40x over target must not

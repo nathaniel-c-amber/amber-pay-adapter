@@ -9,6 +9,7 @@ import {
   SEVERITY_LABEL,
 } from "@/utils/vocabulary";
 import type { Health } from "@/utils/vocabulary";
+import { formatDateTime } from "@/utils/datetime";
 import type { Connector, Failure, Severity } from "@/types/domain";
 
 export const cx = (...names: Array<string | false | null | undefined>): string =>
@@ -324,7 +325,7 @@ export function FindingCard({
       <header className="flex flex-wrap items-center gap-3">
         <SeverityBadge severity={finding.severity} />
         <span className="mono text-xs text-ink-2">{finding.id}</span>
-        <span className="mono ml-auto text-xs text-ink-3">since {finding.since}</span>
+        <span className="mono ml-auto text-xs text-ink-3">since {formatDateTime(finding.since)}</span>
       </header>
       <div>
         {/* h2, not h3: this card sits directly under the page's h1 on the

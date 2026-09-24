@@ -26,6 +26,7 @@ import { AuthField, AuthShell } from "@/components/auth/AuthShell";
 import { PasswordRequirements } from "@/components/auth/PasswordRequirements";
 import { acceptInvite, getInvite } from "@/services/client";
 import { meetsPasswordRules } from "@/utils/passwordRules";
+import { formatDateTime } from "@/utils/datetime";
 import { IconShield, IconVerified, IconWarn } from "@/components/auth/authIcons";
 import type { ApiInviteDetail, ApiPolicyAttribute } from "@/types/api";
 
@@ -38,10 +39,12 @@ function describeAttribute(attribute: ApiPolicyAttribute): string {
   return `${actions} on ${scope} for ${org}`;
 }
 
+/* The shared formatter returns an em dash for an unusable stamp; on an invite
+   screen "shortly" is the honest reading, since the link's own verification is
+   what decides whether it still works. */
 function formatExpiry(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "shortly";
-  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  const formatted = formatDateTime(iso);
+  return formatted === "—" ? "shortly" : formatted;
 }
 
 /** Why a link is dead, said specifically enough to act on. */

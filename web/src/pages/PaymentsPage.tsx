@@ -12,6 +12,7 @@ import { BTN_PRIMARY, Card, EmptyState, Kpi, PageHeader, SearchBox } from "@/com
 import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { IconCard, IconRefresh } from "@/components/icons";
+import { formatDateTime } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
 
 export function PaymentsPage({
@@ -84,7 +85,7 @@ export function PaymentsPage({
           value={summary ? summary.status : "—"}
           note={
             summary?.ranAt
-              ? `ran ${new Date(summary.ranAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              ? `ran ${formatDateTime(summary.ranAt)}`
               : "not yet run"
           }
           tone={summary?.status === "completed" ? "good" : summary?.status === "running" ? "neutral" : "warn"}

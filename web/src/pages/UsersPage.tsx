@@ -32,6 +32,7 @@ import {
 import { PolicyAttributeEditor } from "@/components/PolicyAttributeEditor";
 import { Can, Cannot, useCan } from "@/components/Can";
 import { ABILITY } from "@/utils/permissions";
+import { formatDateTime } from "@/utils/datetime";
 import {
   inviteUser,
   listUsers,
@@ -77,8 +78,8 @@ function toLiveRow(user: ApiDirectoryUser): DirectoryRow {
     actions: actionsOf(user.policyAttributes),
     meta:
       user.status === "active"
-        ? `updated ${formatStamp(user.updatedAt)}`
-        : `invite expires ${formatStamp(user.inviteExpiresAt)}`,
+        ? `updated ${formatDateTime(user.updatedAt)}`
+        : `invite expires ${formatDateTime(user.inviteExpiresAt)}`,
     policyAttributes: user.policyAttributes,
   };
 }
@@ -91,21 +92,9 @@ function toDemoRow(user: DemoUser): DirectoryRow {
     scope: user.scope,
     organizations: user.organizationId,
     actions: user.actions,
-    meta: user.lastSeen,
+    meta: user.lastSeenAt ? `last seen ${formatDateTime(user.lastSeenAt)}` : "never seen",
     policyAttributes: null,
   };
-}
-
-function formatStamp(iso: string | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 /* The old sheet paired `.amb-action-tag` with `.read` / `.write` / `.admin` and

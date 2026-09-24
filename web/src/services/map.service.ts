@@ -52,37 +52,6 @@ const STATUS_SEGMENTS: Record<ConnectorState["status"], number[]> = {
 /** Safe default segment pattern when the status is unknown (m4). */
 const DEFAULT_SEGMENTS = [5, 5, 5, 5, 5, 5, 5];
 
-function pad(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-/**
- * Format a timestamp for display. The backend returns ISO 8601; the frontend
- * tables expect compact clock strings. If the value is already a compact clock
- * string (no date separators), it is passed through unchanged.
- * - formatClock → "HH:MM:SS" (event stream Time column)
- * - formatTime  → "HH:MM"   (findings Since column)
- */
-export function formatClock(value: string): string {
-  if (value.includes("T") || value.includes("-")) {
-    const d = new Date(value);
-    if (!Number.isNaN(d.getTime())) {
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-    }
-  }
-  return value;
-}
-
-export function formatTime(value: string): string {
-  if (value.includes("T") || value.includes("-")) {
-    const d = new Date(value);
-    if (!Number.isNaN(d.getTime())) {
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-  }
-  return value;
-}
-
 export function mapConnector(c: ConnectorState): Connector {
   return {
     id: c.id,
@@ -99,7 +68,10 @@ export function mapConnector(c: ConnectorState): Connector {
 export function mapEvent(e: ApiLifecycleEvent): LifecycleEvent {
   return {
     id: e.id,
-    at: formatClock(e.at),
+    /* Kept as the ISO instant the backend sent. Formatting belongs to the view
+       (`@/utils/datetime`), not the mapper: a display string is un-sortable, and
+       the event table's Time column sorts on this value. */
+    at: e.at,
     type: e.type,
     channel: e.channel,
     ref: e.ref,
@@ -114,7 +86,8 @@ export function mapFailure(f: ApiFailure): Failure {
     channel: f.channel,
     title: f.title,
     detail: f.detail,
-    since: formatTime(f.since),
+    /* ISO instant, as with `at` above — see the note there. */
+    since: f.since,
   };
 }
 

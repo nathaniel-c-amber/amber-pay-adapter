@@ -33,6 +33,7 @@ export interface Connector {
 
 export interface LifecycleEvent {
   id: string;
+  /** ISO 8601 instant. The view formats it; nothing here is pre-formatted. */
   at: string;
   type: EventType;
   channel: string;
@@ -46,6 +47,7 @@ export interface Failure {
   channel: string;
   title: string;
   detail: string;
+  /** ISO 8601 instant. The view formats it; nothing here is pre-formatted. */
   since: string;
 }
 
@@ -74,7 +76,7 @@ export const CONNECTORS: Connector[] = [
     color: "cobalt",
     status: "delayed",
     reading: "15 min",
-    note: "last run 14:45",
+    note: "last run 14 min ago",
     segments: [4, 4, 5, 4, 4, 7, 6],
   },
   {
@@ -99,14 +101,22 @@ export const CONNECTORS: Connector[] = [
   },
 ];
 
+/* Fixture timestamps are anchored to module load rather than to a fixed clock.
+   The demo has to read as "moments ago": pinning it to, say, 14:58 would either
+   age into a date months in the past or — worse, once the date was dropped from
+   display — pass an old reading off as today's. */
+const FIXTURE_NOW = Date.now();
+const minutesAgo = (minutes: number, seconds = 0): string =>
+  new Date(FIXTURE_NOW - (minutes * 60 + seconds) * 1000).toISOString();
+
 export const EVENTS: LifecycleEvent[] = [
-  { id: "e-941", at: "14:58:02", type: "sync-change", channel: "Scheduled pull", ref: "EVT-9c1", detail: "Sync status change: pull completed, 0 anomalies." },
-  { id: "e-940", at: "14:52:41", type: "record-updated", channel: "Payment push", ref: "EVT-8f7", detail: "Record updated successfully at QuickBooks Online." },
-  { id: "e-939", at: "14:47:19", type: "webhook-received", channel: "Sage bridge", ref: "EVT-7aa", detail: "Webhook received, processing errored — surfaced to findings." },
-  { id: "e-938", at: "14:45:00", type: "initiated", channel: "Payment push", ref: "EVT-7ab", detail: "Transaction initiated: payment link generated via Amber Pay." },
-  { id: "e-937", at: "14:39:27", type: "collected", channel: "Payment push", ref: "EVT-6b4", detail: "Payment collected — webhook accepted by adaptor." },
-  { id: "e-936", at: "14:21:08", type: "sync-change", channel: "Scheduled pull", ref: "EVT-5d2", detail: "Sync status change: pull scheduled next interval." },
-  { id: "e-935", at: "14:02:11", type: "record-updated", channel: "Payment push", ref: "EVT-4c1", detail: "Record updated successfully at QuickBooks Online." },
+  { id: "e-941", at: minutesAgo(1), type: "sync-change", channel: "Scheduled pull", ref: "EVT-9c1", detail: "Sync status change: pull completed, 0 anomalies." },
+  { id: "e-940", at: minutesAgo(6, 21), type: "record-updated", channel: "Payment push", ref: "EVT-8f7", detail: "Record updated successfully at QuickBooks Online." },
+  { id: "e-939", at: minutesAgo(11, 43), type: "webhook-received", channel: "Sage bridge", ref: "EVT-7aa", detail: "Webhook received, processing errored — surfaced to findings." },
+  { id: "e-938", at: minutesAgo(14, 2), type: "initiated", channel: "Payment push", ref: "EVT-7ab", detail: "Transaction initiated: payment link generated via Amber Pay." },
+  { id: "e-937", at: minutesAgo(19, 35), type: "collected", channel: "Payment push", ref: "EVT-6b4", detail: "Payment collected — webhook accepted by adaptor." },
+  { id: "e-936", at: minutesAgo(37, 54), type: "sync-change", channel: "Scheduled pull", ref: "EVT-5d2", detail: "Sync status change: pull scheduled next interval." },
+  { id: "e-935", at: minutesAgo(56, 51), type: "record-updated", channel: "Payment push", ref: "EVT-4c1", detail: "Record updated successfully at QuickBooks Online." },
 ];
 
 export const FAILURES: Failure[] = [
@@ -116,15 +126,15 @@ export const FAILURES: Failure[] = [
     channel: "Sage bridge",
     title: "Webhook processing error",
     detail: "Adaptor stopped accepting events; on-call alerted. Every subsequent event is queued.",
-    since: "14:47",
+    since: minutesAgo(12),
   },
   {
     id: "F-2071",
     severity: "attention",
     channel: "Scheduled pull",
     title: "Pull ran behind schedule",
-    detail: "Last pull completed at 14:45 vs the 15 min interval — interval drifted by 2 intervals.",
-    since: "14:45",
+    detail: "Last pull completed behind the 15 min interval — interval drifted by 2 intervals.",
+    since: minutesAgo(14),
   },
   {
     id: "F-2068",
@@ -132,7 +142,7 @@ export const FAILURES: Failure[] = [
     channel: "Payment push",
     title: "Reference hash mismatch",
     detail: "A pushed event could not be matched to a record upstream. Referenced as EVT-7ab.",
-    since: "14:39",
+    since: minutesAgo(19),
   },
 ];
 

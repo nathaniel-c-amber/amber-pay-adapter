@@ -8,6 +8,7 @@ import type { ReconciliationReport } from "@/services/client";
 import type { LifecycleEvent } from "@/types/domain";
 import { Card, EmptyState, Kpi, PageHeader } from "@/components/ui";
 import { EventStream } from "@/components/Tables";
+import { formatDateTime, formatDateTimeSeconds } from "@/utils/datetime";
 import { IconAlert, IconCard, IconCheck, IconRefresh } from "@/components/icons";
 
 export function ReconciliationPage({
@@ -20,7 +21,6 @@ export function ReconciliationPage({
   mode: "demo" | "live";
 }) {
   const summary = recon.reconciliation;
-  const ranAt = summary?.ranAt ? new Date(summary.ranAt) : null;
   const statusTone =
     summary?.status === "completed" ? "good" : summary?.status === "running" ? "neutral" : "warn";
 
@@ -71,7 +71,7 @@ export function ReconciliationPage({
             <Kpi
               label="Status"
               value={summary.status}
-              note={ranAt ? `ran ${ranAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "time unknown"}
+              note={summary.ranAt ? `ran ${formatDateTime(summary.ranAt)}` : "time unknown"}
               tone={statusTone}
               icon={<IconRefresh />}
             />
@@ -85,9 +85,7 @@ export function ReconciliationPage({
               <div className="flex items-baseline justify-between gap-4 border-b border-rule-enamel px-0.5 py-2 last:border-b-0">
                 <dt className="mono min-w-0 text-xs uppercase tracking-label text-ink-3 wrap-anywhere">Report generated</dt>
                 <dd className="mono m-0 min-w-0 text-right text-md text-ink-1 wrap-anywhere">
-                  {recon.generatedAt
-                    ? new Date(recon.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                    : "—"}
+                  {recon.generatedAt ? formatDateTimeSeconds(recon.generatedAt) : "—"}
                 </dd>
               </div>
               <div className="flex items-baseline justify-between gap-4 border-b border-rule-enamel px-0.5 py-2 last:border-b-0">

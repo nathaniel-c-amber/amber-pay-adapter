@@ -32,6 +32,7 @@ import {
   stagesNotReporting,
 } from "@/utils/flow";
 import type { Health } from "@/utils/vocabulary";
+import { formatDate, formatDateTime, formatDateTimeSeconds, formatTimeOfDay } from "@/utils/datetime";
 import { BTN, Card, cx, EmptyState, FindingCard, HealthBadge, LINK_BTN, StaleNotice } from "@/components/ui";
 import { FlowSpine } from "@/components/FlowSpine";
 import { ServiceWindow } from "@/components/ServiceWindow";
@@ -241,7 +242,7 @@ export function OverviewPage({
               {FLOW_HEALTH_LABEL[flowHealth]}
               {stages.mayBeTruncated && " · sampled"}
               {" · "}
-              as of {clockOf(generatedAt)}
+              as of {formatDateTimeSeconds(generatedAt)}
             </span>
           </header>
           <FlowSpine
@@ -319,17 +320,17 @@ export function OverviewPage({
             things are; only a comparison says whether it is getting worse. */}
         <Card
           title="What changed"
-          meta={comparison ? `since ${clockOf(comparison.since)}` : undefined}
+          meta={comparison ? `since ${formatDateTime(comparison.since)}` : undefined}
           className="ov-changed"
         >
           {!comparison ? (
             <p className="mb-0 max-w-[62ch] text-md text-ink-2">
-              Baseline captured at {clockOf(generatedAt)}. Deltas appear here as soon as the console
+              Baseline captured at {formatDateTimeSeconds(generatedAt)}. Deltas appear here as soon as the console
               has a second reading to compare against — no change is not the same as no news.
             </p>
           ) : comparison.steady ? (
             <p className="mb-0 max-w-[62ch] text-md text-ink-2">
-              No movement since {clockOf(comparison.since)} — dwell, queue depth, and failures are all
+              No movement since {formatDateTime(comparison.since)} — dwell, queue depth, and failures are all
               where they were.
             </p>
           ) : (
@@ -398,8 +399,13 @@ export function OverviewPage({
             {events.slice(0, 6).map((e) => {
               const note = flowNoteFor(e.type);
               return (
-                <li className="grid grid-cols-[66px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-rule-enamel-soft px-1 py-3 last:border-b-0 max-md:grid-cols-[54px_minmax(0,1fr)] max-md:gap-y-1.5" key={e.id}>
-                  <span className="mono text-xs text-ink-3">{e.at}</span>
+                <li className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-rule-enamel-soft px-1 py-3 last:border-b-0 max-md:grid-cols-[auto_minmax(0,1fr)] max-md:gap-y-1.5" key={e.id}>
+                  {/* Date over time, as in the event log — the shared formatter
+                      keeps the two lines together so neither is a bare clock. */}
+                  <span className="mono flex flex-col text-xs text-ink-3">
+                    <span className="whitespace-nowrap">{formatDate(e.at)}</span>
+                    <span className="whitespace-nowrap">{formatTimeOfDay(e.at)}</span>
+                  </span>
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="text-md text-ink-1">{e.detail}</span>
                     <span className="mono text-micro text-ink-3">
@@ -421,13 +427,6 @@ export function OverviewPage({
 }
 
 /* ------------------------------------------------------------------ copy */
-
-function clockOf(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "--:--:--";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
 
 function verdictTitle(
   health: FlowHealth,
