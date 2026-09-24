@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { UnauthorizedError, ValidationError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { settingsService } from '../services/settings/settings.service.js';
 import { amberPayGateway } from '../services/gateway/amberpay.service.js';
 import { webhookProcessor } from '../services/webhooks/webhookProcessor.service.js';
 import type { AmberPayGateway } from '../types/gateway.js';
@@ -15,6 +16,33 @@ export interface WebhooksControllerDeps {
   gateway?: AmberPayGateway;
   /** Processor override (tests inject a stub). */
   processor?: Pick<WebhookProcessor, 'processWebhook'>;
+  /**
+   * Resolves this deployment's signature secret.
+   *
+   * Injected rather than read from the environment so the CONFIGURED value wins
+   * once the wizard sets one, and so a test can drive a known secret without
+   * touching process env.
+   */
+  webhookSecret?: () => Promise<string | null>;
+}
+
+/**
+ * The stored webhook secret, or null when none is configured.
+ *
+ * Null rather than a fallback here on purpose: `verifyWebhookSignature` already
+ * treats an absent secret as "use the environment", and stating that rule in two
+ * places is how the two come to disagree.
+ */
+async function defaultWebhookSecret(): Promise<string | null> {
+  try {
+    return (await settingsService.resolveCredentials()).webhookSecret;
+  } catch (err) {
+    // An unreadable stored secret must not take the endpoint down; the
+    // environment may still hold a usable one, and the settings read reports the
+    // unreadable row separately.
+    logger.warn({ err }, 'Stored webhook secret is unreadable; falling back to the environment');
+    return null;
+  }
 }
 
 export interface WebhooksController {
@@ -41,6 +69,7 @@ export function createWebhooksController(
 ): WebhooksController {
   const gateway = deps.gateway ?? amberPayGateway;
   const processor = deps.processor ?? webhookProcessor;
+  const resolveWebhookSecret = deps.webhookSecret ?? defaultWebhookSecret;
 
   return {
     receiveAmberPayWebhook: asyncHandler(async (req, res) => {
@@ -56,7 +85,16 @@ export function createWebhooksController(
         received, never over a re-serialized object.
       */
       const signature = req.headers['x-amber-pay-signature'];
-      if (typeof signature !== 'string' || !gateway.verifyWebhookSignature(rawBody, signature)) {
+      /*
+        One settings read per delivery — a single indexed row. Cheap enough for
+        the hot path, and the alternative (caching the secret in the process) is
+        what made a credential change require a restart in the first place.
+      */
+      const secret = await resolveWebhookSecret();
+      if (
+        typeof signature !== 'string' ||
+        !gateway.verifyWebhookSignature(rawBody, signature, secret ?? undefined)
+      ) {
         throw new UnauthorizedError('Invalid webhook signature');
       }
 

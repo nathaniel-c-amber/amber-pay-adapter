@@ -1,11 +1,12 @@
-import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import type {
   AccountingAdaptor,
+  AdaptorCredentials,
   AdaptorId,
   AdaptorResponse,
   AdaptorStatus,
   AdaptorTransport,
+  ConnectResult,
   HealthCheckResult,
   HttpMethod,
   PaymentRef,
@@ -49,41 +50,50 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
   private connected = false;
   private oauthToken: string | null = null;
   /**
-   * The CURRENT refresh token. Intuit rotates it on every exchange, so the
-   * token minted at connect time replaces the configured one for the life of
-   * the process — otherwise the second exchange (after an access token expires)
-   * would present a spent token and fail. A restart falls back to the env value,
-   * which is why the rotated one must also be written back to `.env` if the
-   * deployment restarts often enough to matter.
+   * The CURRENT refresh token. Intuit rotates it on every exchange, so the token
+   * minted at connect time replaces the supplied one for the life of the
+   * process — otherwise the second exchange (after an access token expires) would
+   * present a spent token and fail. It is also handed back through
+   * `ConnectResult.rotated` so the caller can persist it: with credentials stored
+   * rather than in `.env`, a restart would otherwise have nothing but the old
+   * value to present.
    */
   private refreshToken: string | undefined;
+  /** Credentials most recently supplied to `connect`. Never read from the environment. */
+  private credentials: AdaptorCredentials = {};
   private readonly transport: AdaptorTransport;
 
   constructor(transport?: AdaptorTransport) {
     this.transport = transport ?? httpTransport;
   }
 
-  async connect(): Promise<void> {
+  async connect(credentials: AdaptorCredentials): Promise<ConnectResult | void> {
     const token = await resolveAccessToken(this.transport, {
-      clientId: env.QUICKBOOKS_CLIENT_ID,
-      clientSecret: env.QUICKBOOKS_CLIENT_SECRET,
-      accessToken: env.QUICKBOOKS_ACCESS_TOKEN,
-      refreshToken: this.refreshToken ?? env.QUICKBOOKS_REFRESH_TOKEN,
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
+      accessToken: credentials.accessToken,
+      // The rotated value wins over the supplied one, for the reason above.
+      refreshToken: this.refreshToken ?? credentials.refreshToken,
       tokenUrl: INTUIT_TOKEN_URL,
     });
+    this.connected = true;
+    this.credentials = credentials;
     this.oauthToken = token.accessToken;
     this.refreshToken = token.refreshToken;
-    this.connected = true;
     logger.info(
-      { adaptor: this.id, realm: env.QUICKBOOKS_REALM_ID ?? null },
+      { adaptor: this.id, realm: credentials.realmId ?? null },
       'QuickBooks adaptor connected',
     );
+    return token.refreshToken && token.refreshToken !== credentials.refreshToken
+      ? { rotated: { refreshToken: token.refreshToken } }
+      : undefined;
   }
 
   async disconnect(): Promise<void> {
     this.connected = false;
     this.oauthToken = null;
     this.refreshToken = undefined;
+    this.credentials = {};
     logger.info({ adaptor: this.id }, 'QuickBooks adaptor disconnected');
   }
 
@@ -131,8 +141,10 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     const started = Date.now();
     try {
       let response = await this.probe();
-      if (response.status === 401 && env.QUICKBOOKS_REFRESH_TOKEN) {
-        await this.connect();
+      if (response.status === 401 && this.credentials.refreshToken) {
+        // Re-connect with the SAME credentials (plus the rotated token the
+        // instance is holding) and retry once.
+        await this.connect(this.credentials);
         response = await this.probe();
       }
       const latencyMs = Date.now() - started;
@@ -159,7 +171,7 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
   }
 
   private probe(): Promise<AdaptorResponse> {
-    const realm = env.QUICKBOOKS_REALM_ID ?? '';
+    const realm = this.credentials.realmId ?? '';
     return this.request('GET', `/companyinfo/${realm}`);
   }
 
@@ -184,8 +196,8 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
    * have 404'd on the first real call.
    */
   private async request(method: HttpMethod, path: string, body?: unknown): Promise<AdaptorResponse> {
-    const base = (env.QUICKBOOKS_BASE_URL ?? '').replace(/\/+$/, '');
-    const realm = env.QUICKBOOKS_REALM_ID ?? '';
+    const base = (this.credentials.baseUrl ?? '').replace(/\/+$/, '');
+    const realm = this.credentials.realmId ?? '';
     const fullUrl = `${base}/v3/company/${realm}${path}`;
     const headers: Record<string, string> = this.oauthToken
       ? { Authorization: `Bearer ${this.oauthToken}` }

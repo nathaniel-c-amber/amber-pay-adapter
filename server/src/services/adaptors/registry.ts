@@ -50,6 +50,19 @@ export class AdaptorRegistry {
     this.instances.set(id, adaptor);
     return adaptor;
   }
+
+  /**
+   * Forget the cached instance for an adaptor.
+   *
+   * MUST be called whenever configured credentials change. `get()` caches ONE
+   * instance per adaptor id, and that instance remembers both the credentials it
+   * was connected with and (for QuickBooks) a rotated refresh token — so without
+   * a reset, saving new credentials leaves the console reporting the OLD failure,
+   * and the operator sees their correction have no effect and re-enters it.
+   */
+  reset(id: AdaptorId): void {
+    this.instances.delete(id);
+  }
 }
 
 /** Singleton pre-registered with QuickBooks and Sage. */

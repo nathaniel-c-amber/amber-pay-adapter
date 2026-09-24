@@ -296,6 +296,22 @@ export class SettingsService {
   }
 
   /**
+   * Replace the stored adaptor credentials WITHOUT invalidating the verification.
+   *
+   * Used only for an upstream ROTATION. The exchange that produced these values
+   * is the same one that just proved the connection works, so clearing
+   * `verifiedAt` — which `updateAdaptor` does, correctly, for an operator's edit
+   * — would make a healthy connection look like one nobody has tested.
+   */
+  async storeRotatedCredentials(fields: Record<string, string>): Promise<void> {
+    await this.repository.update({ adaptorCredentials: sealSecret(JSON.stringify(fields)) });
+    logger.info(
+      { organizationId: env.ORGANIZATION_ID, fields: ['adaptor.credentials(rotated)'] },
+      'Deployment settings updated',
+    );
+  }
+
+  /**
    * Plaintext credentials, for the server's own use.
    *
    * SERVER-SIDE ONLY. The webhook controller verifies against `webhookSecret`;

@@ -446,6 +446,41 @@ the next rebuild, and it is the kind of thing that only shows up outside the tes
 
 Suite after Phase 2: **344 passed / 5 skipped / 0 failed** (from 316).
 
+**Phase 3 — done.** Adaptors take their credentials; nothing inside an adaptor reads `env`.
+
+- `types/adaptor.ts` — `AdaptorCredentials`, `ConnectResult`, and `connect(credentials)` is now
+  **required**. `ConnectResult.rotated` exists because Intuit invalidates a refresh token as it spends
+  it: a caller that does not persist the replacement presents a spent token on the next start, one
+  token-lifetime after every restart, which reads as flakiness rather than as a bug.
+- Both adaptors hold the credentials they were given and reference the environment nowhere. Each keeps
+  its own default base URL, so an absent `baseUrl` is a working connection rather than an empty string.
+- `services/adaptors/credentials.provider.ts` (new) — the ONE place that bridges stored configuration to
+  `connect`. **Stored first, environment second; the second half is transitional.** A deployment
+  configured entirely from `.env` keeps working unchanged — sandbox base URL, hand-pasted token and all
+  — while the wizard takes ownership. Deleting the fallback before the wizard can set every field would
+  break every existing install on upgrade, which is a worse failure than two sources for a while.
+  `connectAdaptor()` is the single entry point, so no call site can connect with credentials that
+  skipped the provider or drop a rotation on the floor.
+- `registry.reset(id)` — **MUST be called when credentials change.** `get()` caches one instance per
+  adaptor id, and that instance remembers both the credentials it connected with and a rotated refresh
+  token; without a reset, saving new credentials leaves the console reporting the old failure and the
+  operator re-enters a correction that was never used. *Phase 5's settings write is the caller.*
+- The gateway's webhook secret is injected on the same principle, with the environment as fallback, and
+  the controller resolves it per delivery (one indexed single-row read — caching it in the process is
+  what made a credential change need a restart in the first place).
+- 6 tests added. The decisive one: **`connect({})` fails even though `setup-env.cjs` sets
+  `QUICKBOOKS_CLIENT_ID` and `SAGE_CLIENT_ID`** — an adaptor that still consulted the environment would
+  connect there. Also covered: the supplied base URL and realm win, and a 401 does not retry without a
+  refresh token (retrying would re-present the same expired token).
+
+Suite after Phase 3: **350 passed / 5 skipped / 0 failed** (from 344).
+
+**Gap deferred to Phase 5, stated so it is not mistaken for done:** `credentials.provider.ts` resolves
+through the `settingsService` singleton rather than an injected dependency, so the *stored*-credentials
+branch cannot be unit-tested until the settings write API exists to seed it. Today it is exercised only
+on the environment-fallback branch. Phase 5 must add a test that stores credentials and asserts the
+provider prefers them.
+
 ### Critical path
 
 **Phase 1 → 3 → 5 → 6.** Phase 1 is small but gates the wizard's invites. Phase 3 gates the verify

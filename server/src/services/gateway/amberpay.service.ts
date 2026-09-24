@@ -87,12 +87,18 @@ export class AmberPayGatewayImpl implements AmberPayGateway {
     };
   }
 
-  verifyWebhookSignature(rawBody: string | Buffer, signature: string): boolean {
+  verifyWebhookSignature(rawBody: string | Buffer, signature: string, secret?: string): boolean {
+    /*
+      The secret is DEPLOYMENT configuration, so the caller supplies it; the
+      environment remains a fallback so a deployment that configures one there
+      keeps verifying. Until the onboarding wizard can set a stored value, an
+      upgrade must not quietly stop checking signatures — that is the one failure
+      mode this function exists to prevent.
+    */
+    const key = secret ?? env.AMBER_PAY_WEBHOOK_SECRET;
     // HMAC over the RAW request bytes — never over re-serialized JSON, which
     // would be vulnerable to key-order/whitespace mismatches.
-    const expected = createHmac('sha256', env.AMBER_PAY_WEBHOOK_SECRET)
-      .update(rawBody)
-      .digest('hex');
+    const expected = createHmac('sha256', key).update(rawBody).digest('hex');
     return this.safeEqual(expected, signature);
   }
 

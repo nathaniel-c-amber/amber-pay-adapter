@@ -1,4 +1,5 @@
 import { adaptorRegistry } from './registry.js';
+import { connectAdaptor } from './credentials.provider.js';
 import { logger } from '../../utils/logger.js';
 import { failureReasonForError } from './errors.js';
 import { adaptorEventRecorder } from '../events/adaptorEventRecorder.service.js';
@@ -124,7 +125,10 @@ async function probeAdaptor(registry: AdaptorRegistry, id: AdaptorId): Promise<A
     if ((await adaptor.status()) !== 'connected' && shouldAttemptConnect(id, Date.now())) {
       lastConnectAttemptAt.set(id, Date.now());
       try {
-        await adaptor.connect();
+        // Through the provider, never `adaptor.connect()` directly: the adaptor
+        // reads no environment, and the provider is what also persists a rotated
+        // credential.
+        await connectAdaptor(adaptor);
         lastConnectReason.delete(id);
       } catch (err) {
         connectError = err instanceof Error ? err.message : 'connection failed';
@@ -224,7 +228,7 @@ export async function connectConfiguredAdaptors(
     registry.list().map(async (id) => {
       const adaptor = registry.get(id);
       try {
-        await adaptor.connect();
+        await connectAdaptor(adaptor);
         lastConnectReason.delete(id);
         logger.info({ adaptor: id }, 'Adaptor connected on startup');
       } catch (err) {

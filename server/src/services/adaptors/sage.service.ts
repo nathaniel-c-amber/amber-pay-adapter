@@ -1,11 +1,12 @@
-import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import type {
   AccountingAdaptor,
+  AdaptorCredentials,
   AdaptorId,
   AdaptorResponse,
   AdaptorStatus,
   AdaptorTransport,
+  ConnectResult,
   HealthCheckResult,
   HttpMethod,
   PaymentRef,
@@ -32,16 +33,24 @@ export class SageAdaptor implements AccountingAdaptor {
 
   private connected = false;
   private oauthToken: string | null = null;
+  /** Credentials most recently supplied to `connect`. Never read from the environment. */
+  private credentials: AdaptorCredentials = {};
   private readonly transport: AdaptorTransport;
 
   constructor(transport?: AdaptorTransport) {
     this.transport = transport ?? this.stubTransport;
   }
 
-  async connect(): Promise<void> {
-    if (!env.SAGE_CLIENT_ID || !env.SAGE_CLIENT_SECRET) {
+  async connect(credentials: AdaptorCredentials): Promise<ConnectResult | void> {
+    /*
+      The distinction that matters to an operator: nothing configured at all
+      versus configured and refused. Both are `auth` failures, but the fix is
+      different, so the message has to say which one this is.
+    */
+    if (!credentials.clientId || !credentials.clientSecret) {
       throw new AdaptorAuthError('Sage credentials are not configured');
     }
+    this.credentials = credentials;
     // OAuth token placeholder: real token exchange/refresh lands here.
     this.oauthToken = 'stub-token';
     this.connected = true;
@@ -51,6 +60,7 @@ export class SageAdaptor implements AccountingAdaptor {
   async disconnect(): Promise<void> {
     this.connected = false;
     this.oauthToken = null;
+    this.credentials = {};
     logger.info({ adaptor: this.id }, 'Sage adaptor disconnected');
   }
 
@@ -123,7 +133,7 @@ export class SageAdaptor implements AccountingAdaptor {
    * OAuth token; stubbed pending credentials.
    */
   private async request(method: HttpMethod, url: string, body?: unknown): Promise<AdaptorResponse> {
-    const base = env.SAGE_BASE_URL ?? '';
+    const base = this.credentials.baseUrl ?? '';
     const fullUrl = `${base}${url}`;
     const headers: Record<string, string> = this.oauthToken
       ? { Authorization: `Bearer ${this.oauthToken}` }

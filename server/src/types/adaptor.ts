@@ -96,6 +96,39 @@ export type AdaptorTransport = (
 ) => Promise<AdaptorResponse>;
 
 /**
+ * Credentials for one accounting connection, SUPPLIED by the caller.
+ *
+ * THE ADAPTOR READS NO ENVIRONMENT. It used to call `env.QUICKBOOKS_*` inside
+ * `connect()`, which made credentials a property of the process rather than of
+ * the deployment's configuration record — so there was nowhere to put a value an
+ * administrator had entered, and a rotated refresh token had nowhere to be
+ * written back to. Every field is optional because "configured but missing a
+ * piece" is a real state whose error message an operator needs to read.
+ */
+export interface AdaptorCredentials {
+  clientId?: string;
+  clientSecret?: string;
+  baseUrl?: string;
+  /** The accounting company / tenant the credentials are scoped to. */
+  realmId?: string;
+  accessToken?: string;
+  refreshToken?: string;
+}
+
+/**
+ * What a connection attempt learned that the caller must remember.
+ *
+ * `rotated` exists because some upstreams invalidate a credential as they spend
+ * it: Intuit issues a NEW refresh token on every exchange. If the caller does
+ * not persist it, the next process start presents a token that has already been
+ * used, and the connection dies one token-lifetime after every restart — which
+ * looks like flakiness rather than like a bug.
+ */
+export interface ConnectResult {
+  rotated?: AdaptorCredentials;
+}
+
+/**
  * The extensibility contract for accounting adaptors. Every accounting
  * platform (QuickBooks, Sage, ...) implements this interface.
  *
@@ -104,11 +137,12 @@ export type AdaptorTransport = (
  * - `healthCheck` reports via `ok:false` + `message` on failure (no throw).
  * - All methods that talk to the upstream MUST be called after `connect()`;
  *   they throw `AdaptorConnectionError` if the adaptor is not connected.
+ * - `connect` takes its credentials as an argument and reads no environment.
  */
 export interface AccountingAdaptor {
   readonly id: AdaptorId;
   readonly name: string;
-  connect(): Promise<void>;
+  connect(credentials: AdaptorCredentials): Promise<ConnectResult | void>;
   disconnect(): Promise<void>;
   status(): Promise<AdaptorStatus>;
   pushCompletedPayment(payment: PaymentRef): Promise<PushResult>;

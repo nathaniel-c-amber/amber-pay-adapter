@@ -1,5 +1,6 @@
 import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
+import { connectAdaptor } from '../adaptors/credentials.provider.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
@@ -143,7 +144,9 @@ export class WebhookProcessor {
     try {
       const adaptor = this.adaptorResolver.get(this.activeAdaptorId);
       if ((await adaptor.status()) !== 'connected') {
-        await adaptor.connect();
+        // Through the provider: the adaptor reads no environment, and the same
+        // call is what persists a rotated credential.
+        await connectAdaptor(adaptor);
       }
       await this.pushWithTimeout(adaptor, {
         id: event.id,

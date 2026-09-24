@@ -66,7 +66,13 @@ export interface AmberPayGateway {
   /**
    * Verify an Amber Pay webhook signature. The HMAC is computed over the RAW
    * request body bytes (string or Buffer) — never over re-serialized JSON.
+   *
+   * `secret` is supplied by the caller because it is DEPLOYMENT configuration,
+   * not a property of the gateway implementation. It is optional so a caller
+   * that has no configured value can fall back to the environment, which is what
+   * keeps an already-working deployment verifying while the onboarding wizard is
+   * the only way to set one.
    */
-  verifyWebhookSignature(rawBody: string | Buffer, signature: string): boolean;
+  verifyWebhookSignature(rawBody: string | Buffer, signature: string, secret?: string): boolean;
   parseWebhook(payload: unknown): WebhookEvent;
 }
