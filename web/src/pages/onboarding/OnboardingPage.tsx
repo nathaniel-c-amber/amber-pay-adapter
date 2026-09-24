@@ -306,6 +306,28 @@ export function OnboardingPage({
     }
   };
 
+  /**
+   * Skip setup, recording that this deployment is set up.
+   *
+   * WITHOUT THE STAMP the console would offer setup again on every sign-in, and an
+   * operator whose deployment is configured entirely from its ENVIRONMENT — which is
+   * a supported way to run one — would have to dismiss it forever. The deployment has
+   * no way to know the environment was used, so the human decides and this records
+   * the decision.
+   *
+   * Leaving is still the outcome when the stamp fails: an API that cannot record a
+   * skip must not be able to keep somebody inside a setup they have finished.
+   */
+  const skipSetup = async () => {
+    setBusy("finish");
+    try {
+      await completeSettings(token);
+    } catch {
+      // Deliberately swallowed — see above.
+    }
+    onDone();
+  };
+
   /* ------------------------------------------------------------- rendering */
 
   if (loadError) {
@@ -352,8 +374,19 @@ export function OnboardingPage({
               {settings.organizationName ?? "This deployment"}
             </p>
           </div>
-          <button type="button" className={cx(LINK_BTN, "ml-auto")} onClick={onLeave}>
-            {settings.configured ? "Close setup" : "Open the console anyway"}
+          <button
+            type="button"
+            className={cx(LINK_BTN, "ml-auto")}
+            onClick={() => void (settings.configured ? onLeave() : skipSetup())}
+            disabled={busy !== null}
+            {...(settings.configured
+              ? {}
+              : {
+                  title:
+                    "Records that this deployment is set up, so the console stops offering setup.",
+                })}
+          >
+            {settings.configured ? "Close setup" : "Skip setup"}
           </button>
         </div>
       </header>
@@ -365,6 +398,16 @@ export function OnboardingPage({
           furthestReachable={furthestReachable}
           onSelect={goTo}
         />
+
+        {/* Said once, on the first step, and only while setup is unfinished: an
+            operator whose deployment is configured from its environment needs to
+            know that skipping is legitimate rather than a failure. */}
+        {!settings.configured && stepId === "organization" && (
+          <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">
+            Already configured from this deployment's environment? Skip setup — that records setup as
+            done, which is what stops the console offering it again.
+          </p>
+        )}
 
         <section className="flex flex-col gap-2">
           <h1

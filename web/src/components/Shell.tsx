@@ -26,6 +26,7 @@ import {
   getMetrics,
   getReconciliationReport,
   getServiceStatus,
+  getSettings,
   UnauthorizedError,
 } from "@/services/client";
 import type { ReconciliationReport } from "@/services/client";
@@ -57,7 +58,7 @@ import { DeniedPage } from "@/pages/auth/DeniedPage";
 import { ForgotPasswordPage } from "@/pages/auth/ForgotPasswordPage";
 import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
 import { OnboardingPage } from "@/pages/onboarding/OnboardingPage";
-import { demoMetrics, DEMO_RECON, DEMO_POLICIES, DEMO_CONFIG, DEMO_WEBHOOK, demoService, DEMO_ENABLED } from "@/utils/fixtures";
+import { demoMetrics, DEMO_RECON, DEMO_POLICIES, demoService, DEMO_ENABLED } from "@/utils/fixtures";
 import { ErrorState, LoadingState, SearchBox, cx } from "./ui";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { ConnectionsPage, ConnectionDetailPage } from "@/pages/ConnectionsPage";
@@ -692,6 +693,32 @@ export default function Shell() {
       navigate("overview");
       void refreshIdentity(t);
       void loadLive(t);
+
+      /*
+        A DEPLOYMENT THAT HAS NEVER BEEN SET UP OPENS ON SETUP, not on a console of
+        empty panels.
+
+        ONCE, AT SIGN-IN — deliberately not a route guard. A guard would bounce an
+        operator back to the wizard every time they looked at the Overview, which
+        makes "I'll finish this in a moment" impossible, and the console is not
+        useless before setup: it is how somebody checks what a partially configured
+        deployment is doing. The wizard stays reachable from System configuration for
+        whenever they are ready.
+
+        An operator whose deployment is already configured from its ENVIRONMENT sees
+        this once and skips it, which records that setup is done. That is why the flow
+        offers a skip rather than a hard wall: the environment is a legitimate source
+        of configuration, and the deployment has no way to know it was used.
+      */
+      void (async () => {
+        try {
+          const loaded = await getSettings(t);
+          if (!loaded.configured) navigate("onboarding");
+        } catch {
+          // Settings unreadable is not a reason to block the console: they can be
+          // fixed from System configuration once it loads.
+        }
+      })();
     },
     [loadLive, refreshIdentity],
   );
@@ -1019,18 +1046,7 @@ export default function Shell() {
           />
         );
       case "settings":
-        return (
-          <ConfigPage
-            /* No configuration endpoint exists, so these fixtures are the only
-               content the page can have — which is exactly why they are a
-               development-only stand-in. In a production build the page says it
-               has no source rather than presenting invented endpoints as the
-               deployment's own settings. */
-            configs={DEMO_ENABLED ? DEMO_CONFIG : []}
-            webhook={DEMO_ENABLED ? DEMO_WEBHOOK : null}
-            mode={mode}
-          />
-        );
+        return <ConfigPage token={token} mode={mode} onRequireSignIn={requireSignIn} />;
       case "profile":
         return (
           <ProfilePage

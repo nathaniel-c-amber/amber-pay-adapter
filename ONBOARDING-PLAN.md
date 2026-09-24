@@ -634,6 +634,42 @@ rotation that arrived on an ENVIRONMENT fallback does **not** invent a stored cr
   semantics, error-summary focus, the three verify states, reduced motion) is the list to walk it
   against.
 
+**Phase 7 — done.** First-run gating, an entry point, and `ConfigPage` against the real API.
+
+- **The gate is a sign-in decision, not a route guard.** After a successful sign-in, a deployment that
+  is not configured opens on setup. A route guard would bounce the operator back every time they looked
+  at the Overview, which makes "I'll finish this in a moment" impossible — and the console is not
+  useless before setup: it is how somebody checks what a partially configured deployment is doing.
+- **§5.2's gate would have walled in every env-configured deployment**, which is why skipping has to
+  record something. A deployment configured entirely from `.env` — the transitional path Phase 3
+  deliberately preserved — has `configured_at` null, so a hard gate offers it setup forever. The escape
+  hatch therefore **stamps `configured_at`** rather than merely leaving, labelled "Skip setup", with the
+  reason stated on step one and in its tooltip. The deployment cannot know its environment was used, so
+  the human decides and the decision is the recorded fact. If the stamp fails the operator still leaves:
+  an API that cannot record a skip must not be able to keep somebody inside a setup they have finished.
+- **The wizard has an entry point**: `#/onboarding` from System configuration (a "Run guided setup"
+  action plus a link on the accounting card), and a banner on that page while `configured_at` is null.
+- **`ConfigPage` is no longer theatre — this was R7.** It read nothing and wrote nothing, while showing
+  a Save button that set a local boolean and a column of cadence figures ("every 15 min", "≤ 5 s") that
+  no code enforced; the risk was an operator changing a number and waiting for it to take effect. It now
+  reads `GET /settings`, shows presence + last four per secret (never a value), the organization id
+  read-only, when setup finished and when the connection was last verified, and offers a real "Test
+  connection" which records the verification.
+- **Per-section save, replacing the single global button.** The sections are different requests with
+  different failure modes, and one button firing all of them either reports a partial success as success
+  or refuses to save the field that was fine. Name and cadence are separate saves for the same reason.
+- **Changing the accounting system is deliberately NOT a field on this page.** It needs the new system's
+  credentials and a successful test; doing it from a settings form would leave the deployment pointed at
+  a system it has never connected to. The card says so and links to the wizard.
+- **The tour hand-off needed no code, and that was checked rather than assumed:** the tour's trigger
+  already refuses to start on a non-console route, so it begins the moment setup hands over.
+- Side effect: three dead class hooks (`config-webhook`, `config-cadence`, `cadence-value`) went with the
+  rewrite — the audit's known-no-op count fell 30 → 27 and the built CSS 55.64 → 54.79 kB.
+- **Verified:** web typecheck, build clean, `audit:classes` UNRESOLVED 0, and the classes introduced
+  inside `cx(...)`/`INPUT` — which the audit cannot see — checked by name against the compiled CSS
+  (22 checked, none missing). **Still NOT verified: the rendering of either surface.** Both need a live
+  API and a session, and walking either would write to the real deployment.
+
 ### Critical path
 
 **Phase 1 → 3 → 5 → 6.** Phase 1 is small but gates the wizard's invites. Phase 3 gates the verify
