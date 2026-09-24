@@ -17,10 +17,19 @@ import type {
   PaymentRepository,
   ReconciliationRepository,
   Repositories,
+  SettingsRepository,
   TwoFactorRepository,
   UserRepository,
   WebhookDedupRepository,
 } from '../types/repository.js';
+import {
+  defaultDeploymentSettings,
+  withoutUndefined,
+} from '../models/deploymentSettings.js';
+import type {
+  DeploymentSettings,
+  DeploymentSettingsPatch,
+} from '../models/deploymentSettings.js';
 import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
 
 /**
@@ -389,6 +398,31 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
 }
 
+/**
+ * The single settings row, in memory.
+ *
+ * Copied on the way out rather than handed out by reference, for the same reason
+ * `InMemoryUserRepository.updatePolicyAttributes` replaces its array instead of
+ * pushing: a caller holding the stored object could otherwise mutate shared
+ * state through a copy it believes is its own.
+ */
+export class InMemorySettingsRepository implements SettingsRepository {
+  private row: DeploymentSettings = defaultDeploymentSettings();
+
+  async get(): Promise<DeploymentSettings> {
+    return { ...this.row };
+  }
+
+  async update(patch: DeploymentSettingsPatch): Promise<DeploymentSettings> {
+    this.row = {
+      ...this.row,
+      ...withoutUndefined(patch),
+      updatedAt: new Date().toISOString(),
+    };
+    return { ...this.row };
+  }
+}
+
 /** Build a fresh set of in-memory repositories. */
 export function createInMemoryRepositories(): Repositories {
   return {
@@ -402,5 +436,6 @@ export function createInMemoryRepositories(): Repositories {
     reconciliation: new InMemoryReconciliationRepository(),
     connectorStates: new InMemoryConnectorStateRepository(),
     payments: new InMemoryPaymentRepository(),
+    settings: new InMemorySettingsRepository(),
   };
 }

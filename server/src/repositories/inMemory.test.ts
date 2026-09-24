@@ -1,13 +1,45 @@
 import {
   createInMemoryRepositories,
   InMemoryConnectorStateRepository,
+  InMemorySettingsRepository,
   InMemoryUserRepository,
 } from './inMemory.js';
 import type { Repositories } from '../types/repository.js';
 import type { PolicyAttribute } from '../types/auth.js';
 
-describe('InMemoryUserRepository.markTourCompleted', () => {
-  const policy: PolicyAttribute[] = [
+describe('InMemorySettingsRepository patch semantics', () => {
+  const SEALED = Buffer.from('sealed-value');
+
+  it('leaves absent fields alone and clears only on an explicit null', async () => {
+    const settings = new InMemorySettingsRepository();
+    await settings.update({ organizationName: 'Acme', gatewayWebhookSecret: SEALED });
+
+    // Absent: untouched. This is what a form posting only its changed fields
+    // depends on, and the distinction a plain `Partial` would otherwise blur.
+    await settings.update({ organizationName: 'Acme Ltd' });
+    const afterAbsent = await settings.get();
+    expect(afterAbsent.organizationName).toBe('Acme Ltd');
+    expect(afterAbsent.gatewayWebhookSecret).toEqual(SEALED);
+
+    // Explicit undefined reads as "not mentioned", not as "clear it" —
+    // spreading it would do the opposite of what the caller appears to be saying.
+    await settings.update({ gatewayWebhookSecret: undefined });
+    expect((await settings.get()).gatewayWebhookSecret).toEqual(SEALED);
+
+    // Explicit null clears.
+    await settings.update({ gatewayWebhookSecret: null });
+    expect((await settings.get()).gatewayWebhookSecret).toBeNull();
+  });
+
+  it('hands out copies, so a caller cannot mutate stored state', async () => {
+    const settings = new InMemorySettingsRepository();
+    const first = await settings.get();
+    first.organizationName = 'mutated by the caller';
+    expect((await settings.get()).organizationName).toBeNull();
+  });
+});
+
+describe('InMemoryUserRepository.markTourCompleted', () => {  const policy: PolicyAttribute[] = [
     { scope: 'dashboard', organizationId: 'org-1', actions: ['read'] },
   ];
 

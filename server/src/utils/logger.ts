@@ -29,6 +29,20 @@ const baseOptions = {
       '*.amount',
       '*.email',
       '*.ref',
+      // Credentials the onboarding wizard writes. Redacted by NAME as well as by
+      // pino's wildcard path match: these are the values whose leak would be
+      // worst, and a log line that includes a field called `webhookSecret` is
+      // exactly the accident this list exists to prevent.
+      'secretsKey',
+      'clientSecret',
+      'webhookSecret',
+      'adaptorCredentials',
+      'credentials',
+      '*.secretsKey',
+      '*.clientSecret',
+      '*.webhookSecret',
+      '*.adaptorCredentials',
+      '*.credentials',
     ],
     censor: '[REDACTED]',
   },

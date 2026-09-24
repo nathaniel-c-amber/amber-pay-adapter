@@ -1,0 +1,377 @@
+/* Deployment settings, and the one rule that governs them: a secret goes in and
+ * never comes back out.
+ *
+ * WRITE-ONLY, NOT "HIDDEN IN THE UI". A `GET` returns whether a credential is
+ * configured and its last four characters, and nothing else. There is no
+ * endpoint, no method and no projection in this file that returns a stored
+ * credential, so a console cannot display one, a browser devtools panel cannot
+ * hold one, and a response logged by a reverse proxy cannot capture one.
+ *
+ * THE PLAINTEXT EXISTS IN EXACTLY ONE PLACE, `resolveCredentials()`, which is
+ * explicitly server-side: the webhook controller needs the signature secret and
+ * the adaptor needs its OAuth fields, and both are the server talking to itself.
+ * It is named to be conspicuous at a call site, and it must never be serialized
+ * into an HTTP response, an event detail, a failure note, or a log line.
+ *
+ * WHY VALIDATION LIVES HERE, not in the wizard: the wizard is one client. A
+ * value that arrives from anywhere else — a script, a future API consumer, a
+ * hand-run curl — must meet the same rules, so the rules sit at the one boundary
+ * every write crosses.
+ */
+
+import { logger } from '../../utils/logger.js';
+import { parseDurationMs } from '../../utils/duration.js';
+import { ValidationError } from '../../utils/errors.js';
+import { lastFourOf, openSecret, sealSecret, secretsConfigured } from '../../utils/secrets.js';
+import { getRepositories } from '../../repositories/index.js';
+import { env } from '../../config/env.js';
+import type { SettingsRepository } from '../../types/repository.js';
+import type {
+  ConfiguredAdaptorId,
+  DeploymentSettings,
+  DeploymentSettingsPatch,
+} from '../../models/deploymentSettings.js';
+
+/**
+ * What a read is allowed to say about a stored secret.
+ *
+ * `unreadable` exists because "no credential" and "a credential I cannot open"
+ * are different facts that need different actions, and reporting the second as
+ * the first would invite an operator to overwrite a credential that is very
+ * likely still the correct one under a key this process was not given.
+ */
+export interface CredentialPresence {
+  configured: boolean;
+  /** Last four characters, or null when the value is too short to disclose any. */
+  lastFour: string | null;
+  unreadable: boolean;
+}
+
+export interface PublicGatewaySettings {
+  clientId: string | null;
+  webhookSecret: CredentialPresence;
+}
+
+export interface PublicAdaptorSettings {
+  id: ConfiguredAdaptorId | null;
+  realmId: string | null;
+  baseUrl: string | null;
+  credentials: CredentialPresence;
+}
+
+export interface PublicDeploymentSettings {
+  /**
+   * The deployment's organization identity, read from `env.ORGANIZATION_ID`
+   * rather than from the row. It is deliberately NOT stored: two copies of an
+   * identity are two chances to disagree, and a mismatch here is exactly the
+   * failure that makes rows invisible to the users they belong to.
+   */
+  organizationId: string;
+  organizationName: string | null;
+  gateway: PublicGatewaySettings;
+  adaptor: PublicAdaptorSettings;
+  syncInterval: string | null;
+  alertTarget: string | null;
+  verifiedAt: string | null;
+  configuredAt: string | null;
+  /** False while the onboarding wizard still has work to do. */
+  configured: boolean;
+  /** False when no encryption key is configured, so writes cannot be accepted. */
+  writable: boolean;
+}
+
+/**
+ * Plaintext credentials, for server-side use only.
+ *
+ * NOT part of any API contract. If this type ever appears in a response shape,
+ * the write-only guarantee has been broken.
+ */
+export interface ResolvedCredentials {
+  webhookSecret: string | null;
+  adaptor:
+    | {
+        id: ConfiguredAdaptorId;
+        realmId: string | null;
+        baseUrl: string | null;
+        fields: Record<string, string>;
+      }
+    | null;
+}
+
+/** Read a stored secret into a presence summary, never into a value. */
+function presence(sealed: Buffer | null): CredentialPresence {
+  if (!sealed) {
+    return { configured: false, lastFour: null, unreadable: false };
+  }
+  try {
+    return { configured: true, lastFour: lastFourOf(openSecret(sealed)), unreadable: false };
+  } catch {
+    return { configured: true, lastFour: null, unreadable: true };
+  }
+}
+
+function toPublic(
+  settings: DeploymentSettings,
+  organizationId: string,
+  writable: boolean,
+): PublicDeploymentSettings {
+  return {
+    organizationId,
+    organizationName: settings.organizationName,
+    gateway: {
+      clientId: settings.gatewayClientId,
+      webhookSecret: presence(settings.gatewayWebhookSecret),
+    },
+    adaptor: {
+      id: settings.adaptorId,
+      realmId: settings.adaptorRealmId,
+      baseUrl: settings.adaptorBaseUrl,
+      credentials: presence(settings.adaptorCredentials),
+    },
+    syncInterval: settings.syncInterval,
+    alertTarget: settings.alertTarget,
+    verifiedAt: settings.verifiedAt,
+    configuredAt: settings.configuredAt,
+    configured: settings.configuredAt !== null,
+    writable,
+  };
+}
+
+/**
+ * A cadence, checked with the SAME parser the TTLs use.
+ *
+ * Absence is allowed (nothing configured yet). An unrecognised duration is
+ * refused at the edge rather than stored and re-interpreted later — a stored
+ * cadence that its consumer cannot parse is a silent default, and a silent
+ * default on a sync schedule is a schedule nobody chose.
+ */
+function assertValidSyncInterval(value: string): void {
+  try {
+    parseDurationMs(value);
+  } catch {
+    throw new ValidationError('syncInterval must be a duration such as "30s", "5m" or "1h"');
+  }
+}
+
+function assertNonEmpty(value: string, field: string): void {
+  if (value.trim().length === 0) {
+    throw new ValidationError(`${field} cannot be empty`);
+  }
+}
+
+function assertHttpUrl(value: string, field: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ValidationError(`${field} must be an absolute URL`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ValidationError(`${field} must be an http(s) URL`);
+  }
+}
+
+export interface GatewayUpdate {
+  clientId?: string | null;
+  /** Plaintext in, sealed at rest. `null` clears it. */
+  webhookSecret?: string | null;
+}
+
+export interface AdaptorUpdate {
+  id?: ConfiguredAdaptorId | null;
+  realmId?: string | null;
+  baseUrl?: string | null;
+  /** Plaintext in, sealed at rest as JSON. `null` clears it. */
+  credentials?: Record<string, string> | null;
+}
+
+export interface PreferencesUpdate {
+  organizationName?: string | null;
+  syncInterval?: string | null;
+  alertTarget?: string | null;
+}
+
+export class SettingsService {
+  constructor(private readonly repository: SettingsRepository = getRepositories().settings) {}
+
+  /** The write-only projection. No credential value appears in the result. */
+  async getSettings(): Promise<PublicDeploymentSettings> {
+    return toPublic(await this.repository.get(), env.ORGANIZATION_ID, secretsConfigured());
+  }
+
+  async isConfigured(): Promise<boolean> {
+    return (await this.repository.get()).configuredAt !== null;
+  }
+
+  async updateGateway(update: GatewayUpdate): Promise<PublicDeploymentSettings> {
+    const patch: DeploymentSettingsPatch = {};
+    const changed: string[] = [];
+
+    if (update.clientId !== undefined) {
+      if (update.clientId !== null) assertNonEmpty(update.clientId, 'gateway.clientId');
+      patch.gatewayClientId = update.clientId;
+      changed.push('gateway.clientId');
+    }
+    if (update.webhookSecret !== undefined) {
+      patch.gatewayWebhookSecret =
+        update.webhookSecret === null ? null : sealSecret(assertNonEmptySecret(update.webhookSecret, 'gateway.webhookSecret'));
+      // The VALUE is never named in the audit line — only that it changed.
+      changed.push('gateway.webhookSecret');
+    }
+
+    return this.apply(patch, changed);
+  }
+
+  async updateAdaptor(update: AdaptorUpdate): Promise<PublicDeploymentSettings> {
+    const patch: DeploymentSettingsPatch = {};
+    const changed: string[] = [];
+
+    if (update.id !== undefined) {
+      patch.adaptorId = update.id;
+      changed.push('adaptor.id');
+    }
+    if (update.realmId !== undefined) {
+      patch.adaptorRealmId = update.realmId;
+      changed.push('adaptor.realmId');
+    }
+    if (update.baseUrl !== undefined) {
+      if (update.baseUrl !== null) assertHttpUrl(update.baseUrl, 'adaptor.baseUrl');
+      patch.adaptorBaseUrl = update.baseUrl;
+      changed.push('adaptor.baseUrl');
+    }
+    if (update.credentials !== undefined) {
+      patch.adaptorCredentials =
+        update.credentials === null
+          ? null
+          : sealSecret(JSON.stringify(assertNonEmptyCredentials(update.credentials)));
+      changed.push('adaptor.credentials');
+    }
+
+    return this.apply(patch, changed);
+  }
+
+  async updatePreferences(update: PreferencesUpdate): Promise<PublicDeploymentSettings> {
+    const patch: DeploymentSettingsPatch = {};
+    const changed: string[] = [];
+
+    if (update.organizationName !== undefined) {
+      if (update.organizationName !== null) {
+        assertNonEmpty(update.organizationName, 'organizationName');
+      }
+      patch.organizationName = update.organizationName;
+      changed.push('organizationName');
+    }
+    if (update.syncInterval !== undefined) {
+      if (update.syncInterval !== null) assertValidSyncInterval(update.syncInterval);
+      patch.syncInterval = update.syncInterval;
+      changed.push('syncInterval');
+    }
+    if (update.alertTarget !== undefined) {
+      patch.alertTarget = update.alertTarget;
+      changed.push('alertTarget');
+    }
+
+    return this.apply(patch, changed);
+  }
+
+  /** Record that the connection was proven to work. */
+  async markVerified(at: string = new Date().toISOString()): Promise<PublicDeploymentSettings> {
+    return this.apply({ verifiedAt: at }, ['verifiedAt']);
+  }
+
+  /**
+   * A credential change invalidates the last verification.
+   *
+   * Clearing it here rather than asking every caller to remember means the
+   * console can never show "verified" for a credential that has since been
+   * replaced — a stale tick on the one page whose job is to say whether the
+   * connection works.
+   */
+  async complete(now: string = new Date().toISOString()): Promise<PublicDeploymentSettings> {
+    return this.apply({ configuredAt: now }, ['configuredAt']);
+  }
+
+  async clearVerification(): Promise<void> {
+    await this.repository.update({ verifiedAt: null });
+  }
+
+  /**
+   * Plaintext credentials, for the server's own use.
+   *
+   * SERVER-SIDE ONLY. The webhook controller verifies against `webhookSecret`;
+   * the adaptor connects with `adaptor.fields`. Nothing that returns from here
+   * may be serialized into a response, an event detail, a failure note or a log.
+   */
+  async resolveCredentials(): Promise<ResolvedCredentials> {
+    const settings = await this.repository.get();
+    return {
+      webhookSecret: settings.gatewayWebhookSecret
+        ? openSecret(settings.gatewayWebhookSecret)
+        : null,
+      adaptor:
+        settings.adaptorId && settings.adaptorCredentials
+          ? {
+              id: settings.adaptorId,
+              realmId: settings.adaptorRealmId,
+              baseUrl: settings.adaptorBaseUrl,
+              fields: JSON.parse(openSecret(settings.adaptorCredentials)) as Record<string, string>,
+            }
+          : null,
+    };
+  }
+
+  private async apply(
+    patch: DeploymentSettingsPatch,
+    changed: string[],
+  ): Promise<PublicDeploymentSettings> {
+    // A credential change makes the previous verification a claim about a value
+    // that no longer exists, so it is dropped in the same write.
+    if (
+      patch.gatewayWebhookSecret !== undefined ||
+      patch.adaptorCredentials !== undefined ||
+      patch.adaptorRealmId !== undefined ||
+      patch.adaptorBaseUrl !== undefined ||
+      patch.adaptorId !== undefined
+    ) {
+      patch.verifiedAt = null;
+      changed.push('verifiedAt(cleared)');
+    }
+
+    const settings = await this.repository.update(patch);
+    if (changed.length > 0) {
+      /*
+        Field NAMES only. This is an audit trail for "who changed what, when",
+        and a trail that records the value it is protecting is not an audit
+        trail — it is a second copy of the secret with weaker protection.
+      */
+      logger.info(
+        { organizationId: env.ORGANIZATION_ID, fields: changed },
+        'Deployment settings updated',
+      );
+    }
+    return toPublic(settings, env.ORGANIZATION_ID, secretsConfigured());
+  }
+}
+
+function assertNonEmptySecret(value: string, field: string): string {
+  assertNonEmpty(value, field);
+  return value;
+}
+
+/**
+ * Reject a credential set that is present but empty.
+ *
+ * `{ clientId: '' }` would seal to a stored object that reads as "configured"
+ * while carrying nothing, which is worse than no credential: the console reports
+ * a connection that was never actually given anything to connect with.
+ */
+function assertNonEmptyCredentials(credentials: Record<string, string>): Record<string, string> {
+  const entries = Object.entries(credentials).filter(([, value]) => value.trim().length > 0);
+  if (entries.length === 0) {
+    throw new ValidationError('adaptor.credentials must contain at least one value');
+  }
+  return Object.fromEntries(entries);
+}
+
+/** Shared service instance, backed by the process repository container. */
+export const settingsService = new SettingsService();

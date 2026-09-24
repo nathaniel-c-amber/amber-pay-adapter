@@ -5,6 +5,7 @@ import type {
   Payment,
   ReconciliationJob,
 } from '../models/domain.js';
+import type { DeploymentSettings, DeploymentSettingsPatch } from '../models/deploymentSettings.js';
 import type { AuthUser, Invite, PasswordReset, PolicyAttribute, TwoFactorChallenge } from './auth.js';
 
 /**
@@ -190,4 +191,21 @@ export interface Repositories {
   reconciliation: ReconciliationRepository;
   connectorStates: ConnectorStateRepository;
   payments: PaymentRepository;
+  settings: SettingsRepository;
+}
+
+/**
+ * Configuration for the single organization this deployment serves.
+ *
+ * ONE ROW, and there is no `create` or `delete`: the row is materialised by the
+ * migration, so `get()` can never fail for absence and no caller has to decide
+ * whether a missing row means "unconfigured" or "not installed".
+ */
+export interface SettingsRepository {
+  get(): Promise<DeploymentSettings>;
+  /**
+   * Merge a patch into the row. A key present as `null` CLEARS that field; an
+   * absent key leaves it alone (see `DeploymentSettingsPatch`).
+   */
+  update(patch: DeploymentSettingsPatch): Promise<DeploymentSettings>;
 }

@@ -16,3 +16,12 @@ process.env.SAGE_CLIENT_SECRET = 'test-sage-client-secret';
 // The single organization this deployment serves. Tests use 'org-1' throughout,
 // so the default has to match it or every grant would be refused as foreign.
 process.env.ORGANIZATION_ID = 'org-1';
+// Credential sealing. TWO keys on purpose, with the current at version 2: the
+// rotation path (reading a value sealed under the previous key) is the part of
+// an encryption scheme that only fails the first time somebody rotates, so the
+// suite exercises a real older envelope rather than asserting a branch exists.
+// Not real keys: they exist only for the in-process suite.
+process.env.SECRETS_KEY = 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4';
+process.env.SECRETS_KEY_VERSION = '2';
+process.env.SECRETS_KEY_PREVIOUS =
+  '0f1e2d3c0f1e2d3c0f1e2d3c0f1e2d3c0f1e2d3c0f1e2d3c0f1e2d3c0f1e2d3c';

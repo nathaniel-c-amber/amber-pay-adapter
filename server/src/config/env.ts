@@ -23,6 +23,16 @@ function envBoolean(defaultValue: boolean) {
  * Environment schema. Required vars fail fast on missing/invalid values;
  * optional vars fall back to sensible defaults.
  */
+/**
+ * An empty string counts as ABSENT, not as a value.
+ *
+ * docker-compose renders `${VAR:-}` as an empty string when the root `.env`
+ * leaves it blank, so a zod schema that format-checks an optional variable would
+ * refuse to boot a deployment that simply does not use that feature.
+ */
+const blankAsAbsent = (value: unknown): unknown =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
   PORT: z.coerce.number().int().positive().default(3300),
@@ -56,6 +66,47 @@ const envSchema = z.object({
   // Self-service password-reset link lifetime. Short: the link is a bearer
   // credential delivered by email.
   PASSWORD_RESET_TTL: z.string().default('1h'),
+
+  /*
+    Credential encryption (see utils/secrets.ts).
+
+    OPTIONAL today, because nothing stores a credential until the onboarding
+    wizard lands — but a deployment that will hold credentials MUST set it, and
+    `sealSecret` refuses to write rather than storing one in the clear.
+
+    A 32-byte key as 64 hex characters. Generate with `openssl rand -hex 32`.
+    Deliberately WITHOUT a default: a sample key that quietly encrypts a real
+    credential is worse than no key at all.
+
+    `blankAsAbsent` matters for all three: docker-compose passes `${VAR:-}` as an
+    EMPTY STRING when the root `.env` leaves it blank, and zod treats a present
+    empty string as a value. Without it, the format check would make every
+    deployment that does not use credentials fail to boot.
+  */
+  SECRETS_KEY: z.preprocess(
+    blankAsAbsent,
+    z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/, 'must be 64 hex characters (32 bytes)')
+      .optional(),
+  ),
+  /**
+   * Labels the CURRENT key. The previous key's version is implied to be one
+   * lower, so a rotation is "move the current key to PREVIOUS, set a new current,
+   * and raise this number".
+   */
+  SECRETS_KEY_VERSION: z.preprocess(
+    blankAsAbsent,
+    z.coerce.number().int().min(1).max(255).default(1),
+  ),
+  /** Decrypt-only: keeps rows sealed before the last rotation readable. */
+  SECRETS_KEY_PREVIOUS: z.preprocess(
+    blankAsAbsent,
+    z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/, 'must be 64 hex characters (32 bytes)')
+      .optional(),
+  ),
 
   // Super admin bootstrap (optional). When BOTH are set, a super admin user
   // (all privileges, all scopes/orgs) is seeded on install. Idempotent: an
@@ -214,6 +265,25 @@ assertNoPlaceholderSecrets(
   parsed.data.SUPER_ADMIN_PASSWORD,
   parsed.data.SMTP_PASS,
 );
+
+/**
+ * Secrets-key consistency.
+ *
+ * `SECRETS_KEY_VERSION` labels the CURRENT key and implies the previous key is
+ * one version lower, so a previous key alongside version 1 describes a rotation
+ * that never happened — and would make the "previous" key collide with the
+ * current one's version. Caught here, at boot, rather than at the moment an
+ * operator is trying to save a credential.
+ */
+export function assertValidSecretsConfig(version: number, previousKey?: string): void {
+  if (previousKey && version < 2) {
+    throw new Error(
+      'SECRETS_KEY_PREVIOUS is set but SECRETS_KEY_VERSION is 1: raise the version when rotating',
+    );
+  }
+}
+
+assertValidSecretsConfig(parsed.data.SECRETS_KEY_VERSION, parsed.data.SECRETS_KEY_PREVIOUS);
 
 export const env = parsed.data;
 

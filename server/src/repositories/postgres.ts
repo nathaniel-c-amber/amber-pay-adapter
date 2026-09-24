@@ -18,10 +18,16 @@ import type {
   PaymentRepository,
   ReconciliationRepository,
   Repositories,
+  SettingsRepository,
   TwoFactorRepository,
   UserRepository,
   WebhookDedupRepository,
 } from '../types/repository.js';
+import { withoutUndefined } from '../models/deploymentSettings.js';
+import type {
+  DeploymentSettings,
+  DeploymentSettingsPatch,
+} from '../models/deploymentSettings.js';
 import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
 
 /**
@@ -743,6 +749,101 @@ export class PostgresPaymentRepository implements PaymentRepository {
   }
 }
 
+// --- deployment settings ----------------------------------------------------
+
+interface SettingsRow {
+  organization_name: string | null;
+  gateway_client_id: string | null;
+  gateway_webhook_secret_sealed: Buffer | null;
+  adaptor_id: string | null;
+  adaptor_realm_id: string | null;
+  adaptor_base_url: string | null;
+  adaptor_credentials_sealed: Buffer | null;
+  sync_interval: string | null;
+  alert_target: string | null;
+  verified_at: Date | null;
+  configured_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+const SETTINGS_COLUMNS = `
+  organization_name, gateway_client_id, gateway_webhook_secret_sealed,
+  adaptor_id, adaptor_realm_id, adaptor_base_url, adaptor_credentials_sealed,
+  sync_interval, alert_target, verified_at, configured_at, created_at, updated_at`;
+
+function toSettings(row: SettingsRow): DeploymentSettings {
+  return {
+    organizationName: row.organization_name,
+    gatewayClientId: row.gateway_client_id,
+    gatewayWebhookSecret: row.gateway_webhook_secret_sealed,
+    adaptorId: (row.adaptor_id as DeploymentSettings['adaptorId']) ?? null,
+    adaptorRealmId: row.adaptor_realm_id,
+    adaptorBaseUrl: row.adaptor_base_url,
+    adaptorCredentials: row.adaptor_credentials_sealed,
+    syncInterval: row.sync_interval,
+    alertTarget: row.alert_target,
+    verifiedAt: row.verified_at ? toIso(row.verified_at) : null,
+    configuredAt: row.configured_at ? toIso(row.configured_at) : null,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+/**
+ * The single settings row, from Postgres.
+ *
+ * `update` reads, merges and writes the whole row rather than assembling a
+ * dynamic SET clause from the patch. With exactly one row there is nothing to
+ * gain from the dynamic form, and a dynamic clause has to track parameter
+ * indices — the classic place where a merge silently writes the wrong column.
+ */
+export class PostgresSettingsRepository implements SettingsRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async get(): Promise<DeploymentSettings> {
+    // Materialise on read as well as in the migration, so a deployment whose
+    // schema predates this table converges instead of erroring.
+    await this.pool.query(
+      'INSERT INTO deployment_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING',
+    );
+    const result = await this.pool.query<SettingsRow>(
+      `SELECT ${SETTINGS_COLUMNS} FROM deployment_settings WHERE id = true`,
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new InternalError('deployment_settings row is missing');
+    }
+    return toSettings(row);
+  }
+
+  async update(patch: DeploymentSettingsPatch): Promise<DeploymentSettings> {
+    const next: DeploymentSettings = { ...(await this.get()), ...withoutUndefined(patch) };
+    await this.pool.query(
+      `UPDATE deployment_settings SET
+         organization_name = $1, gateway_client_id = $2, gateway_webhook_secret_sealed = $3,
+         adaptor_id = $4, adaptor_realm_id = $5, adaptor_base_url = $6,
+         adaptor_credentials_sealed = $7, sync_interval = $8, alert_target = $9,
+         verified_at = $10, configured_at = $11, updated_at = now()
+       WHERE id = true`,
+      [
+        next.organizationName,
+        next.gatewayClientId,
+        next.gatewayWebhookSecret,
+        next.adaptorId,
+        next.adaptorRealmId,
+        next.adaptorBaseUrl,
+        next.adaptorCredentials,
+        next.syncInterval,
+        next.alertTarget,
+        next.verifiedAt,
+        next.configuredAt,
+      ],
+    );
+    return this.get();
+  }
+}
+
 /** Build a full set of Postgres repositories over the given pool. */
 export function createPostgresRepositories(pool: Pool): Repositories {
   return {
@@ -756,5 +857,6 @@ export function createPostgresRepositories(pool: Pool): Repositories {
     reconciliation: new PostgresReconciliationRepository(pool),
     connectorStates: new PostgresConnectorStateRepository(pool),
     payments: new PostgresPaymentRepository(pool),
+    settings: new PostgresSettingsRepository(pool),
   };
 }

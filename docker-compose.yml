@@ -72,6 +72,12 @@ services:
       # generated policy attribute must agree on this value; when they disagree
       # the symptom is an empty console rather than an error.
       ORGANIZATION_ID: ${ORGANIZATION_ID:-default}
+      # Credential encryption (needed once the onboarding wizard stores a gateway
+      # or accounting credential). Generate with `openssl rand -hex 32`. Blank is
+      # accepted: the API still starts, it just cannot store credentials.
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      SECRETS_KEY_VERSION: ${SECRETS_KEY_VERSION:-1}
+      SECRETS_KEY_PREVIOUS: ${SECRETS_KEY_PREVIOUS:-}
       # Super admin bootstrap (optional). Setting BOTH seeds a super admin
       # (all privileges, all scopes/orgs) on install.
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}

@@ -418,6 +418,34 @@ now see 400.
 
 Suite after Phase 0+1: **316 passed / 5 skipped / 0 failed** (from 312 / 5 / 2).
 
+**Phase 2 — done.** The settings store and credential encryption.
+
+- `db/migrations/005_deployment_settings.sql` — the single row, enforced by
+  `id boolean PRIMARY KEY DEFAULT true CHECK (id)`. One row means the wizard is an `UPDATE` and never an
+  insert-or-update race.
+- `utils/secrets.ts` — AES-256-GCM in a **self-describing envelope**:
+  `[version][nonce][auth tag][ciphertext]`. The key version travels *inside* the value rather than in a
+  sibling column, because one column cannot describe two credentials written under different keys during
+  a rotation. **This supersedes the `key_version` column in §5.1.**
+- `config/env.ts` — `SECRETS_KEY` (64 hex chars, optional), `SECRETS_KEY_VERSION`, `SECRETS_KEY_PREVIOUS`,
+  and a `blankAsAbsent` preprocess (see the trap below).
+- `services/settings/settings.service.ts` — the write-only projection
+  (`configured` / `lastFour` / `unreadable`), validation at the one boundary every write crosses, and a
+  deliberately conspicuous `resolveCredentials()` that is server-side only.
+- `organizationId` in the read model comes from `env.ORGANIZATION_ID`, **not** from the row: two copies
+  of an identity are two chances to disagree. **This supersedes the `organization_id` column in §5.1.**
+- 28 tests added. The load-bearing ones: the stored **bytes** contain no plaintext (not merely that the
+  projection hides it), a real rotation case that hand-builds an older envelope and reads it with the
+  previous key, and "an unreadable credential is reported, not thrown" — one bad row must not take out
+  the whole settings read.
+
+**Trap worth keeping:** docker-compose renders `${VAR:-}` as an **empty string**, and zod treats a
+present-but-empty value as a value. Adding a format check to an optional variable therefore makes every
+deployment that leaves it blank fail to boot. Hence `blankAsAbsent`. This would have broken the stack on
+the next rebuild, and it is the kind of thing that only shows up outside the test suite.
+
+Suite after Phase 2: **344 passed / 5 skipped / 0 failed** (from 316).
+
 ### Critical path
 
 **Phase 1 → 3 → 5 → 6.** Phase 1 is small but gates the wizard's invites. Phase 3 gates the verify
