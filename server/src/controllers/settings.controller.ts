@@ -212,8 +212,25 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
         and the wizard needs the classified `reason` in order to say anything
         useful. An error status here would force every caller to unpack a body out
         of an exception to learn the same thing.
+
+        THE VIEW IS BUILT FIELD BY FIELD ON PURPOSE, and `rotated` is absent. That
+        value is a live credential: in STORED mode it was just minted from the
+        sealed refresh token, so echoing it would put a stored secret into an HTTP
+        response — the one thing this whole surface exists to prevent. The caller
+        has no use for it either (the server persists it; in SUPPLIED mode the
+        caller is the one who sent it). An explicit projection rather than an
+        omit-rest idiom, so that a field added to the service type later is NOT
+        silently published here.
       */
-      res.status(200).json({ verification });
+      res.status(200).json({
+        verification: {
+          ok: verification.ok,
+          adaptorId: verification.adaptorId,
+          latencyMs: verification.latencyMs,
+          message: verification.message,
+          reason: verification.reason,
+        },
+      });
     }),
 
     complete: asyncHandler(async (_req, res) => {

@@ -36,7 +36,11 @@ export type RouteName =
      carries the single-use token as its path param so the emailed link is a
      plain deep link. */
   | "forgot"
-  | "reset";
+  | "reset"
+  /* First-run setup. Signed in, but rendered outside the console chrome: a
+     deployment with no gateway and no accounting system has no pipeline to
+     monitor, so framing this as a console page would put empty panels around it. */
+  | "onboarding";
 
 export interface Route {
   name: RouteName;
@@ -67,7 +71,7 @@ function parse(hash: string): Route {
   const known: string[] = [
     "overview", "connections", "findings", "events", "payments",
     "synchronization", "reconciliation", "users", "settings", "profile",
-    "signin", "invite", "forgot", "reset",
+    "signin", "invite", "forgot", "reset", "onboarding",
   ];
   if (!known.includes(name)) {
     return { name: "overview", param: null, path: "overview" };

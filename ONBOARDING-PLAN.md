@@ -587,6 +587,53 @@ connects; one system is never handed the other's credentials; an **undecryptable
 back to the environment instead of crashing the probe; a rotation is written back to the row; and a
 rotation that arrived on an ENVIRONMENT fallback does **not** invent a stored credential set.
 
+**Phase 6 — done, with one gap stated.** The wizard: `web/src/pages/onboarding/OnboardingPage.tsx`,
+`web/src/components/onboarding/Stepper.tsx`, `web/src/utils/settingsRules.ts` (new). Changed:
+`router.ts`, `components/Shell.tsx`, `services/client.ts`, `types/api.ts`, `components/ui.tsx`.
+
+- **A defect in the phase that had just shipped, found before this one started.**
+  `POST /settings/adaptor/verify` returned the service's whole result, including `rotated` — which in
+  STORED mode is a refresh token **just minted from the sealed column**. The endpoint was publishing a
+  stored secret, the one outcome this entire surface exists to prevent, and Phase 5's own tests passed
+  it because they asserted the write-only rule on the gateway path only. Fixed with an explicit
+  field-by-field projection (not an omit-rest idiom, so a field added to the service type later cannot
+  be published by accident) and pinned by a test asserting the response has no `rotated` and does not
+  contain the value.
+- **Route `#/onboarding`, outside the console chrome**, for the same reason the auth surfaces are: a
+  deployment with no gateway and no accounting system has no pipeline to monitor, so framing setup as a
+  console page would wrap it in panels that cannot yet be true.
+- **Resume is derived from the SERVER** (`firstIncompleteStep`), not from a browser draft. What the
+  deployment actually has configured is the honest answer to "where was I", it is the same answer from
+  another machine, and it cannot disagree with the row the wizard is writing to.
+- **The stepper is navigation**: an ordered list, `aria-current="step"`, a button for every step the
+  operator has validated, and plain text beyond that — not disabled buttons, because a disabled control
+  promises an action the wizard cannot honour. The whole path stays visible from step one.
+- **Fields are generated from `ADAPTOR_CHOICES`**, so a third accounting system remains a data change.
+  An either/or requirement (QuickBooks needs a client id and secret to identify the app but a token to
+  authorize a call) is reported once, in the adaptor's own terms rather than as a generic failure.
+- **Deviation from §5.2, deliberate: a failed test does not trap the operator.** "Continue unverified"
+  is offered as a visibly secondary action beside the warning. The alternative makes a briefly
+  unreachable provider render the wizard unpassable, and not blocking access to the product is
+  onboarding's first principle.
+- **The secret fields do not fight password managers**: reveal toggle, paste allowed, no
+  read-only-until-focused trick. `autoComplete="off"` declines to invite a manager to save a value that
+  is not a credential for this site, and nothing further.
+- **Two defects the render found, both fixed:** a signed-out `#/onboarding` returned `null` — a **blank
+  page**, which is worse than asking somebody to sign in; and the "door or room" predicate was written
+  twice (the document title and the render decision) and the two disagreed the moment this route
+  existed. It is now one `needsSession` predicate in the component body — which is also where the first
+  render threw `ReferenceError: needsSession is not defined`, because it had been defined inside the
+  effect that reads it, while a render below needed it too.
+- **Verified:** web typecheck, build clean, `audit:classes` **UNRESOLVED 0**, and — because the audit
+  cannot see classes inside a `const` or `cx(...)`, which is exactly where a state-driven wizard puts
+  them — every class introduced that way checked by name against the compiled CSS (44 classes, none
+  missing). Routing and the sign-in gate verified live at `localhost:5199`.
+- **NOT verified, and not to be mistaken for verified: the wizard's own rendering.** It needs a live API
+  and a session, and walking the form would write settings into the real deployment, so it was left
+  alone deliberately. The first visual pass belongs on a throwaway stack, and §10's checklist (stepper
+  semantics, error-summary focus, the three verify states, reduced motion) is the list to walk it
+  against.
+
 ### Critical path
 
 **Phase 1 → 3 → 5 → 6.** Phase 1 is small but gates the wizard's invites. Phase 3 gates the verify

@@ -56,6 +56,7 @@ import { InvitePage } from "@/pages/auth/InvitePage";
 import { DeniedPage } from "@/pages/auth/DeniedPage";
 import { ForgotPasswordPage } from "@/pages/auth/ForgotPasswordPage";
 import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
+import { OnboardingPage } from "@/pages/onboarding/OnboardingPage";
 import { demoMetrics, DEMO_RECON, DEMO_POLICIES, DEMO_CONFIG, DEMO_WEBHOOK, demoService, DEMO_ENABLED } from "@/utils/fixtures";
 import { ErrorState, LoadingState, SearchBox, cx } from "./ui";
 import { OverviewPage } from "@/pages/OverviewPage";
@@ -115,6 +116,7 @@ const AUTH_TITLES: Partial<Record<RouteName, string>> = {
   invite: "Accept invitation",
   forgot: "Reset your password",
   reset: "Choose a new password",
+  onboarding: "Set up this deployment",
 };
 
 const APP_SUFFIX = "Amber Pay Ledger";
@@ -615,6 +617,28 @@ export default function Shell() {
     mounted there, they render their own shell, and AuthShell already focuses
     its own heading on mount.
   */
+  /*
+    Who gets the door rather than the room.
+
+    ONE PREDICATE, TWO READERS — the document title in the effect below, and the
+    render decision further down. They were written twice and promptly disagreed:
+    the tab named one surface while the page showed another.
+
+    It lives in the component BODY, not inside the effect, because the effect's
+    callback cannot see what the render needs — and the render is what has to act on
+    it. (The inverse trap is documented inside the effect: a value declared further
+    down cannot be read by a callback above it.)
+
+    `onboarding` is listed separately and ignores `guest`. A deployment cannot be
+    configured without a session, since every write is authorized against the
+    caller's policy, and a demo session has no deployment to configure — so it must
+    not be able to reach a form that would write to one.
+  */
+  const needsSession =
+    route.name === "signin" ||
+    (route.name === "onboarding" && !token) ||
+    (!token && !guest && isConsoleRoute(route.name));
+
   useEffect(() => {
     /*
       The title must name the surface actually RENDERED, not the route that was
@@ -627,9 +651,7 @@ export default function Shell() {
       component body, and referencing them from a callback above their
       declaration is a temporal-dead-zone error at compile time.
     */
-    const signedOutInterstitial =
-      route.name === "signin" || (!token && !guest && isConsoleRoute(route.name));
-    const label = signedOutInterstitial
+    const label = needsSession
       ? "Sign in"
       : (NAV.find((n) => n.id === route.name)?.label ?? AUTH_TITLES[route.name] ?? "Console");
     document.title = `${label} — ${APP_SUFFIX}`;
@@ -1032,6 +1054,28 @@ export default function Shell() {
     sidebar, no scope switcher, no data-provenance chip. A sign-in page framed
     by the navigation it is gating reads as a modal pretending to be a page.
   */
+  if (route.name === "onboarding" && token) {
+    /*
+      Signed in, and still outside the console. The wizard needs the session (every
+      write is authorized against the caller's policy) but not the console's
+      furniture: navigation to surfaces that cannot yet show anything true, a scope
+      switcher, a data-provenance chip, and a findings bell that would be counting
+      nothing.
+
+      WITH NO SESSION THIS BRANCH DOES NOT MATCH, and the visit falls through to the
+      sign-in door below (`needsSession`). Returning nothing here instead would
+      render a blank page, which is the one outcome worse than asking somebody to
+      sign in.
+    */
+    return (
+      <OnboardingPage
+        token={token}
+        onDone={() => navigate("overview")}
+        onLeave={() => navigate("overview")}
+      />
+    );
+  }
+
   if (route.name === "invite") {
     return (
       <InvitePage
@@ -1070,7 +1114,7 @@ export default function Shell() {
 
   // A signed-out visitor with no console behind them gets sign-in, not demo
   // figures. The URL is preserved so a deep link survives the round trip.
-  if (route.name === "signin" || (!token && !guest && isConsoleRoute(route.name))) {
+  if (needsSession) {
     return (
       <SignInPage
         onAuthenticated={handleAuthenticated}

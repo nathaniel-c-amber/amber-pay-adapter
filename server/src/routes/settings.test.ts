@@ -356,6 +356,37 @@ describe('POST /settings/adaptor/verify', () => {
     expect(resolved.adaptor?.fields.refreshToken).toBe('rotated-token');
   });
 
+  it('NEVER returns a rotated credential, not even to the caller that owns it', async () => {
+    /*
+      Caught late, and by INSPECTION rather than by the suite — which is the point
+      of keeping it: the response originally carried the service's whole result,
+      including `rotated`. In STORED mode that value was just minted from the sealed
+      refresh token, so the endpoint was publishing a stored secret, the one outcome
+      this entire surface exists to prevent. The caller has no use for it in either
+      mode: the server persists it, and in SUPPLIED mode the caller sent it.
+    */
+    const adaptor = fakeAdaptor({
+      connect: jest.fn().mockResolvedValue({ rotated: { refreshToken: 'rotated-secret-value' } }),
+    });
+    const { app } = harness(adaptor);
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({
+        id: 'quickbooks',
+        credentials: { clientId: 'cid', clientSecret: 'csec', refreshToken: 'first' },
+      });
+
+    const res = await request(app)
+      .post('/api/v1/settings/adaptor/verify')
+      .set('Authorization', bearer(systemAdmin))
+      .send({});
+
+    expect(res.body.verification.ok).toBe(true);
+    expect(res.body.verification).not.toHaveProperty('rotated');
+    expect(JSON.stringify(res.body)).not.toContain('rotated-secret-value');
+  });
+
   it('refuses to test the other system against stored credentials', async () => {
     const { app } = harness();
     await request(app)

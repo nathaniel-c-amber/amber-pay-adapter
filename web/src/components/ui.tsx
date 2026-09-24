@@ -83,6 +83,17 @@ export const LINK_BTN =
 /* Uppercase micro-label: the most repeated type pattern in the app. */
 export const LABEL = "text-micro leading-snug uppercase tracking-label";
 
+/*
+  Text input. Lifted out of `InvitePage`, where it was written inline twice, so the
+  onboarding wizard does not become a third hand-typed copy — a control that differs
+  by one border or focus colour between surfaces is the kind of drift nobody files.
+
+  `field-autofill` is a real hook in `tailwind.css` (@layer base): it overrides the
+  browser's autofill wash, which paints a light background on a dark field.
+*/
+export const INPUT =
+  "field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 transition-colors hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended";
+
 export function Eyebrow({ children }: { children: ReactNode }) {
   return <div className={`mono text-xs uppercase tracking-label text-ink-3`}>{children}</div>;
 }

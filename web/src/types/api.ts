@@ -206,3 +206,82 @@ export interface ApiDirectoryUser {
   updatedAt: string;
   inviteExpiresAt?: string;
 }
+
+/* ------------------------------------------------ deployment configuration */
+
+/** The one accounting system a deployment integrates with. */
+export type ApiAdaptorId = "quickbooks" | "sage";
+
+/**
+ * What a read may say about a stored secret: whether one exists, and its last four
+ * characters. NEVER the value.
+ *
+ * `unreadable` is its own fact rather than a flavour of `configured: false`,
+ * because "no credential" and "a credential this deployment cannot decrypt" call
+ * for opposite actions from an operator.
+ */
+export interface ApiCredentialPresence {
+  configured: boolean;
+  lastFour: string | null;
+  unreadable: boolean;
+}
+
+/**
+ * The deployment's configuration as the API is willing to describe it
+ * (GET /settings).
+ */
+export interface ApiDeploymentSettings {
+  /**
+   * The deployment's organization identity, read from the server's environment.
+   * Deliberately not editable: two copies of an identity are two chances to
+   * disagree, and a mismatch makes every stored row invisible to the users it is
+   * about, with no error anywhere.
+   */
+  organizationId: string;
+  organizationName: string | null;
+  gateway: {
+    clientId: string | null;
+    webhookSecret: ApiCredentialPresence;
+  };
+  adaptor: {
+    id: ApiAdaptorId | null;
+    realmId: string | null;
+    baseUrl: string | null;
+    credentials: ApiCredentialPresence;
+  };
+  syncInterval: string | null;
+  alertTarget: string | null;
+  /** When the connection was last proven to work; cleared by a credential change. */
+  verifiedAt: string | null;
+  /** When setup was finished. Null until then — this IS the first-run flag. */
+  configuredAt: string | null;
+  configured: boolean;
+  /**
+   * False when the deployment has no encryption key. The API starts without one
+   * (an upgrade must not take a working install offline) but refuses to store
+   * credentials, so the wizard has to say so before an operator fills a form in.
+   */
+  writable: boolean;
+}
+
+/** Why a connection attempt failed, as a value rather than a sentence. */
+export type ApiAdaptorFailureReason = "auth" | "rate-limited" | "unreachable" | "upstream";
+
+/**
+ * The verdict of a connection test (POST /settings/adaptor/verify).
+ *
+ * A FAILED test is a normal 200 carrying `ok: false` and a `reason` — a rejected
+ * credential is the expected result of an operator typing one, not a transport
+ * error, and the `reason` is what lets the screen say "fix the value" instead of
+ * "try again later".
+ *
+ * There is deliberately no rotated-credential field: the server persists one and
+ * never returns it, so this client cannot hold a secret it did not type.
+ */
+export interface ApiAdaptorVerification {
+  ok: boolean;
+  adaptorId: ApiAdaptorId;
+  latencyMs: number;
+  message: string;
+  reason: ApiAdaptorFailureReason | null;
+}

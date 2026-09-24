@@ -2,6 +2,9 @@
    Uses fetch. All endpoints are under /api/v1. */
 
 import type {
+  ApiAdaptorId,
+  ApiAdaptorVerification,
+  ApiDeploymentSettings,
   ApiDirectoryUser,
   ApiIdentity,
   ApiInviteDetail,
@@ -337,4 +340,105 @@ export async function inviteUser(
     "/auth/invite",
     { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) },
   );
+}
+
+/* -------------------------------------------- deployment configuration |
+   The onboarding wizard's whole server surface. Every mutation answers with the
+   same read model, so the wizard re-renders from what the server actually stored
+   rather than from what it hoped it sent — a form that echoes its own input back
+   looks correct even when the write was ignored.
+
+   A SECRET IS NEVER IN A RESPONSE. `getSettings` carries presence and the last
+   four characters; there is no field in these types that can hold one. */
+
+/** GET /settings — presence and last-four of each credential, never a value. */
+export async function getSettings(token: string): Promise<ApiDeploymentSettings> {
+  const body = await request<{ settings: ApiDeploymentSettings }>("/settings", {
+    headers: authHeaders(token),
+  });
+  return body.settings;
+}
+
+/**
+ * PUT /settings/gateway
+ *
+ * An ABSENT field is left alone; `null` clears it. That is what lets step 2 ask
+ * for a secret only when none is stored yet — an operator cannot read back the one
+ * they set last time, so they must not be made to retype it, and an empty box must
+ * not silently erase it.
+ */
+export async function updateGatewaySettings(
+  token: string,
+  body: { clientId?: string | null; webhookSecret?: string | null },
+): Promise<ApiDeploymentSettings> {
+  const result = await request<{ settings: ApiDeploymentSettings }>("/settings/gateway", {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return result.settings;
+}
+
+/** PUT /settings/adaptor — the chosen accounting system, its realm and credentials. */
+export async function updateAdaptorSettings(
+  token: string,
+  body: {
+    id?: ApiAdaptorId | null;
+    realmId?: string | null;
+    baseUrl?: string | null;
+    credentials?: Record<string, string> | null;
+  },
+): Promise<ApiDeploymentSettings> {
+  const result = await request<{ settings: ApiDeploymentSettings }>("/settings/adaptor", {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return result.settings;
+}
+
+/** PUT /settings/preferences — the deployment's name. */
+export async function updatePreferenceSettings(
+  token: string,
+  body: { organizationName?: string | null; syncInterval?: string | null; alertTarget?: string | null },
+): Promise<ApiDeploymentSettings> {
+  const result = await request<{ settings: ApiDeploymentSettings }>("/settings/preferences", {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return result.settings;
+}
+
+/**
+ * POST /settings/adaptor/verify — test the connection.
+ *
+ * With `credentials` in the body it tests a value that is NOT saved yet and records
+ * nothing. Without them it tests what is stored, which is the console's re-verify.
+ * Either way a rejection comes back as a 200 carrying `ok: false`, because a wrong
+ * password is an answer, not a transport failure.
+ */
+export async function verifyAdaptor(
+  token: string,
+  body: {
+    id?: ApiAdaptorId;
+    realmId?: string;
+    baseUrl?: string;
+    credentials?: Record<string, string>;
+  },
+): Promise<ApiAdaptorVerification> {
+  const result = await request<{ verification: ApiAdaptorVerification }>(
+    "/settings/adaptor/verify",
+    { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) },
+  );
+  return result.verification;
+}
+
+/** POST /settings/complete — finish setup. Idempotent. */
+export async function completeSettings(token: string): Promise<ApiDeploymentSettings> {
+  const result = await request<{ settings: ApiDeploymentSettings }>("/settings/complete", {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+  return result.settings;
 }
