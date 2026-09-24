@@ -3,6 +3,7 @@ import type { RequestHandler } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../utils/errors.js';
 import { authorizedOrganizationIds } from '../utils/policyResource.js';
+import { env } from '../config/env.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
 
 const createPaymentBodySchema = z.object({
@@ -10,7 +11,18 @@ const createPaymentBodySchema = z.object({
   externalInvoiceId: z.string().min(1),
   // Opaque reference only (no amount / no PII).
   reference: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
-  organizationId: z.string().min(1),
+  /*
+    Must be THIS deployment's organization. The field is kept, rather than the
+    server quietly ignoring it, so a caller that believes it is writing to a
+    different organization gets a refusal instead of a row filed somewhere it
+    did not ask for — and a row that its own policy would then not match.
+  */
+  organizationId: z
+    .string()
+    .min(1)
+    .refine((id) => id === env.ORGANIZATION_ID, {
+      message: 'must be the organization this deployment serves',
+    }),
 });
 
 export interface PaymentsControllerDeps {

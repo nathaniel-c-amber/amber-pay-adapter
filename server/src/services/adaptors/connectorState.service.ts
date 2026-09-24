@@ -1,4 +1,5 @@
 import { adaptorRegistry } from './registry.js';
+import { env } from '../../config/env.js';
 import { lastKnownAdaptorStates } from './health.service.js';
 import type { AdaptorRuntimeState } from './health.service.js';
 import type { AdaptorId } from '../../types/adaptor.js';
@@ -133,7 +134,13 @@ export async function withAdaptorConnections(
         const healthy = isHealthy(state);
         return {
           id,
-          organizationId: organizationIds?.[0] ?? '*',
+          /*
+            The caller's first authorized organization, or the deployment's own
+            when they hold a wildcard. NEVER the literal '*': that is a POLICY
+            wildcard, and storing it as a row value creates a row that no policy
+            can name and no filter can match.
+          */
+          organizationId: organizationIds?.[0] ?? env.ORGANIZATION_ID,
           label: adaptor.name,
           terminus: id as ConnectorTerminus,
           status: healthy ? 'open' : 'suspended',

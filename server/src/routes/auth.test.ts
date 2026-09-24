@@ -52,6 +52,16 @@ async function seedAdmin(userStore: UserStore): Promise<string> {
   });
 }
 
+/**
+ * A syntactically valid bcrypt digest that matches nothing.
+ *
+ * The wildcard case below never verifies a credential, and one bcrypt hash at
+ * cost 12 is hundreds of milliseconds of real CPU — enough, under the rest of
+ * the parallel suite, to push unrelated tests past Jest's 5s default and look
+ * like a regression.
+ */
+const UNUSABLE_HASH = '$2a$12$0000000000000000000000000000000000000000000000000000A';
+
 describe('auth routes', () => {
   it('rejects invite without a token (401)', async () => {
     const { app } = buildTestApp();
@@ -69,7 +79,16 @@ describe('auth routes', () => {
     expect(res.status).toBe(403);
   });
 
-  it('rejects an invite granting policy for an unauthorized organization (C1, 403)', async () => {
+  it('rejects an invite granting policy for a foreign organization (400)', async () => {
+    /*
+      This case used to be caught by the escalation guard with a 403, because the
+      admin held org-1 while the attribute asked for org-2. It is now refused one
+      step EARLIER, by the canonical-organization rule: this deployment serves
+      exactly one organization, so org-2 is not a valid target for anyone,
+      whatever the caller happens to hold. The escalation guard still covers the
+      same-organization case — see "rejects granting a scope the admin does not
+      hold" below.
+    */
     const { app, userStore } = buildTestApp();
     const token = await seedAdmin(userStore); // admin on org-1 only
     const res = await request(app)
@@ -78,10 +97,37 @@ describe('auth routes', () => {
       .send({
         email: 'invitee@example.com',
         organizationId: 'org-1',
-        // Body org is authorized, but the granted attribute targets org-2.
+        // Body org is authorized, but the granted attribute targets a foreign org.
         policyAttributes: [{ scope: 'payments', organizationId: 'org-2', actions: ['admin'] }],
       });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(400);
+  });
+
+  it('still allows a wildcard-organization grant from a wildcard holder', async () => {
+    /*
+      Guards the canonical-organization rule against over-reach. `'*'` is a POLICY
+      wildcard, not a foreign organization, so a holder of it may still create
+      another holder. Without this case a future tightening could refuse every
+      super-admin invite and the symptom would look like a permissions bug.
+    */
+    const { app, userStore } = buildTestApp();
+    const user = await userStore.create('root@example.com', UNUSABLE_HASH, [
+      { scope: '*', organizationId: '*', actions: ['read', 'ack', 'write', 'admin'] },
+    ]);
+    const token = issueAccessToken({
+      id: user.id,
+      email: user.email,
+      policyAttributes: user.policyAttributes,
+    });
+    const res = await request(app)
+      .post('/api/v1/auth/invite')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        email: 'second-admin@example.com',
+        organizationId: 'org-1',
+        policyAttributes: [{ scope: '*', organizationId: '*', actions: ['read', 'admin'] }],
+      });
+    expect(res.status).toBe(201);
   });
 
   it('allows a same-organization invite (C1)', async () => {

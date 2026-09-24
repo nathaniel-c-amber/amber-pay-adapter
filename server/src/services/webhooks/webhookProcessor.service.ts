@@ -1,4 +1,5 @@
 import { logger } from '../../utils/logger.js';
+import { env } from '../../config/env.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
@@ -37,7 +38,13 @@ export class WebhookProcessor {
     private readonly pushTimeoutMs = 5000,
     private readonly activeAdaptorId: AdaptorId = 'quickbooks',
     private readonly dedup: WebhookDedupRepository = new InMemoryWebhookDedupRepository(),
-    private readonly organizationId = 'org-1',
+    /*
+      The organization every event and failure is filed under. Defaults to the
+      deployment's configured organization rather than a literal: an id written
+      here that no policy names makes the rows invisible to the very users they
+      are about, and only a wildcard super admin would ever see them.
+    */
+    private readonly organizationId = env.ORGANIZATION_ID,
   ) {}
 
   async processWebhook(event: WebhookEvent): Promise<void> {

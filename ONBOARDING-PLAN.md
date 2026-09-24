@@ -186,8 +186,8 @@ interface, the two adaptors, the gateway's webhook secret (same injection shape)
 refresh token on every exchange, and the current code holds the rotated value **in the instance** and
 falls back to the env value on restart — its own comment says so. Once credentials live in the DB, the
 rotated token should be written back to the settings row, or every restart silently reverts to a spent
-token and the connection dies after one token lifetime. Decide in Phase 0: persist on rotation, or
-document the restart cost.
+token and the connection dies after one token lifetime. **Decided (Phase 0): persist on rotation**, in
+Phase 3 — the in-instance fallback also has no `.env` to hand-edit any more.
 
 ### D6 — Verify before save, and do NOT route it through the probe
 
@@ -389,6 +389,34 @@ it is why the runbook is a deliverable rather than an aside.
 | **8** | Provisioning runbook + install script + `.env.example` updates (deliverable A). | 3–4 |
 | **9** | Tests: secrets non-exposure, identity invariant, verify-does-not-pollute, webhook fail-closed, wizard validation. | 4–5 |
 | | **Total** | **31–42** |
+
+### Progress
+
+**Phase 0 — done.** Webhook signature verification **restored** in
+`controllers/webhooks.controller.ts`. The suite went from 2 failing cases to 0; those two were the only
+failures in the repository. Refresh-token persistence decided (see D5).
+
+**Phase 1 — done.** `ORGANIZATION_ID` added to `config/env.ts` (default `default`), wired through
+`docker-compose.yml` and both `.env.example` files, set to `org-1` in `src/test/setup-env.cjs` so the
+existing tests keep their meaning, and logged at boot in `server.ts`. The three invented ids are gone:
+
+| Before | After |
+|---|---|
+| `webhookProcessor` — `organizationId = 'org-1'` | `= env.ORGANIZATION_ID` |
+| `AdaptorEventRecorder` — `DEFAULT_ORGANIZATION_ID = 'org-1'` | `= env.ORGANIZATION_ID` |
+| `connectorState` — `organizationIds?.[0] ?? '*'` | `?? env.ORGANIZATION_ID` |
+| Invite + `PATCH /users/:id` grants — any org accepted | the canonical org or `'*'`; anything else is **400** |
+
+Tests added: the `'*'`-fallback regression, a wildcard-grant allowance (which guards the new rule
+against over-reach), and the updated foreign-organization case.
+
+**One deliberate behaviour change, worth knowing before it surprises anyone:** a grant naming a foreign
+organization was previously refused by the *escalation guard* with **403**, and is now refused by the
+*canonical-organization rule* with **400**. The escalation guard is unchanged and still covers the
+same-organization case, so no coverage was lost — but a client asserting 403 on that exact path would
+now see 400.
+
+Suite after Phase 0+1: **316 passed / 5 skipped / 0 failed** (from 312 / 5 / 2).
 
 ### Critical path
 

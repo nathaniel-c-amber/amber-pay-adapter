@@ -28,6 +28,14 @@ async function start(): Promise<void> {
     }
   }
 
+  /*
+    Name the organization this deployment serves. Every stored row and every
+    generated policy attribute must agree on this value, and when they disagree
+    the symptom is a console that reads EMPTY rather than an error — so state it
+    once, at boot, where an operator will actually see it.
+  */
+  logger.info({ organizationId: env.ORGANIZATION_ID }, 'Serving a single organization');
+
   const app = createApp();
   const server = app.listen(env.PORT, () => {
     logger.info(`Server listening on port ${env.PORT} (${env.NODE_ENV})`);

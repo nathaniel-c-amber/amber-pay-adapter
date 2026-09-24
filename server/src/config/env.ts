@@ -72,6 +72,23 @@ const envSchema = z.object({
   // CORS allowlist (comma-separated origins). Defaults to the Vite dev server.
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
 
+  /*
+    The ONE organization this deployment serves (one deployment per organization).
+
+    Load-bearing for correctness, not labelling. Every operational row is stored
+    with this organization id, and reads are filtered by the organization ids
+    NAMED IN THE CALLER'S POLICY. When a row's organization and a policy's
+    organization disagree, the row is invisible to the very user it belongs to:
+    the console reads empty while the backend works perfectly — and the only
+    account that cannot see the problem is the wildcard super admin, whose
+    wildcard scope bypasses the filter entirely.
+
+    It lives in the environment because the webhook and adaptor-event paths write
+    rows at boot, before any human has configured anything, so it must not depend
+    on a settings row that may not exist yet.
+  */
+  ORGANIZATION_ID: z.string().min(1).default('default'),
+
   // Number of reverse proxies in front of this process (nginx in the compose
   // stack, plus ngrok when the tunnel profile is active).
   //

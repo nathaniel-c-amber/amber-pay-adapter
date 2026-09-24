@@ -13,3 +13,6 @@ process.env.QUICKBOOKS_ACCESS_TOKEN = 'test-qb-access-token';
 process.env.QUICKBOOKS_REFRESH_TOKEN = 'test-qb-refresh-token';
 process.env.SAGE_CLIENT_ID = 'test-sage-client-id';
 process.env.SAGE_CLIENT_SECRET = 'test-sage-client-secret';
+// The single organization this deployment serves. Tests use 'org-1' throughout,
+// so the default has to match it or every grant would be refused as foreign.
+process.env.ORGANIZATION_ID = 'org-1';

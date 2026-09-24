@@ -68,6 +68,10 @@ services:
       # Reverse proxies in front of the API. Raise to 2 when the ngrok tunnel
       # profile is active (nginx + ngrok). See server/.env.example.
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+      # The ONE organization this deployment serves. Every stored row and every
+      # generated policy attribute must agree on this value; when they disagree
+      # the symptom is an empty console rather than an error.
+      ORGANIZATION_ID: ${ORGANIZATION_ID:-default}
       # Super admin bootstrap (optional). Setting BOTH seeds a super admin
       # (all privileges, all scopes/orgs) on install.
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}

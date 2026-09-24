@@ -48,13 +48,17 @@ export function createWebhooksController(
         ? req.body
         : Buffer.from(typeof req.body === 'string' ? req.body : '');
 
-    //   const signature = req.headers['x-amber-pay-signature'];
-    //   if (
-    //     typeof signature !== 'string' ||
-    //     !gateway.verifyWebhookSignature(rawBody, signature)
-    //   ) {
-    //     throw new UnauthorizedError('Invalid webhook signature');
-    //   }
+      /*
+        FAIL CLOSED, and do it before anything else touches the body. This is the
+        only thing standing between a public route and arbitrary injection into
+        the failure ledger, so a missing or unmatched signature is rejected
+        before the payload is parsed. The HMAC is computed over the exact bytes
+        received, never over a re-serialized object.
+      */
+      const signature = req.headers['x-amber-pay-signature'];
+      if (typeof signature !== 'string' || !gateway.verifyWebhookSignature(rawBody, signature)) {
+        throw new UnauthorizedError('Invalid webhook signature');
+      }
 
       // Replay defence in depth. Amber Pay is not documented to send this
       // header, so its ABSENCE is not itself a rejection — the durable guard is

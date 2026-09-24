@@ -1,4 +1,5 @@
 import { logger } from '../../utils/logger.js';
+import { env } from '../../config/env.js';
 import { eventLog as defaultEventLog } from './eventLog.service.js';
 import { failureTracker as defaultFailureTracker } from './failureTracker.service.js';
 import type { EventLog } from './eventLog.service.js';
@@ -45,17 +46,17 @@ export interface AdaptorOutcome {
 /**
  * The organization adaptor observations are filed under.
  *
- * SINGLE-TENANT ASSUMPTION, made explicit: adaptors are registered per PROCESS
- * (`adaptorRegistry`), not per organization, so there is no honest way to
- * attribute "QuickBooks is unreachable" to one tenant — it applies to all of
- * them. 'org-1' is the same default `webhookProcessor` uses, so the deployed
- * console reads one coherent stream instead of two disjoint ones.
+ * ONE DEPLOYMENT, ONE ORGANIZATION. Adaptors are registered per PROCESS
+ * (`adaptorRegistry`), so an observation such as "QuickBooks is unreachable"
+ * applies to the whole deployment — which is now exactly one organization. The
+ * value therefore comes from deployment configuration rather than a literal, and
+ * it is the SAME value `webhookProcessor` files under, so the console reads one
+ * coherent stream instead of two disjoint ones.
  *
- * When adaptors become org-scoped (see ONBOARDING-PLAN.md), this constant is
- * the seam: outcomes would carry an `organizationId` and this class would file
- * them per organization.
+ * That coherence is the point: observations filed under an id no policy names
+ * are invisible to every user of the organization they are about.
  */
-const DEFAULT_ORGANIZATION_ID = 'org-1';
+const DEFAULT_ORGANIZATION_ID = env.ORGANIZATION_ID;
 
 /**
  * Adaptor id -> the identity of the state it was last seen in. The signature is

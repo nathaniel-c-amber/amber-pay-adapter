@@ -1,4 +1,5 @@
 import { withAdaptorConnections } from './connectorState.service.js';
+import { env } from '../../config/env.js';
 import type { AdaptorRuntimeState } from './health.service.js';
 import type { ConnectorState } from '../../models/domain.js';
 
@@ -43,6 +44,19 @@ function find(rows: ConnectorState[], id: string): ConnectorState {
 }
 
 describe('withAdaptorConnections', () => {
+  /*
+    REGRESSION: a derived row used to fall back to the literal '*' when the caller
+    held a wildcard. '*' is a POLICY wildcard, and stored as a row value it makes
+    a connection that no policy can name and no filter can match — visible to the
+    one account that bypasses filtering, and to nobody else.
+  */
+  it('files a derived row under the deployment organization, never the policy wildcard', async () => {
+    const rows = await withAdaptorConnections([], null, readerFor(connected));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.organizationId === env.ORGANIZATION_ID)).toBe(true);
+    expect(rows.some((r) => r.organizationId === '*')).toBe(false);
+  });
+
   it('leaves a stored row alone when the adaptor is connected and reachable', async () => {
     const rows = await merged(connected);
     const quickbooks = find(rows, 'quickbooks');
