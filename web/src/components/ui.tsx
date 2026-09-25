@@ -77,8 +77,13 @@ export const BTN = `${BTN_BASE} border-rule-enamel bg-midnight-3 text-ink-1 hove
 export const BTN_PRIMARY = `${BTN_BASE} border-primary bg-primary text-on-primary hover:not-disabled:border-primary-hover hover:not-disabled:bg-primary-hover`;
 
 /* Secondary text button (the old `.amb-link-btn`). */
+/* Secondary text button (the old `.amb-link-btn`).
+   `whitespace-nowrap` because a button's LABEL is a phrase, and a phrase broken
+   per-word across three lines ("Full / event / log") reads as a layout accident
+   rather than as the control the operator meant to press. Every label this is
+   used for is short; if one ever is not, the button should widen, not wrap. */
 export const LINK_BTN =
-  "inline-flex items-center gap-[2px] cursor-pointer rounded-panel border border-rule-enamel bg-transparent px-2 py-1 text-xs text-primary-ink transition-colors hover:not-disabled:bg-primary-soft hover:not-disabled:text-primary-hover disabled:cursor-not-allowed disabled:opacity-45";
+  "inline-flex items-center gap-[2px] cursor-pointer whitespace-nowrap rounded-panel border border-rule-enamel bg-transparent px-2 py-1 text-xs text-primary-ink transition-colors hover:not-disabled:bg-primary-soft hover:not-disabled:text-primary-hover disabled:cursor-not-allowed disabled:opacity-45";
 
 /* Uppercase micro-label: the most repeated type pattern in the app. */
 export const LABEL = "text-micro leading-snug uppercase tracking-label";
@@ -335,15 +340,30 @@ export function FindingCard({
     >
       <header className="flex flex-wrap items-center gap-3">
         <SeverityBadge severity={finding.severity} />
-        <span className="mono text-xs text-ink-2">{finding.id}</span>
-        <span className="mono ml-auto text-xs text-ink-3">since {formatDateTime(finding.since)}</span>
+        <span className="mono text-xs text-ink-2 wrap-anywhere">{finding.id}</span>
+        <span className="mono ml-auto text-xs text-ink-3 wrap-anywhere">
+          since {formatDateTime(finding.since)}
+        </span>
       </header>
       <div>
         {/* h2, not h3: this card sits directly under the page's h1 on the
             findings surfaces, so h3 skipped a level. */}
-        <h2 className="text-lg text-ink-1">{finding.title}</h2>
-        <div className="mt-1 text-xs text-ink-3">{finding.channel}</div>
-        <p className="mt-1.5 max-w-[66ch] text-sm text-ink-2">{finding.detail}</p>
+        <h2 className="text-lg text-ink-1 wrap-anywhere">{finding.title}</h2>
+        <div className="mt-1 text-xs text-ink-3 wrap-anywhere">{finding.channel}</div>
+        {/*
+          `wrap-anywhere`, and it is load-bearing rather than decorative.
+
+          A finding's detail routinely carries the upstream request that failed —
+          "Upstream request to https://api.example.com/v3/company/… failed" — and
+          a URL has no spaces, so there is nothing for the line breaker to break
+          on and the whole string ran out past the card's edge and was clipped.
+
+          `break-words` would NOT have fixed it: it sets `overflow-wrap: break-word`,
+          which lets a word break once it has already overflowed, and it does not
+          shrink the element's min-content width. `wrap-anywhere` does, which is
+          what stops a flex or grid child from being forced wider than its track.
+        */}
+        <p className="mt-1.5 max-w-[66ch] text-sm text-ink-2 wrap-anywhere">{finding.detail}</p>
       </div>
       <footer className="flex flex-wrap items-center gap-2">
         {onOpen && (

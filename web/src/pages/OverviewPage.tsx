@@ -407,8 +407,15 @@ export function OverviewPage({
                     <span className="whitespace-nowrap">{formatTimeOfDay(e.at)}</span>
                   </span>
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-md text-ink-1">{e.detail}</span>
-                    <span className="mono text-micro text-ink-3">
+                    {/*
+                      `min-w-0` AND `wrap-anywhere`, and both are needed. The
+                      track is `minmax(0, 1fr)`, but the inner spans are flex
+                      items of a column, and a URL in a detail has no break
+                      opportunity — so the column took its full min-content width
+                      and pushed the badge off the right edge of the card.
+                    */}
+                    <span className="text-md text-ink-1 wrap-anywhere">{e.detail}</span>
+                    <span className="mono text-micro text-ink-3 wrap-anywhere">
                       {e.channel} · {e.ref}
                     </span>
                   </span>

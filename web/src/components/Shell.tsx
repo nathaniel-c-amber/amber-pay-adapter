@@ -1573,7 +1573,23 @@ export default function Shell() {
           id="amb-main"
           ref={mainRef}
           tabIndex={-1}
-          className="min-w-0 px-6 pt-5 pb-10 max-sm:px-4 max-sm:pt-4 max-sm:pb-8 focus:outline-none"
+          /*
+            `wrap-anywhere` here is a SAFETY NET, and the per-surface fixes in
+            FindingCard, FindingsPage and EventStream are the real ones.
+
+            `overflow-wrap` is inherited, so this one declaration covers every
+            console surface, including the auth-adjacent and detail views nobody
+            thought to test with a pathological string. That matters because the
+            offending content is not authored copy: it is `detail` off a server
+            event, which routinely embeds the upstream request that failed, and a
+            URL has no break opportunity in it.
+
+            It cannot damage the mono readouts. Everything that must stay on one
+            line — timestamps, badges, references — already sets
+            `whitespace-nowrap`, and that beats an inherited wrap rule. Only text
+            that would otherwise overflow is affected.
+          */
+          className="min-w-0 px-6 pt-5 pb-10 wrap-anywhere max-sm:px-4 max-sm:pt-4 max-sm:pb-8 focus:outline-none"
         >
           {/*
             A single polite live region owns every acknowledgement announcement

@@ -348,7 +348,7 @@ function buildFindingsColumns(onAck: (id: string) => void): ColumnDef<any, Failu
       cell: (info) => (
         <span className="flex flex-col items-start gap-1">
           <span className="text-md font-semibold leading-[1.3] text-ink-1">{String(info.getValue())}</span>
-          <span className="max-w-[46ch] text-xs leading-snug text-ink-2">{info.row.original.detail}</span>
+          <span className="max-w-[46ch] text-xs leading-snug text-ink-2 wrap-anywhere">{info.row.original.detail}</span>
         </span>
       ),
     },
@@ -455,7 +455,7 @@ export function FindingsTable({
               </div>
               <div className="flex flex-col items-start gap-1">
                 <span className="text-md font-semibold leading-[1.3] text-ink-1">{f.title}</span>
-                <span className="max-w-[46ch] text-xs leading-snug text-ink-2">{f.detail}</span>
+                <span className="max-w-[46ch] text-xs leading-snug text-ink-2 wrap-anywhere">{f.detail}</span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 <Can ability={ABILITY.findingAck}>

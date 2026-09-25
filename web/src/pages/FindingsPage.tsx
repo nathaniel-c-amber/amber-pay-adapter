@@ -198,7 +198,9 @@ export function FindingDetailPage({
 
       <div className="grid items-start gap-4 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] max-2xl:grid-cols-[minmax(0,1fr)]">
         <Card title="Operational impact" className="fd-impact">
-          <p>{finding.detail}</p>
+          {/* `wrap-anywhere`: a finding's detail carries the upstream request that
+              failed, and a URL has no break opportunity — it ran past the card. */}
+          <p className="wrap-anywhere">{finding.detail}</p>
           <dl className="flex flex-col">
             <div className="flex items-baseline justify-between gap-4 border-b border-rule-enamel px-0.5 py-2 last:border-b-0">
               <dt className="mono min-w-0 text-xs uppercase tracking-label text-ink-3 wrap-anywhere">Finding</dt>
