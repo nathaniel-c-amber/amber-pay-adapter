@@ -30,6 +30,7 @@ import {
   cx,
 } from "@/components/ui";
 import { PolicyAttributeEditor } from "@/components/PolicyAttributeEditor";
+import { Modal } from "@/components/Modal";
 import { Can, Cannot, useCan } from "@/components/Can";
 import { ABILITY } from "@/utils/permissions";
 import { formatDateTime } from "@/utils/datetime";
@@ -387,37 +388,31 @@ export function UsersPage({
         </Card>
       )}
 
+      {/*
+        THE PERMISSIONS EDITOR IS A DIALOG, not a panel that expands inside the
+        list. Expanding a row moved every row below it, so the control the
+        operator had just clicked was no longer where they left it, and "cancel"
+        meant scrolling back up to find where to press it. The directory now stays
+        exactly where it is.
+
+        The editor itself is UNCHANGED, and deliberately so: the option-list union
+        and the `baseline` rule are what make it safe to open and save without
+        editing, and both are load-bearing. A redesign that moved the editor into a
+        dialog had no reason to touch either.
+      */}
       {mayManage && panel.kind === "edit" && editingRow && (
-        <Card
-          title={`Permissions · ${editingRow.email}`}
-          meta={
-            editingRow.policyAttributes?.length
-              ? `${editingRow.policyAttributes.length} attribute${editingRow.policyAttributes.length === 1 ? "" : "s"}`
-              : "no attributes"
+        <Modal
+          title={editingRow.email}
+          description={
+            <>
+              You can only grant what you yourself hold — anything else is refused by the
+              server. Changes take effect the next time this account signs in, because the
+              access token carries the policy it was issued with.
+            </>
           }
-          actions={
-            <button type="button" className={LINK_BTN} onClick={() => setPanel({ kind: "none" })}>
-              Cancel
-            </button>
-          }
-        >
-          <div className="flex flex-col gap-3">
-            <p className="m-0 max-w-[70ch] text-sm leading-prose text-ink-2">
-              You can only grant what you yourself hold — anything else is refused by the server.
-              Changes take effect the next time this account signs in, because the access token
-              carries the policy it was issued with.
-            </p>
-
-            <PolicyAttributeEditor
-              value={draft}
-              onChange={setDraft}
-              grantable={grantable}
-              baseline={baseline}
-              knownOrganizations={knownOrganizations}
-              idPrefix="edit"
-            />
-
-            <div className="flex items-center gap-3 border-t border-rule-enamel pt-3">
+          onClose={() => setPanel({ kind: "none" })}
+          footer={
+            <>
               <button
                 type="button"
                 className={BTN_PRIMARY}
@@ -439,9 +434,33 @@ export function UsersPage({
               >
                 {busyId === editingRow.id ? "Saving…" : "Save permissions"}
               </button>
-            </div>
-          </div>
-        </Card>
+              <button
+                type="button"
+                className={LINK_BTN}
+                onClick={() => setPanel({ kind: "none" })}
+              >
+                Cancel
+              </button>
+            </>
+          }
+        >
+          <p className="mono m-0 text-xs text-ink-3">
+            {editingRow.policyAttributes?.length
+              ? `${editingRow.policyAttributes.length} attribute${
+                  editingRow.policyAttributes.length === 1 ? "" : "s"
+                } currently granted`
+              : "no attributes currently granted"}
+          </p>
+
+          <PolicyAttributeEditor
+            value={draft}
+            onChange={setDraft}
+            grantable={grantable}
+            baseline={baseline}
+            knownOrganizations={knownOrganizations}
+            idPrefix="edit"
+          />
+        </Modal>
       )}
 
       <Card

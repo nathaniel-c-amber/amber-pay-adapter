@@ -16,7 +16,7 @@
  *    here" is only safe where the surface still says "not reporting".
  */
 
-import { ABILITY } from "@/utils/permissions";
+import { ABILITY, SYSTEM_MANAGE } from "@/utils/permissions";
 import { T_ANCHOR, navAnchor } from "./anchors";
 import type { Ability } from "@/utils/permissions";
 import type { RouteName } from "@/router";
@@ -41,8 +41,13 @@ export interface TourStep {
    * disabled — the same rule the rest of the console applies to a hidden nav
    * item, page, or button. Access is attribute-driven, so there is no fixed
    * list of who sees what.
+   *
+   * AN ARRAY IS AN OR. Some surfaces are gated on an either-set rather than one
+   * ability — the console calls that `SYSTEM_MANAGE` and spells it
+   * `system.write` OR `system.admin` — and a single value here would silently
+   * skip the step for whoever holds only the other one.
    */
-  requires?: Ability;
+  requires?: Ability | readonly Ability[];
   /** Preferred side for the panel. A preference only; the engine falls back. */
   placement?: "top" | "bottom" | "left" | "right" | "center";
 }
@@ -106,6 +111,15 @@ export const TOUR_STEPS: TourStep[] = [
     anchor: T_ANCHOR.sidebarIdentity,
     title: "Your access",
     body: "What you can see is what your policy grants. This footer names the account you are signed in as; the Profile page shows the scope, the organization and the actions behind it.",
+    placement: "right",
+  },
+  {
+    id: "configuration",
+    route: "settings",
+    anchor: navAnchor("settings"),
+    requires: SYSTEM_MANAGE,
+    title: "Configuration",
+    body: "This deployment's gateway credentials, its one accounting system, and whether that connection was last proven to work. Secrets are stored encrypted and are never shown again — you can see that one is set, never what it is.",
     placement: "right",
   },
   {

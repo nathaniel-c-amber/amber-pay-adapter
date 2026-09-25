@@ -52,14 +52,15 @@ export function ConnectionsPage({
 
       <Card
         title="Service map"
-        meta={<span className="mono">{mode === "demo" ? "synthetic · " : ""}Amber Pay ⇄ QuickBooks · Sage</span>}
+        meta={<span className="mono">{mode === "demo" ? "synthetic · " : ""}gateway → ledger</span>}
         className="cn-map"
       >
         <p className="mb-3 text-sm text-ink-2">
-          Amber Pay sits at the centre and one straight spoke leaves it for every path. A node is
-          solid while the path is healthy, dashed while it is degraded, and hatched with a broken
-          spoke when it has failed — so the state never rests on colour alone. Activate a node to
-          isolate its route; the key underneath holds each path's ink.
+          Read left to right: payments enter at the gateway, pass this deployment's hub, and
+          land as records in the accounting system. A line is solid while that route is healthy,
+          dashed while it is degraded, and hatched with a broken line when it has failed — so the
+          state never rests on colour alone. With several routes on one pipe, the pipe shows the
+          worst of them; the key underneath lists each separately.
         </p>
         <NetworkMap connectors={connectors} activeId={activeId} onFocus={onFocus} />
       </Card>

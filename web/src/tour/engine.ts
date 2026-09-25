@@ -7,7 +7,7 @@
  * of a short viewport — assertable instead of only observable.
  */
 
-import { can } from "@/utils/permissions";
+import { canAny } from "@/utils/permissions";
 import type { PolicyScope } from "@/types/domain";
 import type { TourStep } from "./steps";
 
@@ -20,7 +20,17 @@ import type { TourStep } from "./steps";
  * the tour cannot drift into its own idea of who may see what.
  */
 export function stepAllowed(step: TourStep, policy: PolicyScope | null | undefined): boolean {
-  return step.requires === undefined || can(policy, step.requires);
+  if (step.requires === undefined) return true;
+  /*
+    A SET, not a single ability. The System configuration page is gated on
+    `SYSTEM_MANAGE`, which the console spells as `system.write` OR `system.admin`.
+    Testing one of them here would silently SKIP the step for an administrator
+    holding only `admin` — the exact mismatch the `can` gate was tightened to
+    remove, running in the direction that makes a surface look absent to the one
+    person who can reach it.
+  */
+  const required = Array.isArray(step.requires) ? step.requires : [step.requires];
+  return canAny(policy, required);
 }
 
 /** The first step at or after `from` this policy may see, or null for none. */

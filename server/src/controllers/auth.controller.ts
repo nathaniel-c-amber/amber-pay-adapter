@@ -14,6 +14,8 @@ import type { InviteService } from '../services/auth/invite.service.js';
 import type { PasswordResetService } from '../services/auth/passwordReset.service.js';
 import type { TwoFactorService } from '../services/auth/twoFactor.service.js';
 import type { UserStore } from '../services/auth/user.service.js';
+import { settingsService as defaultSettingsService } from '../services/settings/settings.service.js';
+import type { SettingsService } from '../services/settings/settings.service.js';
 
 const inviteBodySchema = z.object({
   email: z.string().email(),
@@ -57,6 +59,12 @@ export interface AuthControllerDeps {
   inviteService: InviteService;
   twoFactorService: TwoFactorService;
   passwordResetService: PasswordResetService;
+  /**
+   * Only the organization's NAME is read, and only to name the organization to
+   * every signed-in user. It is a dependency rather than a module singleton so the
+   * identity endpoint can be tested without reaching for shared state.
+   */
+  settingsService?: Pick<SettingsService, 'getOrganizationName'>;
 }
 
 export interface AuthController {
@@ -91,6 +99,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
   const exposeInviteToken = env.NODE_ENV !== 'production';
   const exposeTwoFactorCode = env.NODE_ENV !== 'production';
   const exposeResetToken = env.NODE_ENV !== 'production';
+  const settings = deps.settingsService ?? defaultSettingsService;
 
   return {
     inviteUser: asyncHandler(async (req, res) => {
@@ -231,6 +240,21 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         // Read from the account, NOT the token: a user who finished the tour
         // must not be re-toured because an older token is still valid.
         tourCompletedAt: user?.tourCompletedAt ?? null,
+        /*
+          THE ORGANIZATION'S NAME, on the identity endpoint rather than on
+          `/settings`, and that placement is the point. `/settings` is gated on
+          the `system` scope, but this is deployment-wide identity: it is on every
+          page header and in every invitation. Reading it through a settings
+          endpoint would mean an ordinary operator sees a blank organization field
+          while holding perfectly valid access to everything it describes.
+
+          A NAME, not the id, and not read from the row: the id is `env
+          .ORGANIZATION_ID` and the two can disagree, which is the failure this
+          area started with. The id still comes from the environment; the name is
+          the one a human chose. Null before setup is finished, and the console
+          falls back to the id rather than showing nothing.
+        */
+        organizationName: await settings.getOrganizationName(),
         tokenExpiresAt: new Date(auth.exp * 1000).toISOString(),
       });
     }),

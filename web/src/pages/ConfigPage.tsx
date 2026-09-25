@@ -42,7 +42,7 @@ import { adaptorChoice, readingForVerification, validateOrganizationName } from 
 import type { VerificationReading } from "@/utils/settingsRules";
 import type { ApiDeploymentSettings } from "@/types/api";
 
-type Section = "deployment" | "gateway" | "accounting" | "cadence";
+type Section = "deployment" | "gateway" | "accounting";
 
 function messageOf(err: unknown): string {
   if (err instanceof ApiRequestError) return err.message;
@@ -123,8 +123,6 @@ export function ConfigPage({
   const [name, setName] = useState("");
   const [clientId, setClientId] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
-  const [syncInterval, setSyncInterval] = useState("");
-  const [alertTarget, setAlertTarget] = useState("");
   const [verified, setVerified] = useState<VerificationReading | null>(null);
   const [verifying, setVerifying] = useState(false);
 
@@ -136,8 +134,6 @@ export function ConfigPage({
       setLoadError(null);
       setName(loaded.organizationName ?? "");
       setClientId(loaded.gateway.clientId ?? "");
-      setSyncInterval(loaded.syncInterval ?? "");
-      setAlertTarget(loaded.alertTarget ?? "");
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         onRequireSignIn();
@@ -169,26 +165,6 @@ export function ConfigPage({
       note("deployment", "ok", "Saved.");
     } catch (err) {
       note("deployment", "error", messageOf(err));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const saveCadence = async () => {
-    if (!token) return;
-    setBusy("cadence");
-    try {
-      // Separate from the name on purpose: a cadence change must not be blocked by an
-      // empty name box. Coupling unrelated fields is how a save button starts
-      // refusing work it should do.
-      const next = await updatePreferenceSettings(token, {
-        syncInterval: syncInterval.trim() || null,
-        alertTarget: alertTarget.trim() || null,
-      });
-      setSettings(next);
-      note("cadence", "ok", "Saved.");
-    } catch (err) {
-      note("cadence", "error", messageOf(err));
     } finally {
       setBusy(null);
     }
@@ -589,53 +565,21 @@ export function ConfigPage({
         </div>
       </Card>
 
-      <Card title="Sync cadence and alerting">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <label className="mono text-micro uppercase tracking-label text-ink-3" htmlFor="cfg-sync">
-              Scheduled sync interval
-            </label>
-            <input
-              id="cfg-sync"
-              className={INPUT}
-              value={syncInterval}
-              onChange={(event) => setSyncInterval(event.target.value)}
-              placeholder="5m"
-              autoComplete="off"
-              spellCheck={false}
-              aria-describedby="cfg-sync-hint"
-            />
-            <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3" id="cfg-sync-hint">
-              A duration such as <code className="mono">30s</code>, <code className="mono">5m</code> or{" "}
-              <code className="mono">1h</code>. The API refuses a value it cannot parse rather than
-              falling back to a schedule nobody chose.
-            </p>
-          </div>
+      {/*
+        THE SYNC CADENCE PANEL WAS REMOVED, not made more verbose.
 
-          <div className="flex flex-col gap-1">
-            <label className="mono text-micro uppercase tracking-label text-ink-3" htmlFor="cfg-alert">
-              Alert target
-            </label>
-            <input
-              id="cfg-alert"
-              className={INPUT}
-              value={alertTarget}
-              onChange={(event) => setAlertTarget(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
+        Asked for more explanation here, and the honest answer was that there was
+        nothing to explain: nothing reads `syncInterval` or `alertTarget`, and
+        there is no scheduler in the service at all — `pullSyncStatus` is never
+        called outside the adaptors' own definitions. So this was a control with no
+        behaviour behind it, which is precisely the invented "every 15 min" and
+        "≤ 5 s" panel this page used to ship.
 
-          <Can ability={SYSTEM_MANAGE}>
-            <div className="flex flex-wrap items-center gap-3">
-              <button type="button" className={BTN_PRIMARY} onClick={saveCadence} disabled={busy !== null}>
-                <IconEdit /> {busy === "cadence" ? "Saving…" : "Save cadence"}
-              </button>
-              {outcome.cadence && <Outcome tone={outcome.cadence.tone}>{outcome.cadence.text}</Outcome>}
-            </div>
-          </Can>
-        </div>
-      </Card>
+        Describing it more thoroughly would only have made a dead control more
+        convincing. The two columns remain on the row for the day something reads
+        them; a setting that stores and is never consulted is a lie in a settings
+        page, whoever typed into it.
+      */}
     </div>
   );
 }

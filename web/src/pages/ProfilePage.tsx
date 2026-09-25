@@ -162,7 +162,20 @@ export function ProfilePage({
               />
               <IdentityRow
                 label="Organization"
-                value={caps.org === "*" ? "all organizations" : caps.org}
+                /*
+                  THE NAME, not the policy's raw organization id.
+
+                  An id like "default" or "org-1" is what the API filters on and is
+                  the one thing on this page nobody can read out loud in a meeting.
+                  The name is the one a human chose; the id is kept underneath so
+                  somebody debugging a permission problem can still see it, and so
+                  the row is never blank before setup has been finished.
+                */
+                value={
+                  identity?.organizationName ??
+                  (caps.org === "*" ? "all organizations" : caps.org)
+                }
+                mono={false}
               />
               <IdentityRow
                 label="Granted actions"
@@ -235,11 +248,17 @@ export function ProfilePage({
 
       <Card title="Security" className="profile-security">
         <div className="flex flex-col gap-3">
+          {/*
+            NO REQUIREMENT REFERENCES. "(FR-1.1)" is an index into a document
+            this person has no copy of, and it reads as an unexplained code to
+            anybody who has — the label already says what the fact is. The
+            substance stays; the citation does not.
+          */}
           <div className="grid grid-cols-4 gap-4 max-4xl:grid-cols-2 max-sm:grid-cols-1">
-          <Field label="Invite only" value="No public registration (FR-1.1)" />
-          <Field label="Second factor" value="Email 2FA on every sign-in (FR-1.3)" />
-          <Field label="Session lifetime" value="Access tokens ≤ 1 hour (FR-1.5)" />
-          <Field label="Authorization" value="Policy-based access control (FR-1.4)" />
+            <Field label="Invite only" value="No public registration" />
+            <Field label="Second factor" value="Email 2FA on every sign-in" />
+            <Field label="Session lifetime" value="Access tokens last up to an hour" />
+            <Field label="Authorization" value="Policy-based access control" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-rule-enamel pt-3">

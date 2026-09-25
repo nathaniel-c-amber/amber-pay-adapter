@@ -171,6 +171,13 @@ export interface ApiIdentity {
    * does not re-tour the same person.
    */
   tourCompletedAt: string | null;
+  /**
+   * The name of the organization this deployment serves, or null before setup
+   * has been finished. Present here rather than on `/settings` because it is
+   * deployment-wide identity — it appears in every page header — and `/settings`
+   * requires the `system` scope an ordinary operator does not hold.
+   */
+  organizationName: string | null;
   /** When the current access token stops working (ISO 8601). */
   tokenExpiresAt: string;
 }

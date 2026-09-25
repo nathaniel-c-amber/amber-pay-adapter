@@ -176,6 +176,27 @@ const EVENT_HEAD_CLASS: Record<string, string> = {
   detail: EVENT_HEAD_LABEL_CLASS,
 };
 
+/*
+  THE COLUMN TEMPLATE, IN ONE PLACE, because it is written twice — once for the
+  header and once for every row — and the two were free to disagree, which is how a
+  header ends up over one column and its cells under another.
+
+  WHY THESE NUMBERS, since the previous ones read as arbitrary:
+
+    `at`  is 96px because it renders a STACKED date over a time. Two lines of
+         13px mono need about 80px of ink; it was given 108px, a column and a
+         half of slack taken from the three columns that were actually cramped.
+    `ref` is now its own minimum rather than sharing a fraction. It is a
+         `whitespace-nowrap` hash, so a fractional track means its width depends
+         on the viewport and the gutter does too — which is the specific way this
+         table felt tight at some widths and not others.
+    `gap-x-5` rather than `gap-x-3`. The gutters are the whole complaint: 12px
+         between five columns puts a reference hash almost against the event name
+         beside it, and the detail column has to be read as prose.
+*/
+const EVENT_GRID = "gap-x-5 px-4";
+const EVENT_COLS = "grid-cols-[96px_136px_minmax(104px,0.7fr)_minmax(132px,1fr)_minmax(0,2.2fr)]";
+
 export function EventStream({ events }: { events: LifecycleEvent[] }) {
   const columns = useMemo(() => buildEventColumns(), []);
   const table = useTable({
@@ -191,7 +212,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
   return (
     <div role="table" aria-label="Lifecycle event stream">
       <div
-        className="grid grid-cols-[108px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] gap-x-3 border-b border-ink-2 bg-midnight-3 px-3 py-2 max-3xl:hidden"
+        className={`grid ${EVENT_COLS} ${EVENT_GRID} border-b border-ink-2 bg-midnight-3 py-2 max-3xl:hidden`}
         role="row"
       >
         {headers.map((header) => {
@@ -224,7 +245,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
       {table.getRowModel().rows.map((row) => (
         <div
           key={row.id}
-          className="grid grid-cols-[108px_132px_minmax(84px,0.8fr)_minmax(120px,1.2fr)_minmax(0,2.2fr)] items-center gap-x-3 border-b border-rule-enamel bg-midnight-2 px-3 py-2 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[108px_1fr_minmax(120px,1.4fr)] max-md:grid-cols-[108px_1fr]"
+          className={`grid ${EVENT_COLS} ${EVENT_GRID} items-center border-b border-rule-enamel bg-midnight-2 py-2.5 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[96px_1fr_minmax(132px,1.4fr)] max-3xl:gap-x-4 max-md:grid-cols-[96px_1fr] max-md:gap-x-4`}
           role="row"
         >
           {row.getAllCells().map((cell) => (

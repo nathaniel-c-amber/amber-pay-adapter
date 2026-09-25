@@ -253,6 +253,20 @@ export class SettingsService {
     return toPublic(await this.repository.get(), env.ORGANIZATION_ID, secretsConfigured());
   }
 
+  /**
+   * The organization's display name, for callers that must not read the whole
+   * settings row.
+   *
+   * It exists so `/auth/me` can name the organization to EVERY signed-in user.
+   * `/settings` is gated on the `system` scope, but the name is on every page
+   * header and in every invitation, so an operator without that scope would see a
+   * blank organization where they should see the name. Returns null before setup
+   * is finished, and the caller falls back to the id rather than showing nothing.
+   */
+  async getOrganizationName(): Promise<string | null> {
+    return (await this.repository.get()).organizationName;
+  }
+
   async isConfigured(): Promise<boolean> {
     return (await this.repository.get()).configuredAt !== null;
   }
