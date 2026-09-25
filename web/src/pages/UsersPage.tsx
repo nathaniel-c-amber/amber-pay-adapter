@@ -25,6 +25,7 @@ import {
   BTN_PRIMARY,
   Card,
   DemoTag,
+  INPUT,
   LINK_BTN,
   PageHeader,
   cx,
@@ -369,7 +370,11 @@ export function UsersPage({
             <label className="flex max-w-[420px] flex-col gap-1">
               <span className="mono text-micro uppercase tracking-label text-ink-3">Work email</span>
               <input
-                className="field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus"
+                /* The INPUT control, not a fourth hand-written copy of it. This one
+                   had drifted: it was missing the aria-invalid treatment and carried
+                   its own placeholder utility, which is how a field ends up the one
+                   place in the console where the placeholder colour is wrong. */
+                className={INPUT}
                 type="email"
                 value={inviteEmail}
                 placeholder="name@organisation.com"
@@ -511,7 +516,7 @@ export function UsersPage({
             <IconSearch />
             <input
               type="search"
-              className="border-0 bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-4"
+              className="border-0 bg-transparent text-sm text-ink-1 outline-none"
               placeholder="Search email, account id, scope or access"
               aria-label="Search users"
               value={query}

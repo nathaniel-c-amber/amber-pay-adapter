@@ -1,4 +1,5 @@
 /* Small shared presentational atoms for the Amber Daylight shell and pages. */
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { IconChevronRight, IconAlert, IconCheck, IconClock, IconSearch, IconSync } from "./icons";
 import { Can } from "./Can";
@@ -96,14 +97,118 @@ export const LABEL = "text-micro leading-snug uppercase tracking-label";
   `field-autofill` is a real hook in `tailwind.css` (@layer base): it overrides the
   browser's autofill wash, which paints a light background on a dark field.
 
-  `placeholder:text-ink-4` is the PLACEHOLDER TOKEN for every field in the console,
-  and `ink-4` is the dimmest step of the ink ramp (ink-1 is the input's own text
-  colour). Two search boxes had it on `ink-3`, which is one step BRIGHTER — so a
-  placeholder read as almost-content, and a placeholder must read as less than
-  content by definition. Anything that dims its placeholder uses ink-4.
+  NO `placeholder:` UTILITY HERE, deliberately. The placeholder colour is one
+  `@layer base` rule in `tailwind.css`, because it used to be a per-control utility
+  — and that is exactly how ten fields had it and two search boxes did not. An
+  input should not be a place where the placeholder colour can be forgotten.
 */
 export const INPUT =
-  "field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 transition-colors hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended";
+  "field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 transition-colors hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended";
+
+/* --------------------------------------------------------------- Checkbox */
+
+/*
+  The one binary control the console had no primitive for: the permission matrix
+  was drawing raw `<input type="checkbox">` with `accent-color`, which on a dark
+  surface renders the platform's own light checkbox — a white box with a system
+  tick, sitting on a midnight panel like a sticker from another operating system.
+  Three states were hand-rolled, focus styling was the browser's, and the mark was
+  whatever the user's platform decided to draw.
+
+  THE INPUT IS THE BOX, via `appearance-none`.
+
+  The obvious alternative was tried first and is wrong here: an `sr-only` input
+  with a painted sibling. The focus ring then has to be rebuilt with
+  `peer-focus-visible:*`, which immediately lands in a cascade argument with the
+  base layer — which already defines a correct `:focus-visible` outline for every
+  control in the console. That rule fires on the FOCUSED element, which would be
+  the invisible 1x1 input, so the ring had to be re-invented for the sibling and
+  measured 1.6px of near-black instead of 2px of the focus token: a dark ring on
+  an orange box, which is close to no ring at all.
+
+  Making the input itself the painted box means the ring is the console's own, for
+  free, and the native semantics — keyboard, form participation, the accessibility
+  tree — stay untouched. The mark is a decorative sibling laid over it.
+
+  THE THREE STATES ARE NOT OPTIONAL. A partly-granted permission is the NORMAL case
+  in a matrix, not a transient one, and it has to look different from both extremes
+  or "none of these" cannot be told from "some of these". INDETERMINATE IS SET
+  THROUGH THE REF because it is a DOM property rather than an attribute, which also
+  means there is no `indeterminate:` variant to style with — so the box is styled
+  from the same prop the input is given.
+
+  The mark is drawn here rather than borrowed from the icon set: `IconCheck` is a
+  circled check, which is a badge, not a tick.
+*/
+export function Checkbox({
+  checked,
+  indeterminate = false,
+  onChange,
+  disabled = false,
+  label,
+  title,
+  className,
+}: {
+  checked: boolean;
+  /** Partly set. Visually distinct from both `true` and `false`. */
+  indeterminate?: boolean;
+  onChange: (on: boolean) => void;
+  disabled?: boolean;
+  /** Required: the input is the control, so it carries the accessible name. */
+  label: string;
+  title?: string;
+  className?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    // Property, not attribute: React cannot set it, and it is the only way to
+    // render the third state.
+    if (inputRef.current) inputRef.current.indeterminate = indeterminate && !checked;
+  }, [indeterminate, checked]);
+
+  return (
+    <span className={cx("relative inline-grid flex-none place-items-center", className)}>
+      <input
+        ref={inputRef}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-label={label}
+        title={title}
+        onChange={(event) => onChange(event.target.checked)}
+        className={cx(
+          "peer size-4 cursor-pointer appearance-none rounded-[3px] border transition-colors",
+          "disabled:cursor-not-allowed disabled:opacity-45",
+          indeterminate || checked
+            ? "border-primary bg-primary"
+            : "border-rule-enamel bg-midnight-3 hover:not-disabled:border-ink-4",
+        )}
+      />
+      {(indeterminate || checked) && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 grid place-items-center text-on-primary"
+        >
+          {indeterminate ? (
+            <svg viewBox="0 0 12 12" className="size-3" fill="none">
+              <path d="M3 6h6" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 12 12" className="size-3" fill="none">
+              <path
+                d="M2.5 6.2 4.9 8.6 9.6 3.4"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
 
 export function Eyebrow({ children }: { children: ReactNode }) {
   return <div className={`mono text-xs uppercase tracking-label text-ink-3`}>{children}</div>;
@@ -496,7 +601,7 @@ export function SearchBox({
       <IconSearch />
       <input
         type="search"
-        className="border-none bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-4"
+        className="border-none bg-transparent text-sm text-ink-1 outline-none"
         placeholder={placeholder}
         aria-label={label}
         value={value}

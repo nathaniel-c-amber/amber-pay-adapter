@@ -101,6 +101,19 @@
   --color-ink-3: #94a3b8;          /* meta, labels, thresholds 6.8:1 */
   --color-ink-4: #7c8ba0;          /* separators, disabled     5.1:1 — never information */
 
+  /*
+    PLACEHOLDER, as a token of its own rather than the bottom of the ink ramp.
+
+    `ink-4` was doing this job, and at 5.1:1 it measured as too near the input's own
+    17:1 text to read as a hint rather than as content — which is the entire job of
+    a placeholder. This sits at 4.1:1, so it is 4.2x dimmer than the text it stands
+    in for, and still clears the 3:1 bar for non-text UI. WCAG exempts placeholder
+    text from the 4.5:1 body-text rule precisely because it is not the content, so
+    this is a design decision rather than a compliance one — but it is one that
+    belongs in a token, since a text-colour ramp has no correct last step for it.
+  */
+  --color-placeholder: #6b7a8f;     /* field hints              4.1:1 */
+
   --color-midnight: #0a0e1a;       /* page ground (dark) */
   --color-midnight-2: #111827;     /* card surface */
   --color-midnight-3: #1a2236;     /* hover / selected surface */
@@ -266,6 +279,23 @@
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
     border-radius: var(--radius-panel);
+  }
+
+  /*
+    PLACEHOLDERS, IN ONE PLACE, FOR EVERY FIELD.
+
+    This was `placeholder:text-ink-4` written into each control, which is how ten
+    fields had it and TWO search boxes did not — an input is then a whole extra
+    step of remembering, and the ones that forget are the ones nobody opens
+    often. A single base rule cannot be forgotten by a new control, and it sits
+    after Tailwind's own `::placeholder` reset so it wins on order.
+
+    A `placeholder:text-*` utility still overrides it, which is the escape hatch
+    for the rare field that genuinely needs something else.
+  */
+  ::placeholder {
+    color: var(--color-placeholder);
+    opacity: 1;
   }
 
   ::-webkit-scrollbar {

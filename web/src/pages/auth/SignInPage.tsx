@@ -144,7 +144,7 @@ export function SignInPage({
             <input
               id="auth-code"
               ref={codeRef}
-              className="mono field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-3 text-center text-2xl tracking-[0.32em] text-ink-1 placeholder:text-ink-4 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
+              className="mono field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-3 text-center text-2xl tracking-[0.32em] text-ink-1 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
               inputMode="numeric"
@@ -199,7 +199,7 @@ export function SignInPage({
         <AuthField id="auth-email" label="Work email">
           <input
             id="auth-email"
-            className="field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
+            className="field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -216,7 +216,7 @@ export function SignInPage({
           hint="At least 12 characters, with upper and lower case and a digit."
         >          <input
             id="auth-password"
-            className="field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
+            className="field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
