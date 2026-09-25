@@ -30,7 +30,6 @@ import {
   cx,
 } from "@/components/ui";
 import { PolicyAttributeEditor } from "@/components/PolicyAttributeEditor";
-import { Modal } from "@/components/Modal";
 import { Can, Cannot, useCan } from "@/components/Can";
 import { ABILITY } from "@/utils/permissions";
 import { formatDateTime } from "@/utils/datetime";
@@ -236,10 +235,30 @@ export function UsersPage({
     setActionError(null);
     setNotice(null);
     setInviteEmail("");
-    // Start from the broadest grant the administrator holds, so the common case
-    // (invite someone at my level) is one click rather than three.
-    const first = grantable[0];
-    setDraft(first ? [{ scope: first.scope, organizationId: first.organizationId, actions: [...first.actions] }] : []);
+    /*
+      SEEDED LEAST-PRIVILEGE, and this replaces a deliberate earlier choice that
+      has now turned out to be the wrong one.
+
+      It used to seed from `grantable[0]` — "the broadest grant the administrator
+      holds, so the common case is one click" — which meant a super administrator's
+      invite arrived with ALL SCOPES, ALL ORGANIZATIONS and ALL FOUR ACTIONS already
+      ticked, and one click from granting a new person super-admin access. The old
+      row editor buried that in two dropdowns; the matrix puts it in plain sight,
+      which is how it got noticed.
+
+      So: the narrowest scope, the narrowest action, and the narrowest organization
+      the caller can actually grant. `read` on `dashboard` is the smallest grant
+      that makes an account useful, and everything else is now a deliberate tick
+      rather than a default somebody has to notice and un-tick.
+
+      An attribute is still required — the wire schema rejects an empty list — so
+      the seed cannot be "nothing", only "least".
+    */
+    const narrowestOrg =
+      directory
+        .flatMap((row) => row.policyAttributes?.map((a) => a.organizationId) ?? [])
+        .find((org) => org !== '*') ?? grantable.find((a) => a.organizationId !== '*')?.organizationId ?? '*';
+    setDraft([{ scope: 'dashboard', organizationId: narrowestOrg, actions: ['read'] }]);
     setBaseline([]);
     setPanel({ kind: "invite" });
   };
@@ -389,30 +408,48 @@ export function UsersPage({
       )}
 
       {/*
-        THE PERMISSIONS EDITOR IS A DIALOG, not a panel that expands inside the
-        list. Expanding a row moved every row below it, so the control the
-        operator had just clicked was no longer where they left it, and "cancel"
-        meant scrolling back up to find where to press it. The directory now stays
-        exactly where it is.
+        THE PERMISSIONS MATRIX IS INLINE, not a dialog.
 
-        The editor itself is UNCHANGED, and deliberately so: the option-list union
-        and the `baseline` rule are what make it safe to open and save without
-        editing, and both are load-bearing. A redesign that moved the editor into a
-        dialog had no reason to touch either.
+        A dialog was tried and reversed: it put a matrix — which needs width to
+        read at all — behind a modal, so the operator compared ticks in a narrow
+        box and referred back to the list constantly. Inline, the scopes and their
+        actions are visible together with the directory they belong to, and
+        "cancel" means leaving the row unchanged rather than dismissing a layer.
+
+        The editor is a matrix for the reason given in PolicyAttributeEditor: a
+        permission set is a set of pairs, and a list of rows each containing its
+        own four checkboxes makes you count rather than look.
       */}
       {mayManage && panel.kind === "edit" && editingRow && (
-        <Modal
-          title={editingRow.email}
-          description={
-            <>
-              You can only grant what you yourself hold — anything else is refused by the
-              server. Changes take effect the next time this account signs in, because the
-              access token carries the policy it was issued with.
-            </>
+        <Card
+          title={`Permissions · ${editingRow.email}`}
+          meta={
+            editingRow.policyAttributes?.length
+              ? `${editingRow.policyAttributes.length} attribute${editingRow.policyAttributes.length === 1 ? "" : "s"}`
+              : "no attributes"
           }
-          onClose={() => setPanel({ kind: "none" })}
-          footer={
-            <>
+          actions={
+            <button type="button" className={LINK_BTN} onClick={() => setPanel({ kind: "none" })}>
+              Cancel
+            </button>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            <p className="m-0 max-w-[70ch] text-sm leading-prose text-ink-2">
+              You can only grant what you yourself hold — anything else is refused by the server.
+              Changes take effect the next time this account signs in, because the access token
+              carries the policy it was issued with.
+            </p>
+
+            <PolicyAttributeEditor
+              value={draft}
+              onChange={setDraft}
+              grantable={grantable}
+              baseline={baseline}
+              idPrefix="edit"
+            />
+
+            <div className="flex items-center gap-3 border-t border-rule-enamel pt-3">
               <button
                 type="button"
                 className={BTN_PRIMARY}
@@ -434,33 +471,9 @@ export function UsersPage({
               >
                 {busyId === editingRow.id ? "Saving…" : "Save permissions"}
               </button>
-              <button
-                type="button"
-                className={LINK_BTN}
-                onClick={() => setPanel({ kind: "none" })}
-              >
-                Cancel
-              </button>
-            </>
-          }
-        >
-          <p className="mono m-0 text-xs text-ink-3">
-            {editingRow.policyAttributes?.length
-              ? `${editingRow.policyAttributes.length} attribute${
-                  editingRow.policyAttributes.length === 1 ? "" : "s"
-                } currently granted`
-              : "no attributes currently granted"}
-          </p>
-
-          <PolicyAttributeEditor
-            value={draft}
-            onChange={setDraft}
-            grantable={grantable}
-            baseline={baseline}
-            knownOrganizations={knownOrganizations}
-            idPrefix="edit"
-          />
-        </Modal>
+            </div>
+          </div>
+        </Card>
       )}
 
       <Card
