@@ -547,8 +547,10 @@ export function OnboardingPage({
           <Fieldset>
             <AuthField
               id="field-organizationName"
-              label="Deployment name"
-              hint="Appears in the page header and the browser tab. Your team's name for this deployment."
+              label="Organization name"
+              hint="This deployment serves one organization, so its name is the organization's name. It
+                appears in the page header and the browser tab, and in the emails people are invited
+                to."
               error={errors.find((e) => e.field === "organizationName")?.message ?? null}
             >
               <input
@@ -560,6 +562,18 @@ export function OnboardingPage({
                 aria-invalid={errors.some((e) => e.field === "organizationName")}
               />
             </AuthField>
+
+            {/*
+              ALWAYS VISIBLE, NOT ONLY WHEN SET. A field that appears only once the
+              wizard reopens is a field nobody finds, and this one is the deployment's
+              identity — the name on every page header and every invitation.
+            */}
+            {settings.organizationName && (
+              <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">
+                Currently set to <strong>{settings.organizationName}</strong>. Change it here, or later
+                from System configuration.
+              </p>
+            )}
 
             <ReadOnlyRow
               label="Organization ID"

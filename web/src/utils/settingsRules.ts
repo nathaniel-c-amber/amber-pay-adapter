@@ -31,9 +31,9 @@ export interface WizardStep {
 export const WIZARD_STEPS: readonly WizardStep[] = [
   {
     id: "organization",
-    label: "This deployment",
-    title: "Confirm what this deployment is",
-    lead: "Give it a name your team will recognise, and check the organization it serves.",
+    label: "Organization",
+    title: "Name this organization",
+    lead: "One deployment serves one organization, so this is the organization's name — not the server's.",
   },
   {
     id: "gateway",

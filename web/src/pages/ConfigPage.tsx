@@ -347,7 +347,7 @@ export function ConfigPage({
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <label className="mono text-micro uppercase tracking-label text-ink-3" htmlFor="cfg-name">
-              Deployment name
+              Organization name
             </label>
             <input
               id="cfg-name"
@@ -355,7 +355,12 @@ export function ConfigPage({
               value={name}
               onChange={(event) => setName(event.target.value)}
               autoComplete="organization"
+              aria-describedby="cfg-name-hint"
             />
+            <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3" id="cfg-name-hint">
+              This deployment serves one organization, so its name is the organization's name. It
+              appears in the page header, the browser tab, and the emails people are invited to.
+            </p>
           </div>
 
           <div className="flex flex-col gap-1 rounded-panel border border-rule-enamel-soft bg-midnight-2 p-3">

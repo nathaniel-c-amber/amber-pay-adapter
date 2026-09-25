@@ -406,6 +406,97 @@ describe('POST /settings/adaptor/verify', () => {
   });
 });
 
+describe('PUT /settings/preferences — the organization name', () => {
+  /*
+    THE WIZARD'S FIRST STEP. It had no route test at all: the repository layer was
+    covered, the HTTP path the wizard actually calls was not, so "it works" was an
+    assumption rather than a fact. The name is this deployment's identity — it is
+    what every page header reads — so a silent failure here would be a console that
+    looks configured while showing the wrong name everywhere.
+  */
+  it('stores the name and reads it back', async () => {
+    const { app } = harness();
+
+    const put = await request(app)
+      .put('/api/v1/settings/preferences')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ organizationName: 'Northwind Trading' });
+    expect(put.status).toBe(200);
+    expect(put.body.settings.organizationName).toBe('Northwind Trading');
+
+    const get = await request(app)
+      .get('/api/v1/settings')
+      .set('Authorization', bearer(systemAdmin));
+    expect(get.body.settings.organizationName).toBe('Northwind Trading');
+  });
+
+  it('can change a name that is already set', async () => {
+    const { app, settingsService } = harness();
+    await settingsService.updatePreferences({ organizationName: 'First name' });
+
+    const res = await request(app)
+      .put('/api/v1/settings/preferences')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ organizationName: 'Corrected name' });
+
+    // Not append, not accumulate, and not ignored because one is already stored —
+    // the case that arises when an operator fixes a typo months later.
+    expect(res.body.settings.organizationName).toBe('Corrected name');
+  });
+
+  it('refuses an empty or whitespace-only name', async () => {
+    const { app } = harness();
+
+    for (const bad of ['', '   ']) {
+      const res = await request(app)
+        .put('/api/v1/settings/preferences')
+        .set('Authorization', bearer(systemAdmin))
+        .send({ organizationName: bad });
+      // A blank name would leave the console showing a placeholder in its header
+      // while the deployment believed it was named.
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('requires authority, and writes a preference without invalidating a verification', async () => {
+    const { app, settingsService } = harness();
+    await settingsService.updateAdaptor({
+      id: 'quickbooks',
+      credentials: { clientId: 'cid', clientSecret: 'csec' },
+    });
+    await settingsService.markVerified();
+
+    const denied = await request(app)
+      .put('/api/v1/settings/preferences')
+      .set('Authorization', bearer(systemReader))
+      .send({ organizationName: 'Nope' });
+    expect(denied.status).toBe(403);
+
+    await request(app)
+      .put('/api/v1/settings/preferences')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ organizationName: 'Northwind Trading' });
+
+    // A display name is not a credential. Clearing the verification because somebody
+    // fixed a capital letter would make the console say "not verified" about a
+    // connection that is working, which is the same class of noise as a phantom row.
+    expect((await settingsService.getSettings()).verifiedAt).not.toBeNull();
+  });
+
+  it('clears the name only when null is sent explicitly', async () => {
+    const { app, settingsService } = harness();
+    await settingsService.updatePreferences({ organizationName: 'Northwind Trading' });
+
+    const res = await request(app)
+      .put('/api/v1/settings/preferences')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ organizationName: null });
+
+    expect(res.status).toBe(200);
+    expect((await settingsService.getSettings()).organizationName).toBeNull();
+  });
+});
+
 describe('credentials merge, they do not overwrite each other', () => {
   /*
     THE DEFECT THIS PINS. The credential blob was written as a whole-value replace,
