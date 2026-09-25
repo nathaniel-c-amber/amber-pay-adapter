@@ -27,6 +27,7 @@ import { BTN, BTN_PRIMARY, INPUT, LINK_BTN, cx } from "@/components/ui";
 import { IconLedger } from "@/components/icons";
 import {
   ApiRequestError,
+  beginQuickBooksConnect,
   completeSettings,
   getSettings,
   inviteUser,
@@ -67,7 +68,15 @@ interface FieldError {
   message: string;
 }
 
-type Busy = "name" | "gateway" | "accounting" | "verify" | "invite" | "finish" | null;
+type Busy =
+  | "name"
+  | "gateway"
+  | "accounting"
+  | "verify"
+  | "invite"
+  | "finish"
+  | "connect"
+  | null;
 
 export function OnboardingPage({
   token,
@@ -275,13 +284,42 @@ export function OnboardingPage({
   /**
    * Hand the browser to QuickBooks.
    *
-   * A NAVIGATION, not a fetch. The next step is a human signing in at Intuit, and a
-   * 302 from the server carries the state that ties the return to this attempt. The
-   * credentials must already be saved: the server reads them when it builds the
-   * authorization URL, and the client secret must never travel to the browser.
+   * TWO CALLS, IN THIS ORDER, and the order is not incidental. The server builds
+   * the authorization URL because it holds the client secret, which must never
+   * travel to a browser — so the URL is FETCHED with the session, and only then
+   * does the browser navigate. Navigating straight to the endpoint instead sends
+   * no `Authorization` header, and the request is refused before it starts: that
+   * was the 401 this replaced.
    */
-  const startConnect = () => {
-    window.location.assign('/api/v1/settings/adaptor/connect');
+  const startConnect = async () => {
+    setBusy('connect');
+    try {
+      const url = await beginQuickBooksConnect(token);
+      /*
+        A last check that we are about to send an operator's browser to the host we
+        meant to. The URL is built by our own server, so this cannot fire today —
+        it is here so that a future change to how the URL is assembled cannot turn
+        the connect button into a way to send somebody somewhere else.
+      */
+      const target = new URL(url);
+      if (target.hostname !== 'appcenter.intuit.com') {
+        setReturnFrom({
+          connected: false,
+          realm: null,
+          message: 'The connection could not be started, so nothing was changed.',
+        });
+        return;
+      }
+      window.location.assign(url);
+    } catch (err) {
+      setReturnFrom({
+        connected: false,
+        realm: null,
+        message: messageOf(err),
+      });
+    } finally {
+      setBusy(null);
+    }
   };
 
   const submitAccounting = async () => {
@@ -574,14 +612,6 @@ export function OnboardingPage({
                 from System configuration.
               </p>
             )}
-
-            <ReadOnlyRow
-              label="Organization ID"
-              value={settings.organizationId}
-              explanation="Read-only: this is set when the deployment is provisioned, and every stored row and
-                every access grant is filed under it. Changing it here would hide the records this
-                deployment already has."
-            />
           </Fieldset>
         )}
 
@@ -735,8 +765,13 @@ export function OnboardingPage({
                           Intuit, and the connection comes back here when you are done.
                         </p>
                         <div>
-                          <button type="button" className={BTN_PRIMARY} onClick={startConnect}>
-                            Connect to QuickBooks
+                          <button
+                            type="button"
+                            className={BTN_PRIMARY}
+                            onClick={() => void startConnect()}
+                            disabled={busy !== null}
+                          >
+                            {busy === 'connect' ? 'Opening QuickBooks…' : 'Connect to QuickBooks'}
                           </button>
                         </div>
                       </>
@@ -1013,30 +1048,30 @@ function Notice({
   );
 }
 
-/**
- * A value shown but not editable.
- *
- * Styled as text rather than as a disabled input: an input that looks editable and
- * is not is worse than no field at all, because the first thing anyone does is try
- * to click it.
- */
-function ReadOnlyRow({
-  label,
-  value,
-  explanation,
-}: {
-  label: string;
-  value: string;
-  explanation: string;
-}) {
-  return (
-    <div className="flex flex-col gap-1 rounded-panel border border-rule-enamel-soft bg-midnight-2 p-3">
-      <span className={cx("text-ink-3", "mono text-micro uppercase tracking-label")}>{label}</span>
-      <code className="mono text-md text-ink-1">{value}</code>
-      <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">{explanation}</p>
-    </div>
-  );
-}
+// /**
+//  * A value shown but not editable.
+//  *
+//  * Styled as text rather than as a disabled input: an input that looks editable and
+//  * is not is worse than no field at all, because the first thing anyone does is try
+//  * to click it.
+//  */
+// function ReadOnlyRow({
+//   label,
+//   value,
+//   explanation,
+// }: {
+//   label: string;
+//   value: string;
+//   explanation: string;
+// }) {
+//   return (
+//     <div className="flex flex-col gap-1 rounded-panel border border-rule-enamel-soft bg-midnight-2 p-3">
+//       <span className={cx("text-ink-3", "mono text-micro uppercase tracking-label")}>{label}</span>
+//       <code className="mono text-md text-ink-1">{value}</code>
+//       <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">{explanation}</p>
+//     </div>
+//   );
+// }
 
 /**
  * A secret field with a reveal control.

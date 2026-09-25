@@ -118,10 +118,43 @@ describe('GET /settings/adaptor/connect', () => {
 
     const res = await request(app).get(CONNECT).set('Authorization', bearer(systemAdmin));
 
-    // 400 rather than a redirect to a provider that will reject the request, so the
-    // operator is told the actual problem instead of meeting Intuit's own error.
+    // 400 rather than a URL pointing at a provider that will reject the request, so
+    // the operator is told the actual problem instead of meeting Intuit's own error.
     expect(res.status).toBe(400);
     expect(res.body.error.message).toMatch(/client id and client secret first/i);
+  });
+
+  it('returns the authorization URL for the CALLER to navigate to', async () => {
+    const { app, settingsService } = harness();
+    await seedClientCredentials(settingsService);
+
+    const res = await request(app).get(CONNECT).set('Authorization', bearer(systemAdmin));
+
+    /*
+      NOT A 302, and this assertion exists because the 302 was a bug: the route is
+      behind requireAuth, but a browser NAVIGATION to it sends no Authorization
+      header, so a redirect from here was unreachable — the button it backed could
+      only ever produce "Missing bearer token". Handing the URL back lets the client
+      authenticate the call and then navigate.
+    */
+    expect(res.status).toBe(200);
+    const url = new URL(String(res.body.authorizationUrl));
+    expect(url.hostname).toBe('appcenter.intuit.com');
+    expect(url.searchParams.get('client_id')).toBe('client-1');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('state')).toBeTruthy();
+  });
+
+  it('never puts the client SECRET in the URL it hands back', async () => {
+    const { app, settingsService } = harness();
+    await seedClientCredentials(settingsService);
+
+    const res = await request(app).get(CONNECT).set('Authorization', bearer(systemAdmin));
+
+    // The browser is about to be sent to this URL. The secret authorizes the token
+    // exchange server-side and must never appear anywhere the browser can read.
+    expect(String(res.body.authorizationUrl)).not.toContain('secret-1');
+    expect(JSON.stringify(res.body)).not.toContain('secret-1');
   });
 });
 

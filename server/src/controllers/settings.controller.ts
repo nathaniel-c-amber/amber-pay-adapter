@@ -290,11 +290,28 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
       const nonce = (deps.newNonce ?? newNonce)();
       const state = issueOAuthState('quickbooks', nonce);
 
-      res.redirect(302, buildUrl({
-        clientId,
-        redirectUri: redirectUri(),
-        state,
-      }));
+      /*
+        A URL, NOT A 302.
+
+        This route is behind `requireAuth`, and that is correct: it reads the stored
+        client credentials, and an unauthenticated stranger must not be able to start
+        an authorization against this deployment. But a browser NAVIGATION carries
+        no `Authorization` header, so a 302 from this endpoint was unreachable —
+        the button it backed could only ever produce 401.
+
+        Handing the URL back to the caller instead lets the client authenticate the
+        call and then navigate, which is how every other OAuth integration does it.
+        The URL contains no secret: `client_id` is public, `redirect_uri` is this
+        deployment's own callback, and `state` is a signed nonce that expires in ten
+        minutes.
+      */
+      res.status(200).json({
+        authorizationUrl: buildUrl({
+          clientId,
+          redirectUri: redirectUri(),
+          state,
+        }),
+      });
     }),
 
     /**

@@ -31,6 +31,7 @@ import { SYSTEM_MANAGE } from "@/utils/permissions";
 import {
   ApiRequestError,
   UnauthorizedError,
+  beginQuickBooksConnect,
   getSettings,
   updateGatewaySettings,
   updatePreferenceSettings,
@@ -238,17 +239,34 @@ export function ConfigPage({
   /**
    * Start the provider authorization.
    *
-   * A NAVIGATION, not a fetch: the next hop is a human signing in at the provider.
-   * The server reads the stored client secret when it builds the authorization URL,
-   * which is precisely why this secret is never sent to the browser.
+   * FETCH the URL, THEN navigate. The server holds the client secret and must
+   * never send it here, so it builds the authorization URL itself; but this
+   * endpoint requires a bearer token and a browser navigation carries none, so
+   * navigating to it directly is refused before it begins. Two calls, in this
+   * order.
    *
    * The provider sends the browser back to the guided setup, which reports the
    * outcome. It does NOT return here: honouring a caller-supplied return path would
    * mean reflecting an unvalidated URL into a `Location` header, and the wizard is
    * the surface that already knows how to read the result.
    */
-  const startConnect = () => {
-    window.location.assign('/api/v1/settings/adaptor/connect');
+  const startConnect = async () => {
+    setBusy('accounting');
+    try {
+      const url = await beginQuickBooksConnect(token!);
+      // Cannot fire today — the URL is built by our own server — but a future
+      // change to how it is assembled must not turn this button into a way to send
+      // an operator's browser somewhere unexpected.
+      if (new URL(url).hostname !== 'appcenter.intuit.com') {
+        note('accounting', 'error', 'The connection could not be started, so nothing was changed.');
+        return;
+      }
+      window.location.assign(url);
+    } catch (err) {
+      note('accounting', 'error', messageOf(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
   if (mode === "demo" || !token) {
@@ -522,7 +540,7 @@ export function ConfigPage({
                 <button
                   type="button"
                   className={BTN_PRIMARY}
-                  onClick={startConnect}
+                  onClick={() => void startConnect()}
                   disabled={!settings.adaptor.canAuthorize || busy !== null}
                   {...(settings.adaptor.canAuthorize
                     ? {}

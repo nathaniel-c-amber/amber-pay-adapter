@@ -442,3 +442,20 @@ export async function completeSettings(token: string): Promise<ApiDeploymentSett
   });
   return result.settings;
 }
+
+/**
+ * GET /settings/adaptor/connect — begin the QuickBooks authorization.
+ *
+ * Returns a URL FOR THE CALLER TO NAVIGATE TO, rather than redirecting itself,
+ * because this endpoint requires a bearer token and a browser navigation does not
+ * send one. A 302 here is unreachable from a button.
+ *
+ * The URL carries no secret — `client_id` is public, `redirect_uri` is this
+ * deployment's own callback, and `state` is a short-lived signed nonce.
+ */
+export async function beginQuickBooksConnect(token: string): Promise<string> {
+  const result = await request<{ authorizationUrl: string }>("/settings/adaptor/connect", {
+    headers: authHeaders(token),
+  });
+  return result.authorizationUrl;
+}
