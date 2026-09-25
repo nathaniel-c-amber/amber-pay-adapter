@@ -168,9 +168,21 @@ function buildEventColumns(): ColumnDef<any, LifecycleEvent, unknown>[] {
 
 /* Every column head shares one treatment: the uppercase micro-label in mono. */
 const EVENT_HEAD_LABEL_CLASS = "font-mono text-xs tracking-label uppercase text-ink-2";
+/*
+  `whitespace-nowrap` on the head, because a header that wraps does not merely look
+  untidy — it stops lining up. "DATE & TIME" plus its sort glyph needs ~114px, so
+  at the old 96px it wrapped to two lines and the whole cell's content box shifted
+  off the column start, leaving the first header visibly right of its own cells.
+
+  `pl-4` on the EVENT head alone, to match the leading marker its cells carry. An
+  event row opens with an 8px status dot plus an 8px gap, so its text starts 16px
+  into the column; the head has to reserve the same 16px or "Event" sits over the
+  dot rather than over the words. The other four columns carry no marker, so their
+  heads deliberately do not.
+*/
 const EVENT_HEAD_CLASS: Record<string, string> = {
   at: EVENT_HEAD_LABEL_CLASS,
-  type: EVENT_HEAD_LABEL_CLASS,
+  type: `${EVENT_HEAD_LABEL_CLASS} pl-4`,
   ref: EVENT_HEAD_LABEL_CLASS,
   channel: EVENT_HEAD_LABEL_CLASS,
   detail: EVENT_HEAD_LABEL_CLASS,
@@ -183,9 +195,12 @@ const EVENT_HEAD_CLASS: Record<string, string> = {
 
   WHY THESE NUMBERS, since the previous ones read as arbitrary:
 
-    `at`  is 96px because it renders a STACKED date over a time. Two lines of
-         13px mono need about 80px of ink; it was given 108px, a column and a
-         half of slack taken from the three columns that were actually cramped.
+    `at`  is 118px because it renders a STACKED date over a time, AND because its
+         header has to fit "DATE & TIME" plus a sort glyph on ONE line. At 96px it
+         wrapped, and a wrapped header shifts its content box off the column start
+         so the first head stopped lining up with its own cells. The width is set by
+         the head, not the body — which is the opposite of the rule that held when
+         this column was 108px for an 80px stack.
     `ref` is now its own minimum rather than sharing a fraction. It is a
          `whitespace-nowrap` hash, so a fractional track means its width depends
          on the viewport and the gutter does too — which is the specific way this
@@ -195,7 +210,7 @@ const EVENT_HEAD_CLASS: Record<string, string> = {
          beside it, and the detail column has to be read as prose.
 */
 const EVENT_GRID = "gap-x-5 px-4";
-const EVENT_COLS = "grid-cols-[96px_136px_minmax(104px,0.7fr)_minmax(132px,1fr)_minmax(0,2.2fr)]";
+const EVENT_COLS = "grid-cols-[118px_136px_minmax(104px,0.7fr)_minmax(132px,1fr)_minmax(0,2.2fr)]";
 
 export function EventStream({ events }: { events: LifecycleEvent[] }) {
   const columns = useMemo(() => buildEventColumns(), []);
@@ -230,7 +245,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
               {canSort ? (
                 <button
                   type="button"
-                  className="inline-flex cursor-pointer items-center gap-2 p-0 text-inherit hover:text-ink-1"
+                  className="inline-flex cursor-pointer items-center gap-2 whitespace-nowrap p-0 text-inherit hover:text-ink-1"
                   onClick={header.column.getToggleSortingHandler()}
                   aria-label={label ? `Sort ${label}` : undefined}
                 >
@@ -245,7 +260,7 @@ export function EventStream({ events }: { events: LifecycleEvent[] }) {
       {table.getRowModel().rows.map((row) => (
         <div
           key={row.id}
-          className={`grid ${EVENT_COLS} ${EVENT_GRID} items-center border-b border-rule-enamel bg-midnight-2 py-2.5 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[96px_1fr_minmax(132px,1.4fr)] max-3xl:gap-x-4 max-md:grid-cols-[96px_1fr] max-md:gap-x-4`}
+          className={`grid ${EVENT_COLS} ${EVENT_GRID} items-center border-b border-rule-enamel bg-midnight-2 py-2.5 transition-colors hover:bg-midnight-3 max-3xl:grid-cols-[118px_1fr_minmax(132px,1.4fr)] max-3xl:gap-x-4 max-md:grid-cols-[118px_1fr] max-md:gap-x-4`}
           role="row"
         >
           {row.getAllCells().map((cell) => (
