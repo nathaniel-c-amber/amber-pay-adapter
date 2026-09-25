@@ -192,11 +192,29 @@ export function UsersPage({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return directory;
-    return directory.filter(
-      (row) =>
-        row.email.toLowerCase().includes(q) ||
-        row.scope.toLowerCase().includes(q) ||
-        row.organizations.toLowerCase().includes(q),
+    /*
+      EVERY FIELD THE TABLE SHOWS IS SEARCHABLE.
+
+      This filtered on three of the seven columns a row renders, so a value the
+      operator could plainly read was not findable — the account id being the one
+      that matters, because it is the only stable handle on a person: the email
+      changes if somebody is renamed, and the id is what a support ticket, an audit
+      row or a bug report will quote. Searching it was the difference between
+      finding a user and scrolling the whole directory.
+
+      `actions` and `status` join it because "who can write?" and "whose invite is
+      still pending?" are the other two questions an administrator arrives with,
+      and both columns were on screen while being unsearchable.
+    */
+    return directory.filter((row) =>
+      [
+        row.id,
+        row.email,
+        row.scope,
+        row.organizations,
+        row.actions,
+        row.status,
+      ].some((field) => field.toLowerCase().includes(q)),
     );
   }, [directory, query]);
 
@@ -494,7 +512,7 @@ export function UsersPage({
             <input
               type="search"
               className="border-0 bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-3"
-              placeholder="Search users or scope"
+              placeholder="Search email, account id, scope or access"
               aria-label="Search users"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -590,11 +608,13 @@ export function UsersPage({
         )}
         {!loading && filtered.length === 0 && (
           <div className="rounded-panel border border-dashed border-rule-enamel px-4 py-6">
-            <div className="font-semibold text-ink-1">No matching users</div>
+            <div className="font-semibold text-ink-1">
+              {query.trim() ? "No matching users" : "This directory is empty"}
+            </div>
             <p className="mt-1.5 text-md text-ink-2">
               {directory.length === 0
-                ? "This directory is empty — nobody has been invited yet."
-                : "Try a different email, scope or organization."}
+                ? "Nobody has been invited yet. Invite someone to create the first account."
+                : `Nothing here matches “${query.trim()}”. The search covers the email, the account id, the scope, the organization, the granted actions and the status.`}
             </p>
           </div>
         )}
