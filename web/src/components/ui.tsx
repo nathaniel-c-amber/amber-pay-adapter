@@ -95,6 +95,12 @@ export const LABEL = "text-micro leading-snug uppercase tracking-label";
 
   `field-autofill` is a real hook in `tailwind.css` (@layer base): it overrides the
   browser's autofill wash, which paints a light background on a dark field.
+
+  `placeholder:text-ink-4` is the PLACEHOLDER TOKEN for every field in the console,
+  and `ink-4` is the dimmest step of the ink ramp (ink-1 is the input's own text
+  colour). Two search boxes had it on `ink-3`, which is one step BRIGHTER — so a
+  placeholder read as almost-content, and a placeholder must read as less than
+  content by definition. Anything that dims its placeholder uses ink-4.
 */
 export const INPUT =
   "field-autofill w-full rounded-panel border border-rule-enamel bg-midnight-2 px-3 py-2 text-md text-ink-1 placeholder:text-ink-4 transition-colors hover:border-ink-4 focus-visible:border-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus aria-[invalid=true]:border-text-suspended";
@@ -490,7 +496,7 @@ export function SearchBox({
       <IconSearch />
       <input
         type="search"
-        className="border-none bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-3"
+        className="border-none bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-4"
         placeholder={placeholder}
         aria-label={label}
         value={value}

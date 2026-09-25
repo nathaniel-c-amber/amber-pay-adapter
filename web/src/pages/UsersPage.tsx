@@ -511,7 +511,7 @@ export function UsersPage({
             <IconSearch />
             <input
               type="search"
-              className="border-0 bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-3"
+              className="border-0 bg-transparent text-sm text-ink-1 outline-none placeholder:text-ink-4"
               placeholder="Search email, account id, scope or access"
               aria-label="Search users"
               value={query}
