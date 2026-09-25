@@ -57,6 +57,20 @@ export interface PublicAdaptorSettings {
   realmId: string | null;
   baseUrl: string | null;
   credentials: CredentialPresence;
+  /**
+   * Can the provider-authorization step actually run?
+   *
+   * True when BOTH the client id and the client secret are stored. `credentials
+   * .configured` answers "is there any stored credential at all", which is not the
+   * question the setup screen has: it needs to know whether the two values the
+   * authorization URL is built from are present, or it would offer a button that
+   * fails with a 400 whose cause is invisible from the browser.
+   *
+   * It discloses PRESENCE of named fields and nothing about their values — the same
+   * category of information as `lastFour`, and the reason the browser never has to
+   * be told a secret to decide whether it can ask the server to start a flow.
+   */
+  canAuthorize: boolean;
 }
 
 export interface PublicDeploymentSettings {
@@ -110,6 +124,22 @@ function presence(sealed: Buffer | null): CredentialPresence {
   }
 }
 
+/** Are both application credentials present, so a grant can be started? */
+function canAuthorize(sealed: Buffer | null): boolean {
+  if (!sealed) return false;
+  try {
+    const fields = JSON.parse(openSecret(sealed)) as Record<string, unknown>;
+    return (
+      typeof fields['clientId'] === 'string' &&
+      fields['clientId'].trim().length > 0 &&
+      typeof fields['clientSecret'] === 'string' &&
+      fields['clientSecret'].trim().length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 function toPublic(
   settings: DeploymentSettings,
   organizationId: string,
@@ -127,6 +157,7 @@ function toPublic(
       realmId: settings.adaptorRealmId,
       baseUrl: settings.adaptorBaseUrl,
       credentials: presence(settings.adaptorCredentials),
+      canAuthorize: canAuthorize(settings.adaptorCredentials),
     },
     syncInterval: settings.syncInterval,
     alertTarget: settings.alertTarget,
@@ -201,8 +232,11 @@ export interface AdaptorUpdate {
   id?: ConfiguredAdaptorId | null;
   realmId?: string | null;
   baseUrl?: string | null;
-  /** Plaintext in, sealed at rest as JSON. `null` clears it. */
-  credentials?: Record<string, string> | null;
+  /**
+   * MERGED into the stored set, not written over it. A `null` value clears that one
+   * field; a blank or absent value leaves it alone. See `mergeCredentials`.
+   */
+  credentials?: Record<string, string | null> | null;
 }
 
 export interface PreferencesUpdate {
@@ -274,11 +308,30 @@ export class SettingsService {
       changed.push('adaptor.baseUrl');
     }
     if (update.credentials !== undefined) {
-      if (update.credentials !== null) assertStorable();
-      patch.adaptorCredentials =
-        update.credentials === null
-          ? null
-          : sealSecret(JSON.stringify(assertNonEmptyCredentials(update.credentials)));
+      if (update.credentials === null) {
+        patch.adaptorCredentials = null;
+      } else {
+        assertStorable();
+        const current = await this.repository.get();
+        patch.adaptorCredentials = await mergeCredentials(
+          current.adaptorCredentials,
+          update.credentials,
+        );
+        /*
+          Refuse to leave a credential set that is present but EMPTY. Doing so would
+          report `configured: true` with nothing behind it — exactly the ambiguous
+          state the presence model exists to prevent. Clearing the whole set is still
+          possible, and is spelled `credentials: null`.
+        */
+        const remaining = Object.keys(
+          JSON.parse(openSecret(patch.adaptorCredentials)) as Record<string, string>,
+        );
+        if (remaining.length === 0) {
+          throw new ValidationError(
+            'adaptor.credentials would be left empty; clear them explicitly instead',
+          );
+        }
+      }
       changed.push('adaptor.credentials');
     }
 
@@ -435,12 +488,62 @@ function assertNonEmptySecret(value: string, field: string): string {
  * while carrying nothing, which is worse than no credential: the console reports
  * a connection that was never actually given anything to connect with.
  */
-function assertNonEmptyCredentials(credentials: Record<string, string>): Record<string, string> {
-  const entries = Object.entries(credentials).filter(([, value]) => value.trim().length > 0);
-  if (entries.length === 0) {
-    throw new ValidationError('adaptor.credentials must contain at least one value');
+/**
+ * Merge an incoming credential map into what is already stored.
+ *
+ * WHY THIS EXISTS — a silent data-loss bug. The credential blob was written as a
+ * whole-value replace, while every form in the console sends only the fields the
+ * operator actually filled in (the rest are blank, because a stored secret is
+ * write-only and cannot be pre-filled). So saving ONE field deleted the others: a
+ * form that asked for six values and had three already stored would, on re-entry,
+ * destroy the client id the operator could not see and therefore could not retype.
+ * The write "succeeded" and the connection broke afterwards, which is the worst
+ * shape a bug can take.
+ *
+ * THE RULE, which is the SAME one `withoutUndefined` already applies to every
+ * other column (see `models/deploymentSettings.ts`):
+ *   - a key present with a NON-EMPTY value replaces that one field;
+ *   - a key present with `null` clears that one field;
+ *   - a key absent, or present with an empty string, leaves that field alone.
+ *
+ * An empty string therefore means "the operator did not fill this in", never
+ * "erase this". Erasing is possible but must be said explicitly, which is what
+ * `null` is for.
+ */
+async function mergeCredentials(
+  stored: Buffer | null,
+  incoming: Record<string, string | null>,
+): Promise<Buffer> {
+  let existing: Record<string, string> = {};
+  if (stored) {
+    try {
+      existing = JSON.parse(openSecret(stored)) as Record<string, string>;
+    } catch {
+      /*
+        An unreadable or corrupt stored blob is treated as empty rather than fatal.
+        The merge is an operator saving a correction, and refusing to let them store a
+        new value because the old one is undecryptable would be a worse failure than
+        starting the set over. The unreadable state is still reported by the settings
+        read, which is where an operator can see it.
+      */
+      existing = {};
+    }
   }
-  return Object.fromEntries(entries);
+
+  const merged: Record<string, string> = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === null) {
+      delete merged[key];
+      continue;
+    }
+    const trimmed = value.trim();
+    // Blank means "not filled in", so the stored value survives.
+    if (trimmed.length > 0) {
+      merged[key] = trimmed;
+    }
+  }
+
+  return sealSecret(JSON.stringify(merged));
 }
 
 /** Shared service instance, backed by the process repository container. */

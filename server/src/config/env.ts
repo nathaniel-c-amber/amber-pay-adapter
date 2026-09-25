@@ -174,12 +174,44 @@ const envSchema = z.object({
   QUICKBOOKS_CLIENT_SECRET: z.string().optional(),
   QUICKBOOKS_BASE_URL: z.string().url().optional(),
   QUICKBOOKS_REALM_ID: z.string().optional(),
-  // A bearer token is what actually authorizes a call. Client id/secret alone
-  // cannot mint one — QuickBooks requires a user-authorized OAuth grant.
-  // Provide an access token directly (short-lived, ~1h), or a refresh token for
-  // the adaptor to exchange at connect time and again when the token expires.
+
+  /*
+    TRANSITIONAL — deprecated, and no longer offered by the setup wizard.
+
+    A bearer token is what actually authorizes a call; a client id and secret alone
+    cannot mint one, because a grant requires a human to consent. The wizard now
+    obtains that grant in a browser and keeps the resulting refresh token, so nobody
+    has to paste either of these.
+
+    THEY REMAIN BECAUSE `credentials.provider.ts` still falls back to the
+    environment for a deployment configured entirely from `.env`, and removing them
+    would break every existing install on upgrade — a worse failure than two sources
+    for a while. Delete this pair, and the fallback branch with it, once no install
+    is configured this way any more.
+  */
   QUICKBOOKS_ACCESS_TOKEN: z.string().optional(),
   QUICKBOOKS_REFRESH_TOKEN: z.string().optional(),
+
+  /*
+    Which Intuit environment the deployment talks to. EXPLICIT rather than inferred
+    from the base URL, because the two environments are separate tenants with
+    separate apps and separate companies: a sandbox token is valid at
+    sandbox-quickbooks and produces a 401 at the production API, which reads as
+    "the credentials are wrong" when they are perfectly valid. Naming the
+    environment is what makes the wizard able to say which one it used.
+  */
+  QUICKBOOKS_ENVIRONMENT: z.preprocess(blankAsAbsent, z.enum(['sandbox', 'production']).default('production')),
+  /*
+    Where Intuit sends the browser back after consent. Defaults to
+    `${APP_BASE_URL}/api/v1/settings/adaptor/callback` when unset, which is right
+    for a one-deployment-per-organization install: the redirect URI is a property of
+    the deployment's public address, not of the operator's machine.
+
+    IT MUST BE REGISTERED with the Intuit app, and Intuit requires https except
+    for `localhost`, which is permitted in the sandbox. That is the single most
+    likely reason a connect attempt appears to fail with no error anywhere.
+  */
+  QUICKBOOKS_REDIRECT_URI: z.string().url().optional(),
 
   // Sage
   SAGE_CLIENT_ID: z.string().optional(),

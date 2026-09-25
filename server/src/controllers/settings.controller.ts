@@ -2,12 +2,23 @@ import { z } from 'zod';
 import type { RequestHandler } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { UnauthorizedError, ValidationError } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
+import { env } from '../config/env.js';
 import { verifyAdaptorConnection } from '../services/settings/verify.service.js';
 import { syncConfiguredAdaptor } from '../services/adaptors/activeAdaptor.service.js';
 import { adaptorRegistry as defaultAdaptorRegistry } from '../services/adaptors/registry.js';
+import { httpTransport } from '../services/adaptors/httpTransport.js';
+import {
+  buildAuthorizationUrl,
+  exchangeAuthorizationCode,
+  newNonce,
+  readRealmId,
+  redirectUri,
+} from '../services/adaptors/intuitOAuth.service.js';
+import { issueOAuthState, verifyOAuthState } from '../utils/oauthState.js';
 import type { SettingsService } from '../services/settings/settings.service.js';
 import type { AdaptorRegistry } from '../services/adaptors/registry.js';
-import type { AdaptorCredentials } from '../types/adaptor.js';
+import type { AdaptorCredentials, AdaptorTransport } from '../types/adaptor.js';
 import type { AdaptorVerification } from '../services/settings/verify.service.js';
 
 /**
@@ -31,7 +42,11 @@ const adaptorBodySchema = z
     id: z.enum(['quickbooks', 'sage']).nullable().optional(),
     realmId: z.string().min(1).nullable().optional(),
     baseUrl: z.string().min(1).nullable().optional(),
-    credentials: z.record(z.string()).nullable().optional(),
+    /**
+     * MERGED, not replaced. `null` clears one field, a blank string is treated by
+     * the service as "not filled in", and an absent key changes nothing.
+     */
+    credentials: z.record(z.string().nullable()).nullable().optional(),
   })
   .strict();
 
@@ -66,6 +81,11 @@ export interface SettingsControllerDeps {
   /** Test seams: the registry the throwaway instance is built from. */
   adaptorRegistry?: AdaptorRegistry;
   verifyAdaptor?: typeof verifyAdaptorConnection;
+  /** Test seams for the Intuit connect flow. */
+  httpTransport?: AdaptorTransport;
+  newNonce?: () => string;
+  buildUrl?: typeof buildAuthorizationUrl;
+  exchangeCode?: typeof exchangeAuthorizationCode;
 }
 
 export interface SettingsController {
@@ -81,6 +101,17 @@ export interface SettingsController {
   verifyAdaptor: RequestHandler;
   /** POST /api/v1/settings/complete — stamps the first-run flag, idempotent. */
   complete: RequestHandler;
+  /**
+   * GET /api/v1/settings/adaptor/connect — 302 to Intuit for consent.
+   * Requires a session, because it reads the stored client credentials.
+   */
+  beginConnect: RequestHandler;
+  /**
+   * GET /api/v1/settings/adaptor/callback — Intuit's redirect target.
+   * NO session: the provider redirects the browser, so there is no bearer token
+   * to present. The signed `state` is the entire authorisation.
+   */
+  connectCallback: RequestHandler;
 }
 
 /**
@@ -235,6 +266,125 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
 
     complete: asyncHandler(async (_req, res) => {
       res.status(200).json({ settings: await deps.settingsService.complete() });
+    }),
+
+    /**
+     * Send the operator to Intuit to log in and consent.
+     *
+     * A 302 rather than a JSON body: the next hop is a human at a provider's login
+     * page, and a browser cannot follow a URL that is buried in a response. The
+     * `state` is minted here and is the only thing tying the callback back to this
+     * attempt.
+     */
+    beginConnect: asyncHandler(async (_req, res) => {
+      const stored = await deps.settingsService.resolveCredentials();
+      const clientId = stored.adaptor?.fields['clientId'];
+      const clientSecret = stored.adaptor?.fields['clientSecret'];
+      if (!clientId || !clientSecret) {
+        throw new ValidationError(
+          'Save the QuickBooks client ID and client secret first, then connect.',
+        );
+      }
+
+      const buildUrl = deps.buildUrl ?? buildAuthorizationUrl;
+      const nonce = (deps.newNonce ?? newNonce)();
+      const state = issueOAuthState('quickbooks', nonce);
+
+      res.redirect(302, buildUrl({
+        clientId,
+        redirectUri: redirectUri(),
+        state,
+      }));
+    }),
+
+    /**
+     * Intuit's redirect target.
+     *
+     * THE ORDER OF OPERATIONS IS THE SECURITY PROPERTY. The state is verified
+     * BEFORE the authorization code is even looked at, and before any credential is
+     * read. A callback with a forged or missing state must not be able to make this
+     * process exchange anything, store anything, or reveal whether a grant exists —
+     * so the state check happens first and returns on failure, and the only thing
+     * the operator sees either way is the same generic message.
+     *
+     * On success the browser is redirected to the console with a `connected`
+     * marker and NO token material in the URL. A token in a redirect URL lands in
+     * browser history, in `Referer` headers on the next navigation, and in any
+     * proxy log along the way.
+     */
+    connectCallback: asyncHandler(async (req, res) => {
+      const rawState = typeof req.query['state'] === 'string' ? req.query['state'] : '';
+      const rawCode = typeof req.query['code'] === 'string' ? req.query['code'] : '';
+      const realmId = readRealmId(req.query['realmId']);
+
+      const deny = (reason: string) =>
+        res.redirect(302, `${env.APP_BASE_URL.replace(/\/+$/, '')}/#/onboarding?connect=error&reason=${encodeURIComponent(reason)}`);
+
+      // 1. State FIRST. Nothing else runs until it passes.
+      try {
+        verifyOAuthState(rawState, 'quickbooks');
+      } catch {
+        return deny('unverified');
+      }
+
+      // 2. The provider may also report a refusal in its own way.
+      if (typeof req.query['error'] === 'string') {
+        return deny('declined');
+      }
+      if (!rawCode) {
+        return deny('no_code');
+      }
+
+      const stored = await deps.settingsService.resolveCredentials();
+      const clientId = stored.adaptor?.fields['clientId'];
+      const clientSecret = stored.adaptor?.fields['clientSecret'];
+      if (!clientId || !clientSecret) {
+        return deny('no_credentials');
+      }
+
+      const exchange = deps.exchangeCode ?? exchangeAuthorizationCode;
+      // Declared out here so the success redirect can name the company it was
+      // granted for; a redirect that cannot say which company was authorized is
+      // asking the operator to take the result on trust.
+      let grantedRealm: string | null = null;
+      try {
+        const grant = await exchange(
+          deps.httpTransport ?? httpTransport,
+          { code: rawCode, realmId, clientId, clientSecret },
+        );
+        grantedRealm = grant.realmId;
+
+        /*
+          MERGED, not replaced — the operator's existing client id and secret must
+          survive, or the connection that was just established is one restart away
+          from being unable to refresh anything.
+        */
+        await deps.settingsService.updateAdaptor({
+          realmId: grant.realmId,
+          credentials: { refreshToken: grant.refreshToken },
+        });
+        /*
+          NOT stamped here. `updateAdaptor` clears `verifiedAt` because a credential
+          changed, and a grant is not yet proof the company answers: the adaptor is
+          reset and the next probe or push decides, which is what makes the console's
+          "verified" mean verified rather than merely authorized.
+        */
+        const registry = deps.adaptorRegistry ?? defaultAdaptorRegistry;
+        registry.reset('quickbooks');
+        await syncConfiguredAdaptor(registry, deps.settingsService);
+      } catch (err) {
+        // Nothing was written, so the stored configuration is exactly as it was.
+        logger.warn(
+          { organizationId: env.ORGANIZATION_ID, err },
+          'QuickBooks authorization exchange failed',
+        );
+        return deny('exchange_failed');
+      }
+
+      return res.redirect(
+        302,
+        `${env.APP_BASE_URL.replace(/\/+$/, '')}/#/onboarding?connect=connected&realm=${encodeURIComponent(grantedRealm ?? '')}`,
+      );
     }),
   };
 }

@@ -406,6 +406,116 @@ describe('POST /settings/adaptor/verify', () => {
   });
 });
 
+describe('credentials merge, they do not overwrite each other', () => {
+  /*
+    THE DEFECT THIS PINS. The credential blob was written as a whole-value replace,
+    while every console form sends only the fields the operator actually filled in —
+    the rest are blank, because a stored secret is write-only and cannot be
+    pre-filled. So re-entering the form to change ONE value silently DELETED the
+    others, including the client id the operator could not see and so could not
+    retype. The write returned 200 and the connection broke afterwards.
+  */
+  it('preserves stored fields that a partial update did not mention', async () => {
+    const { app, settingsService } = harness();
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({
+        id: 'quickbooks',
+        credentials: { clientId: 'client-one', clientSecret: 'secret-one', refreshToken: 'refresh-one' },
+      });
+
+    // What the wizard sends when an operator retypes only one field.
+    const res = await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ credentials: { refreshToken: 'refresh-two' } });
+    expect(res.status).toBe(200);
+
+    const stored = await settingsService.resolveCredentials();
+    expect(stored.adaptor?.fields).toEqual({
+      clientId: 'client-one',
+      clientSecret: 'secret-one',
+      refreshToken: 'refresh-two',
+    });
+  });
+
+  it('treats a blank string as "not filled in", never as an instruction to erase', async () => {
+    const { app, settingsService } = harness();
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ id: 'quickbooks', credentials: { clientId: 'client-one', clientSecret: 'secret-one' } });
+
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ credentials: { clientId: '', clientSecret: '   ' } });
+
+    const stored = await settingsService.resolveCredentials();
+    // An empty box means the operator did not fill it in. Erasing is possible but
+    // must be said explicitly with `null`, because a form that posts blanks for
+    // untouched fields must never be able to destroy a working credential.
+    expect(stored.adaptor?.fields).toEqual({ clientId: 'client-one', clientSecret: 'secret-one' });
+  });
+
+  it('clears exactly one field when that field is explicitly null', async () => {
+    const { app, settingsService } = harness();
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({
+        id: 'quickbooks',
+        credentials: { clientId: 'client-one', clientSecret: 'secret-one', accessToken: 'stale' },
+      });
+
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ credentials: { accessToken: null } });
+
+    const stored = await settingsService.resolveCredentials();
+    expect(stored.adaptor?.fields).toEqual({ clientId: 'client-one', clientSecret: 'secret-one' });
+  });
+
+  it('refuses to leave a credential set that is present but empty', async () => {
+    const { app, settingsService } = harness();
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ id: 'quickbooks', credentials: { clientId: 'client-one' } });
+
+    const res = await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ credentials: { clientId: null } });
+
+    // `configured: true` with nothing behind it is exactly the ambiguous state the
+    // presence model exists to avoid, so it is refused rather than written.
+    expect(res.status).toBe(400);
+    // …and the stored value is untouched by the failed attempt.
+    expect((await settingsService.resolveCredentials()).adaptor?.fields).toEqual({
+      clientId: 'client-one',
+    });
+  });
+
+  it('still allows clearing the whole set explicitly', async () => {
+    const { app, settingsService } = harness();
+    await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ id: 'quickbooks', credentials: { clientId: 'client-one' } });
+
+    const res = await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ credentials: null });
+
+    expect(res.status).toBe(200);
+    expect((await settingsService.resolveCredentials()).adaptor?.fields ?? null).toBeNull();
+  });
+});
+
 describe('POST /settings/complete', () => {
   it('stamps the first-run flag, and stays put on a second call', async () => {
     const { app, settingsService } = harness();

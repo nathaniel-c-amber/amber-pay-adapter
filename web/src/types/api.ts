@@ -248,6 +248,12 @@ export interface ApiDeploymentSettings {
     realmId: string | null;
     baseUrl: string | null;
     credentials: ApiCredentialPresence;
+    /**
+     * Whether both the client id and client secret are stored, so a provider
+     * authorization can be started. Presence of named fields, never values — the
+     * browser needs this to avoid offering a button the server will refuse.
+     */
+    canAuthorize: boolean;
   };
   syncInterval: string | null;
   alertTarget: string | null;

@@ -235,6 +235,22 @@ export function ConfigPage({
     }
   };
 
+  /**
+   * Start the provider authorization.
+   *
+   * A NAVIGATION, not a fetch: the next hop is a human signing in at the provider.
+   * The server reads the stored client secret when it builds the authorization URL,
+   * which is precisely why this secret is never sent to the browser.
+   *
+   * The provider sends the browser back to the guided setup, which reports the
+   * outcome. It does NOT return here: honouring a caller-supplied return path would
+   * mean reflecting an unvalidated URL into a `Location` header, and the wizard is
+   * the surface that already knows how to read the result.
+   */
+  const startConnect = () => {
+    window.location.assign('/api/v1/settings/adaptor/connect');
+  };
+
   if (mode === "demo" || !token) {
     return (
       <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
@@ -475,8 +491,8 @@ export function ConfigPage({
               doing it from a settings form would leave the deployment pointed at a
               system it has never connected to. */}
           <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">
-            To change the accounting system or replace its credentials, use the guided setup — the
-            choice and its credentials are saved and verified together there.
+            To change the accounting system, use the guided setup — the choice and its credentials
+            are saved and authorized together there.
           </p>
 
           <Can ability={SYSTEM_MANAGE}>
@@ -489,6 +505,30 @@ export function ConfigPage({
               >
                 {verifying ? "Testing…" : "Test connection"}
               </button>
+              {/*
+                THE REPLACE-CREDENTIALS PATH, and the reason this page had a dead end.
+                Before the browser-authorization flow, a deployment whose stored
+                client credentials needed changing could only be fixed by retyping
+                values the console could not show and the operator had not kept a copy
+                of. The app credentials CAN be retyped — they live in the provider's
+                developer console — so this button always has a path behind it.
+              */}
+              {settings.adaptor.id === 'quickbooks' && (
+                <button
+                  type="button"
+                  className={BTN_PRIMARY}
+                  onClick={startConnect}
+                  disabled={!settings.adaptor.canAuthorize || busy !== null}
+                  {...(settings.adaptor.canAuthorize
+                    ? {}
+                    : {
+                        title:
+                          'Save a client ID and client secret first — the authorization URL is built on the server, so the secret is never sent to this browser.',
+                      })}
+                >
+                  Re-authorize with QuickBooks
+                </button>
+              )}
               <a className={LINK_BTN} href="#/onboarding">
                 Guided setup
               </a>

@@ -4,9 +4,14 @@ import { TooManyRequestsError, toHttpError } from '../utils/errors.js';
 import { requireAuth, requirePolicyAnyAction } from '../middleware/auth.middleware.js';
 import { createSettingsController } from '../controllers/settings.controller.js';
 import { settingsService as defaultSettingsService } from '../services/settings/settings.service.js';
+import {
+  buildAuthorizationUrl,
+  exchangeAuthorizationCode,
+} from '../services/adaptors/intuitOAuth.service.js';
 import { env } from '../config/env.js';
 import type { SettingsService } from '../services/settings/settings.service.js';
 import type { AdaptorRegistry } from '../services/adaptors/registry.js';
+import type { AdaptorTransport } from '../types/adaptor.js';
 
 const SETTINGS_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const SETTINGS_MUTATION_RATE_LIMIT_MAX = 30;
@@ -17,6 +22,13 @@ const SETTINGS_MUTATION_RATE_LIMIT_MAX = 30;
   on a settings screen burn a provider's rate limit with retries.
 */
 const SETTINGS_VERIFY_RATE_LIMIT_MAX = 10;
+/*
+  The OAuth callback is UNAUTHENTICATED, so its budget is set on what a stranger
+  could cost us rather than on what an operator needs: it is cheap to call and it
+  reaches a third party when it succeeds. Verification's budget suits it better
+  than the mutation budget, which is sized for a person filling in a form.
+*/
+const SETTINGS_CALLBACK_RATE_LIMIT_MAX = 20;
 
 /** The scope that governs this deployment's own configuration. */
 const SYSTEM_SCOPE = 'system';
@@ -29,6 +41,16 @@ function rateLimitHandler(_req: express.Request, res: express.Response): void {
 export interface SettingsRouteDeps {
   settingsService?: SettingsService;
   adaptorRegistry?: AdaptorRegistry;
+  /**
+   * Outbound transport for the Intuit connect flow. Injectable so the callback can
+   * be tested WITHOUT reaching the provider: a test that calls the real endpoint is
+   * a test that fails for reasons unrelated to the code, and worse, one that
+   * silently depends on the network.
+   */
+  httpTransport?: AdaptorTransport;
+  newNonce?: () => string;
+  buildUrl?: typeof buildAuthorizationUrl;
+  exchangeCode?: typeof exchangeAuthorizationCode;
 }
 
 /**
@@ -50,6 +72,10 @@ export function createSettingsRouter(deps: SettingsRouteDeps = {}): express.Rout
   const controller = createSettingsController({
     settingsService: deps.settingsService ?? defaultSettingsService,
     ...(deps.adaptorRegistry ? { adaptorRegistry: deps.adaptorRegistry } : {}),
+    ...(deps.httpTransport ? { httpTransport: deps.httpTransport } : {}),
+    ...(deps.newNonce ? { newNonce: deps.newNonce } : {}),
+    ...(deps.buildUrl ? { buildUrl: deps.buildUrl } : {}),
+    ...(deps.exchangeCode ? { exchangeCode: deps.exchangeCode } : {}),
   });
   const router = express.Router();
 
@@ -68,6 +94,13 @@ export function createSettingsRouter(deps: SettingsRouteDeps = {}): express.Rout
   const verifyLimiter = rateLimit({
     windowMs: SETTINGS_RATE_LIMIT_WINDOW_MS,
     max: SETTINGS_VERIFY_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
+  });
+  const callbackLimiter = rateLimit({
+    windowMs: SETTINGS_RATE_LIMIT_WINDOW_MS,
+    max: SETTINGS_CALLBACK_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     handler: rateLimitHandler,
@@ -99,6 +132,26 @@ export function createSettingsRouter(deps: SettingsRouteDeps = {}): express.Rout
 
   // POST /api/v1/settings/complete — stamps the first-run flag. Idempotent.
   router.post('/settings/complete', ...mayManage, mutationLimiter, controller.complete);
+
+  /*
+    The Intuit connect flow.
+
+    `beginConnect` reads the STORED client credentials, so it is gated like any
+    other settings read. It answers with a 302 because the next hop is a human at
+    a provider's login page — a browser cannot follow a URL buried in a JSON body.
+
+    `connectCallback` carries NO auth middleware, and that is correct rather than an
+    oversight: Intuit redirects the BROWSER here, so there is no bearer token to
+    present by the time it arrives. Its protection is the signed, short-lived,
+    purpose-bound `state`, verified before the authorization code is even read.
+    Gating it on a session would make it impossible to complete, and gating it on
+    nothing but hope is what the state exists to prevent.
+
+    The callback is metered separately and tightly: it is unauthenticated, so the
+    mutation budget is not the right ceiling for it.
+  */
+  router.get('/settings/adaptor/connect', ...mayManage, controller.beginConnect);
+  router.get('/settings/adaptor/callback', callbackLimiter, controller.connectCallback);
 
   return router;
 }

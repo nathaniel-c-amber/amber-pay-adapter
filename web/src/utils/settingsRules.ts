@@ -97,9 +97,10 @@ export interface CredentialField {
   secret?: boolean;
   /**
    * A member of an either/or group, and the field the group's error is reported on.
-   * QuickBooks needs a client id and secret to identify the app but a TOKEN to
-   * authorize a call, and the adaptor's own error names that distinction — so the
-   * form names it too, before a round trip.
+  /**
+   * A member of an either/or group, and the field the group's error is reported on.
+   * @deprecated Only the transitional env-fallback path still needs this; the
+   * QuickBooks form no longer collects tokens, so nothing in the wizard groups.
    */
   group?: "token";
   optional?: boolean;
@@ -110,10 +111,25 @@ export interface AdaptorChoice {
   label: string;
   blurb: string;
   fields: readonly CredentialField[];
+  /**
+   * True when the operator authorizes this system by signing in at the provider,
+   * rather than by pasting a token.
+   *
+   * WHY THE FORM ASKS FOR SO LITTLE. A client id and secret identify the APP; on
+   * their own they cannot authorize anything, because a grant needs a human to
+   * consent. That consent is a browser round trip which returns a refresh token the
+   * system rotates for as long as it lives — so the operator supplies two values
+   * they keep in their provider's developer console, and never types a token again.
+   *
+   * Which mattered: tokens are write-only once stored, so a deployment whose token
+   * needed replacing could only be fixed by retyping values nobody had kept a copy
+   * of. The operator's two app credentials can be retyped at any time.
+   */
+  browserConnect?: boolean;
 }
 
 export type AccountingValues = Partial<
-  Record<"clientId" | "clientSecret" | "realmId" | "baseUrl" | "accessToken" | "refreshToken", string>
+  Record<"clientId" | "clientSecret" | "baseUrl", string>
 >;
 
 export const ADAPTOR_CHOICES: readonly AdaptorChoice[] = [
@@ -121,27 +137,18 @@ export const ADAPTOR_CHOICES: readonly AdaptorChoice[] = [
     id: "quickbooks",
     label: "QuickBooks Online",
     blurb: "Payments are posted as records in the connected company.",
+    browserConnect: true,
     fields: [
-      { key: "clientId", label: "Client ID" },
-      { key: "clientSecret", label: "Client secret", secret: true },
       {
-        key: "realmId",
-        label: "Company ID",
-        hint: "QuickBooks calls this the realm. It is the company the credentials are scoped to.",
+        key: "clientId",
+        label: "Client ID",
+        hint: "From your Intuit developer app. Identifies the application, not the company.",
       },
       {
-        key: "accessToken",
-        label: "Access token",
+        key: "clientSecret",
+        label: "Client secret",
         secret: true,
-        group: "token",
-        hint: "Valid for about an hour. Provide this or a refresh token, not necessarily both.",
-      },
-      {
-        key: "refreshToken",
-        label: "Refresh token",
-        secret: true,
-        group: "token",
-        hint: "Lets the API keep the access token current by itself.",
+        hint: "Used server-side to exchange the grant for tokens. It never leaves the server.",
       },
       { key: "baseUrl", label: "API base URL", optional: true, hint: "Leave blank unless you use a sandbox." },
     ],
@@ -211,26 +218,30 @@ export function validateAccounting(
   }
 
   const valueOf = (key: keyof AccountingValues): string => (values[key] ?? "").trim();
-  const stored =
-    settings.adaptor.id === id && settings.adaptor.credentials.configured
-      ? "This deployment already has stored credentials for it."
-      : null;
+  const nothingStored = !(settings.adaptor.id === id && settings.adaptor.credentials.configured);
 
+  /*
+    A FIELD IS REQUIRED ONLY WHEN NOTHING IS STORED FOR IT.
+
+    This is the rule that was missing, and it is what made the wizard a dead end.
+    A stored secret is write-only and can never be pre-filled, so demanding it on
+ * every pass asked the operator for a value they had no way to read — the screen
+    was asking for something only the server knew. "Leave it blank to keep the
+    stored value" is the only coherent contract here, and the gateway secret has
+    worked that way since it was written.
+  */
   for (const field of choice.fields) {
     if (field.optional || field.group) continue;
-    if (valueOf(field.key).length === 0) {
-      errors[field.key] = stored ?? `${field.label} is required.`;
+    if (nothingStored && valueOf(field.key).length === 0) {
+      errors[field.key] = `${field.label} is required.`;
     }
   }
 
-  // The either/or group, reported once on its first member.
-  const tokenFields = choice.fields.filter((field) => field.group === "token");
-  if (tokenFields.length > 0 && tokenFields.every((field) => valueOf(field.key).length === 0)) {
-    const first = tokenFields[0]!;
-    errors[first.key] =
-      stored ??
-      "Provide an access token or a refresh token — a client id and secret alone cannot authorize a call.";
-  }
+  /*
+    Everything downstream of consent — the tokens, the company, the grant — comes
+    back from the provider, so none of it is something the operator can be asked for.
+    Only the app credentials are, and only while there are none stored.
+  */
 
   const baseUrl = valueOf("baseUrl");
   if (baseUrl.length > 0) {
@@ -245,6 +256,48 @@ export function validateAccounting(
   }
 
   return errors;
+}
+
+/**
+ * What the connect attempt resulted in, from the `?connect=` marker the provider
+ * callback redirects back with.
+ *
+ * The server puts a REASON code in the URL, not prose, for the same reason it never
+ * puts a token there: a redirect is a place secrets and provider detail leak. The
+ * wording an operator reads is chosen here, where it can be reviewed, rather than
+ * being assembled from whatever the provider happened to send.
+ */
+export const CONNECT_FAILURE_COPY: Record<string, string> = {
+  unverified: "That connection could not be verified, so nothing was saved. Start the connection again.",
+  declined: "Authorization was cancelled at QuickBooks, so nothing was saved.",
+  no_code: "QuickBooks did not return an authorization. Start the connection again.",
+  no_credentials:
+    "This deployment has no client ID and client secret stored, so there is nothing to connect with.",
+  exchange_failed:
+    "QuickBooks rejected the authorization. Check the client ID and client secret belong to the same app, and that the redirect URI is registered with it.",
+  default: "The connection did not complete, so nothing was saved. Start again from this page.",
+};
+
+export function connectOutcomeFromSearch(search: string): {
+  connected: boolean;
+  realm: string | null;
+  message: string | null;
+} {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  const status = params.get('connect');
+  const realm = params.get('realm');
+  if (status === 'connected') {
+    return { connected: true, realm, message: null };
+  }
+  if (status === 'error') {
+    const reason = params.get('reason') ?? 'default';
+    return {
+      connected: false,
+      realm: null,
+      message: CONNECT_FAILURE_COPY[reason] ?? CONNECT_FAILURE_COPY['default']!,
+    };
+  }
+  return { connected: false, realm: null, message: null };
 }
 
 /* ------------------------------------------------------ verification copy */

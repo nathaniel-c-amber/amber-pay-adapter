@@ -41,6 +41,7 @@ import {
   INVITE_PRESETS,
   WIZARD_STEPS,
   adaptorChoice,
+  connectOutcomeFromSearch,
   firstIncompleteStep,
   readingForVerification,
   stepAt,
@@ -97,6 +98,21 @@ export function OnboardingPage({
   const [invitePreset, setInvitePreset] = useState<string>("operator");
   const [invited, setInvited] = useState<Array<{ email: string; link?: string }>>([]);
 
+  /*
+    Coming back from the provider's consent screen.
+ *
+    The server redirects back here with a `?connect=` marker, so the outcome has to
+    be read on ARRIVAL rather than held in component state: the browser left the
+    page entirely, and a useEffect that consumed a flag would have been clobbered by
+    the unmount. The copy is chosen from a reason code rather than from whatever the
+    provider sent, because a redirect URL is somewhere detail leaks.
+  */
+  const [returnFrom, setReturnFrom] = useState<{ connected: boolean; realm: string | null; message: string | null }>({
+    connected: false,
+    realm: null,
+    message: null,
+  });
+
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const seededRef = useRef(false);
@@ -116,8 +132,9 @@ export function OnboardingPage({
         setGateway({ clientId: loaded.gateway.clientId ?? "", webhookSecret: "" });
         setAdaptorId(loaded.adaptor.id);
         setAccounting({
-          realmId: loaded.adaptor.realmId ?? "",
-          baseUrl: loaded.adaptor.baseUrl ?? "",
+          clientId: '',
+          clientSecret: '',
+          baseUrl: loaded.adaptor.baseUrl ?? '',
         });
         setStepId(firstIncompleteStep(loaded));
       })
@@ -135,10 +152,55 @@ export function OnboardingPage({
     headingRef.current?.focus();
   }, [stepId]);
 
+  /*
+    Read the provider's return, once, on arrival.
+
+    The credential fields are re-read here because the callback may have STORED a
+    refresh token and a company: the form was submitted, the browser left, and what
+    comes back is not what was typed. Re-seeding from the server is also what stops
+    the screen claiming a connection that the exchange refused.
+  */
+  useEffect(() => {
+    if (!settings) return;
+    const outcome = connectOutcomeFromSearch(window.location.search);
+    if (!outcome.connected && !outcome.message) return;
+
+    setReturnFrom(outcome);
+    setVerification(null);
+    if (outcome.connected) {
+      setStepId('verify');
+    } else {
+      setStepId('accounting');
+    }
+    // Re-read so a completed connect shows the company and stored credentials.
+    void (async () => {
+      try {
+        setSettings(await getSettings(token));
+      } catch {
+        // The outcome line is already on screen; failing to refresh it is not worth
+        // replacing that with an error.
+      }
+    })();
+    // Strip the marker so a later reload does not replay an outcome that is no
+    // longer true, and so the URL stops carrying a result nobody asked about.
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+  }, [settings, token]);
+
   const furthestReachable = useMemo(() => {
     if (!settings) return 0;
-    return Math.max(stepIndex(firstIncompleteStep(settings)), stepIndex(stepId));
-  }, [settings, stepId]);
+    /*
+      A system that authorizes in the browser cannot reach the test step until the
+      GRANT exists, not merely until the credentials are typed. Letting the stepper
+      skip ahead would offer to test a connection that has never been authorized,
+      which fails with "not authorized" and sends the operator looking for a
+      credential problem they do not have.
+    */
+    const serverAnswer = stepIndex(firstIncompleteStep(settings));
+    if (adaptorId === 'quickbooks' && !settings.adaptor.canAuthorize) {
+      return Math.min(serverAnswer, stepIndex('accounting'));
+    }
+    return Math.max(serverAnswer, stepIndex(stepId));
+  }, [settings, stepId, adaptorId]);
 
   const fail = useCallback((fields: FieldError[], message?: string) => {
     setErrors(fields);
@@ -210,6 +272,18 @@ export function OnboardingPage({
     }
   };
 
+  /**
+   * Hand the browser to QuickBooks.
+   *
+   * A NAVIGATION, not a fetch. The next step is a human signing in at Intuit, and a
+   * 302 from the server carries the state that ties the return to this attempt. The
+   * credentials must already be saved: the server reads them when it builds the
+   * authorization URL, and the client secret must never travel to the browser.
+   */
+  const startConnect = () => {
+    window.location.assign('/api/v1/settings/adaptor/connect');
+  };
+
   const submitAccounting = async () => {
     const invalid = validateAccounting(adaptorId, accounting, settings!);
     const choice = adaptorChoice(adaptorId);
@@ -234,13 +308,28 @@ export function OnboardingPage({
       );
       const next = await updateAdaptorSettings(token, {
         id: adaptorId,
-        realmId: (accounting.realmId ?? "").trim() || null,
         baseUrl: (accounting.baseUrl ?? "").trim() || null,
         credentials: fields,
+        /*
+          `realmId` is DELIBERATELY ABSENT. It is the company the provider named when
+          the grant was made, and it is not a field on this form any more. Sending
+          `null` would clear a company that is already connected every time somebody
+          edited their client secret — the merge semantics on the server exist
+          precisely so that an untouched field is left alone.
+        */
       });
       setSettings(next);
       setVerification(null);
-      goTo("verify");
+      setReturnFrom({ connected: false, realm: null, message: null });
+      /*
+        A system that authorizes in the browser STAYS on this step. Advancing to
+        "test the connection" now would offer to test a connection that does not exist
+        yet — the grant has not happened, and the operator has not even been sent
+        anywhere. The stepper's own advance is what follows a successful return.
+      */
+      if (!choice?.browserConnect) {
+        goTo('verify');
+      }
     } catch (err) {
       fail([], messageOf(err));
     } finally {
@@ -357,6 +446,7 @@ export function OnboardingPage({
 
   const choice = adaptorChoice(adaptorId);
   const reading = verification ? readingForVerification(verification) : null;
+  const savedClientCredentials = Boolean(settings.adaptor.canAuthorize);
 
   return (
     <div className="min-h-dvh bg-midnight">
@@ -404,7 +494,7 @@ export function OnboardingPage({
             know that skipping is legitimate rather than a failure. */}
         {!settings.configured && stepId === "organization" && (
           <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">
-            Already configured from this deployment's environment? Skip setup — that records setup as
+            Already configured from this deployment's environment? <strong>Skip setup</strong> — that records setup as
             done, which is what stops the console offering it again.
           </p>
         )}
@@ -569,7 +659,7 @@ export function OnboardingPage({
                 <p className="m-0 text-sm leading-prose text-ink-3">
                   {settings.adaptor.id === choice.id && settings.adaptor.credentials.configured
                     ? `Credentials for ${choice.label} are already stored. Fill in only what you want to replace.`
-                    : `Enter the ${choice.label} credentials for this deployment.`}
+                    : `Enter the ${choice.label} application credentials for this deployment.`}
                 </p>
                 {choice.fields.map((field) => {
                   const error = errors.find((e) => e.field === field.key)?.message ?? null;
@@ -612,13 +702,70 @@ export function OnboardingPage({
                     </AuthField>
                   );
                 })}
+
+                {/*
+                  THE CONNECT STEP, which replaces a token field.
+
+                  The button is a NAVIGATION and only appears once the application
+                  credentials are SAVED, because the server reads the stored client
+                  secret when it builds the authorization URL — and that secret must
+                  never be sent to a browser to do it. Offering the button first
+                  would produce a 400 whose cause is invisible from this screen.
+                */}
+                {choice.browserConnect && (
+                  <div className="flex flex-col gap-2 border-t border-rule-enamel-soft pt-4">
+                    {savedClientCredentials ? (
+                      <>
+                        <p className="m-0 text-sm leading-prose text-ink-2">
+                          Next, sign in at QuickBooks and approve this application. You are sent to
+                          Intuit, and the connection comes back here when you are done.
+                        </p>
+                        <div>
+                          <button type="button" className={BTN_PRIMARY} onClick={startConnect}>
+                            Connect to QuickBooks
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="m-0 text-sm leading-prose text-ink-3">
+                        Save these credentials first. Connecting reads the client secret on the server,
+                        so it is never sent to this browser.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
+            )}
+
+            {/* The provider's answer, on arrival. Announced, because the person
+                navigated away to a login page and deserves to be told what happened
+                without hunting for it. */}
+            {returnFrom.message && (
+              <p
+                className="m-0 max-w-[62ch] text-sm leading-prose text-text-suspended"
+                role="status"
+              >
+                {returnFrom.message}
+              </p>
             )}
           </Fieldset>
         )}
 
         {stepId === "verify" && (
           <Fieldset>
+            {returnFrom.connected && (
+              <div className="rounded-panel border border-line-green bg-midnight-2 p-4">
+                <p className="m-0 text-md font-semibold text-line-green" role="status">
+                  Authorized
+                </p>
+                <p className="m-0 mt-1 max-w-[62ch] text-sm leading-prose text-ink-2">
+                  {returnFrom.realm
+                    ? `This deployment is authorized to post into company ${returnFrom.realm}. Check that it is the company you meant — a grant is given by whichever account signed in.`
+                    : 'This deployment is authorized. Check the company below before posting anything to it.'}
+                </p>
+              </div>
+            )}
+
             <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
               This is one real request to {choice?.label ?? "the accounting system"}, using the credentials
               stored in the previous step. A failed test is recorded nowhere — it raises no event and no

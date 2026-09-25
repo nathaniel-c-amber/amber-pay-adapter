@@ -109,10 +109,14 @@ describe('SettingsService — write-only secrets', () => {
     expect(settings.gateway.webhookSecret.lastFour).toBeNull();
   });
 
-  it('refuses to store an empty credential set', async () => {
+  it('refuses to store a credential set that would end up empty', async () => {
     const { service } = harness();
+    // Still refused, but the message changed when credentials became a MERGE: it no
+    // longer just says the input was empty (which it was not — the value was blank),
+    // it names the outcome and how to cause it deliberately. A blank field now
+    // means "not filled in", so a set of nothing but blanks resolves to nothing.
     await expect(service.updateAdaptor({ credentials: { clientId: '   ' } })).rejects.toThrow(
-      /at least one value/,
+      /would be left empty; clear them explicitly/,
     );
   });
 });
