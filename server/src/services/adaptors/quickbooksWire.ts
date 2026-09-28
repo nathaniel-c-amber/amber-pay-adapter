@@ -96,10 +96,20 @@ export interface QboPaymentRequest {
   DepositToAccountRef?: { value: string };
 }
 
-/** The upstream id of a created payment. No other field is ever read back. */
+/**
+ * The upstream id of a created payment, and the invoices it was applied to.
+ *
+ * `Line[].LinkedTxn` is read on the IDEMPOTENCY path only — a payment that
+ * already exists is the one place the invoices it settled can be named. On the
+ * create path the invoice is known already, so nothing here needs it.
+ *
+ * No other field is ever read back. In particular not the amounts, which
+ * `QboPaymentLine` and `QboPaymentRequest` exist to write and never to surface.
+ */
 export interface QboPaymentCreated {
   Id: string;
   UnappliedAmt?: number;
+  Line?: QboPaymentLine[];
 }
 
 /* --- query --------------------------------------------------------------- */

@@ -37,14 +37,58 @@ const invoice = (over: Partial<QboInvoice> = {}): QboInvoice => ({
 });
 
 describe('the invoice check', () => {
-  it('asks for this customer, and only what is still owed', async () => {
+  /*
+    ★ THE BALANCE PREDICATE IS NOT SENT, because the provider refuses it.
+    This test used to assert `Balance > 0` appeared in the statement. It does
+    not, and must not: a live QuickBooks company answers that query with HTTP 400
+    "Error parsing query" (verified 2026-09-28, realm 9341457936805547), and
+    `Invoice.Balance` is documented READ ONLY — unlike `Customer.Balance`, which
+    IS filterable, and which is what makes the two look alike in a reference.
+
+    Sending it would have failed every payment at this step, and every test would
+    have stayed green, because they all run against a fake that answers whatever
+    it is asked. So the assertion is on the ABSENCE of the predicate, which is
+    the only thing that could have caught it.
+  */
+  it('asks for this customer, and filters what is still owed itself', async () => {
     const { request, seen } = responder({ QueryResponse: { Invoice: [invoice()] } });
     const found = await findOpenInvoices(request, 'cust-1');
 
     expect(seen[0]?.url).toContain('from Invoice where CustomerRef =');
     expect(seen[0]?.url).toContain("'cust-1'");
-    expect(seen[0]?.url).toContain('Balance > 0');
+    expect(seen[0]?.url).not.toContain('Balance');
     expect(found.invoices).toHaveLength(1);
+  });
+
+  it('drops invoices the customer already settled, without asking upstream to', async () => {
+    const { request, seen } = responder({
+      QueryResponse: {
+        Invoice: [
+          { ...invoice(), Id: 'inv-paid', Balance: 0 },
+          { ...invoice(), Id: 'inv-void', Balance: 0 },
+          { ...invoice(), Id: 'inv-open', Balance: 42 },
+        ],
+      },
+    });
+    const found = await findOpenInvoices(request, 'cust-1');
+
+    // The upstream was never asked to do this, because it cannot.
+    expect(seen[0]?.url).not.toContain('Balance');
+    expect(found.invoices.map((i) => i.Id)).toEqual(['inv-open']);
+  });
+
+  it('does not treat an invoice with no balance as settled', async () => {
+    const { request } = responder({
+      QueryResponse: { Invoice: [{ Id: 'inv-unknown' }] },
+    });
+    const found = await findOpenInvoices(request, 'cust-1');
+
+    /*
+      Dropping it would be the dangerous direction: "no balance" is not "nothing
+      owed", and reading it as settled would report a payment as placed against
+      an invoice whose state we simply do not know.
+    */
+    expect(found.invoices).toHaveLength(0);
   });
 
   it('refuses when the customer has nothing outstanding', () => {

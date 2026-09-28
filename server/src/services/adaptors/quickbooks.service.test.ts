@@ -311,7 +311,11 @@ describe('QuickBooksAdaptor', () => {
   */
   describe('a retry after a lost response', () => {
     it('writes the payment exactly once across both deliveries', async () => {
-      const recorded: { Id: string; PaymentRefNum: string }[] = [];
+      const recorded: {
+        Id: string;
+        PaymentRefNum: string;
+        Line: { Amount: number; LinkedTxn: { TxnId: string; TxnType: string }[] }[];
+      }[] = [];
       let balance = 250;
       let loseTheFirstResponse = true;
 
@@ -334,8 +338,8 @@ describe('QuickBooksAdaptor', () => {
           return { status: 200, body: { QueryResponse: { Payment: recorded } } };
         }
         if (String(url).endsWith('/payment')) {
-          const sent = body as { PaymentRefNum: string };
-          recorded.push({ Id: 'pay-1', PaymentRefNum: sent.PaymentRefNum });
+          const sent = body as { PaymentRefNum: string; Line: { Amount: number; LinkedTxn: { TxnId: string; TxnType: string }[] }[] };
+          recorded.push({ Id: 'pay-1', PaymentRefNum: sent.PaymentRefNum, Line: sent.Line });
           balance = 0;
           if (loseTheFirstResponse) {
             /*
@@ -345,7 +349,7 @@ describe('QuickBooksAdaptor', () => {
             loseTheFirstResponse = false;
             throw new Error('socket hang up');
           }
-          return { status: 200, body: { Payment: { Id: 'pay-1' } } };
+          return { status: 200, body: { Payment: { Id: 'pay-1', Line: sent.Line } } };
         }
         if (String(url).includes('/invoice/')) {
           return { status: 200, body: { Invoice: { Id: 'inv-1', Balance: balance } } };
@@ -363,6 +367,13 @@ describe('QuickBooksAdaptor', () => {
       const result = await adaptor.pushCompletedPayment(payment, match);
       expect(result.alreadyApplied).toBe(true);
       expect(result.verified).toBe(true);
+      /*
+        And it must still KNOW which invoice the first delivery settled, read from
+        the payment's own linked transaction. That is the whole reason the probe
+        runs before the outstanding-invoice lookup: the invoice is settled now, so
+        it cannot be found again by asking what is owed.
+      */
+      expect(result.invoiceRef).toBe('inv-1');
 
       // THE ASSERTION. One upstream write across two deliveries, and the one
       // that happened is the first — not a second payment against the same
@@ -382,7 +393,15 @@ describe('QuickBooksAdaptor', () => {
       const { transport } = quickBooks({
         customers: oneCustomer,
         invoices: oneOpenInvoice,
-        existingPayments: [{ Id: 'pay-1', PaymentRefNum: payment.id }],
+        existingPayments: [
+          {
+            Id: 'pay-1',
+            PaymentRefNum: payment.id,
+            Line: [
+              { Amount: 250, LinkedTxn: [{ TxnId: 'inv-1', TxnType: 'Invoice' }] },
+            ],
+          },
+        ],
         balanceAfterPayment: 0,
       });
       const adaptor = new QuickBooksAdaptor(transport);
@@ -399,6 +418,27 @@ describe('QuickBooksAdaptor', () => {
         transport.mock.calls.filter((call) => String(call[1]).endsWith('/payment')),
       ).toHaveLength(0);
     });
+
+    it('does not claim an invoice when the earlier payment named none', async () => {
+      /*
+        A payment recorded without a linked invoice — a credit sitting unapplied,
+        say. There is then nothing to verify, and saying so is the point: a
+        `verified: true` here would be asserting a re-read that never happened.
+      */
+      const { transport } = quickBooks({
+        customers: oneCustomer,
+        invoices: oneOpenInvoice,
+        existingPayments: [{ Id: 'pay-1', PaymentRefNum: payment.id }],
+        balanceAfterPayment: 0,
+      });
+      const adaptor = new QuickBooksAdaptor(transport);
+      await adaptor.connect(credentials);
+
+      const result = await adaptor.pushCompletedPayment(payment, match);
+      expect(result.alreadyApplied).toBe(true);
+      expect(result.invoiceRef).toBeNull();
+      expect(result.verified).toBe(false);
+    });
   });
 
   it('healthCheck returns ok:true on 2xx', async () => {
@@ -408,6 +448,92 @@ describe('QuickBooksAdaptor', () => {
     const result = await adaptor.healthCheck();
     expect(result.ok).toBe(true);
     expect(typeof result.latencyMs).toBe('number');
+  });
+
+  /*
+    ★ THE WRITE PATH SENT NO CONTENT TYPE, and this is the test that should have
+    existed. The payment write went out with a JSON body and no `Content-Type`,
+    and the company answered
+
+      400 — "Operation Cannot consume content type is not supported."
+
+    (verified 2026-09-28 against realm 9341457936805547). Every read succeeded —
+    a GET has no body — so the connection probed healthy, the credentials
+    verified, and the console reported a working integration right up until the
+    first payment was placed. No test caught it because every adaptor test
+    injects a transport, and the fault is in a header this adaptor omits rather
+    than in anything the fake can be asked about.
+
+    So the assertion is on the HEADERS the transport was handed, which is the only
+    place the omission was ever observable.
+  */
+  describe('the content type of a write', () => {
+    it('declares JSON on a request that carries a body', async () => {
+      /*
+        The real payment write, not a health check — a GET has no body, so
+        asserting a content type there would pass for the wrong reason.
+
+        Typed as a 4-argument mock so the HEADERS are reachable: the injected
+        transport receives `(method, url, body, headers)`, and the omission being
+        pinned lives entirely in the fourth argument. A three-parameter fake would
+        make this assertion a compile error rather than a test.
+      */
+      const transport = jest.fn(
+        async (
+          _method: string,
+          url: string,
+          _body?: unknown,
+          _headers?: Record<string, string>,
+        ) => {
+          // Decoded, as the shared harness does — the raw URL carries
+          // `%20from%20Customer`, so matching on 'from Customer' without
+          // decoding silently falls through to the catch-all.
+          const statement = decodeURIComponent(
+            String(url).split('query=')[1]?.split('&')[0] ?? '',
+          );
+          if (statement.includes('from Customer')) {
+            return { status: 200, body: { QueryResponse: { Customer: oneCustomer } } };
+          }
+          if (statement.includes('from Invoice')) {
+            return { status: 200, body: { QueryResponse: { Invoice: oneOpenInvoice } } };
+          }
+          if (statement.includes('from Payment')) {
+            return { status: 200, body: { QueryResponse: { Payment: [] } } };
+          }
+          if (String(url).endsWith('/payment')) {
+            return { status: 200, body: { Payment: { Id: 'pay-1' } } };
+          }
+          return { status: 200, body: { Invoice: { Id: 'inv-1', Balance: 0 } } };
+        },
+      );
+      const adaptor = new QuickBooksAdaptor(transport);
+      await adaptor.connect(credentials);
+      await adaptor.pushCompletedPayment(payment, match);
+
+      const write = transport.mock.calls.find((call) => String(call[1]).endsWith('/payment'));
+      expect(write).toBeDefined();
+      expect(write?.[3]?.['Content-Type']).toBe('application/json');
+      // And the credential still rides along.
+      expect(write?.[3]?.['Authorization']).toBe('Bearer test-qb-access-token');
+    });
+
+    it('sends no content type on a read, which has no body to describe', async () => {
+      const transport = jest.fn(
+        async (
+          _method: string,
+          _url: string,
+          _body?: unknown,
+          _headers?: Record<string, string>,
+        ) => ({ status: 200, body: {} }),
+      );
+      const adaptor = new QuickBooksAdaptor(transport);
+      await adaptor.connect(credentials);
+      await adaptor.healthCheck();
+
+      const headers = transport.mock.calls[0]?.[3];
+      expect(headers?.['Content-Type']).toBeUndefined();
+      expect(headers?.['Authorization']).toBe('Bearer test-qb-access-token');
+    });
   });
 
   it('healthCheck returns ok:false + message on non-2xx', async () => {

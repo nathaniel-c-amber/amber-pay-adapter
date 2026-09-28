@@ -87,13 +87,43 @@ export async function findOpenInvoices(
   request: QboRequest,
   customerId: string,
 ): Promise<{ invoices: QboInvoice[]; calls: number }> {
+  /*
+    ★ THE BALANCE IS FILTERED IN MEMORY, because the provider cannot do it.
+
+    This used to send `where CustomerRef = '…' and Balance > 0`, on the belief
+    that `Balance` was a filterable field. It is not. A live company answers
+    that query with HTTP 400 "Error parsing query" (verified 2026-09-28 against
+    realm 9341457936805547), and the provider's own reference lists Invoice
+    `Balance` as READ ONLY rather than filterable — a distinction the Customer
+    object, whose `Balance` IS filterable, invites you to miss.
+
+    The effect would have been total and silent in the worst way: every payment
+    failing at the invoice check with an upstream parse error, and nothing in
+    the unit tests to notice, because they assert against a fake that answers
+    whatever it is asked. The `CustomerRef` half of the filter is genuine and
+    stays; the balance is then dropped from the rows.
+  */
   const response = await request(
-    queryPath(
-      `select * from Invoice where CustomerRef = ${sqlLiteral(customerId)} and Balance > 0`,
-    ),
+    queryPath(`select * from Invoice where CustomerRef = ${sqlLiteral(customerId)}`),
   );
   assertQboOk(response, 'QuickBooks invoice lookup');
-  return { invoices: queryRows<QboInvoice>(response.body, 'Invoice'), calls: 1 };
+  const all = queryRows<QboInvoice>(response.body, 'Invoice');
+  return {
+    invoices: all.filter((invoice) => isOutstanding(invoice)),
+    calls: 1,
+  };
+}
+
+/**
+ * Is this invoice still owed?
+ *
+ * A voided invoice has no balance, a paid one is zero, an overdue one is still
+ * positive — so "still owed" is a positive balance. The value is required: an
+ * invoice returned without one cannot be judged, and treating a missing balance
+ * as zero would silently declare it paid.
+ */
+function isOutstanding(invoice: QboInvoice): boolean {
+  return typeof invoice.Balance === 'number' && invoice.Balance > 0;
 }
 
 /**
@@ -142,26 +172,38 @@ function compareNullable(a: string | undefined, b: string | undefined): number {
 /* --- 2. IDEMPOTENCY ------------------------------------------------------ */
 
 /**
- * Has a payment for this reference already been recorded?
+ * Has a payment for this reference already been recorded, and against which
+ * invoices?
  *
- * The payment's `PaymentRefNum` is the gateway's transaction id, a field
- * QuickBooks documents as filterable, so this is a single indexed query rather
- * than a scan. A hit is treated as SUCCESS, not as an error: the money moved,
- * and a redelivery of the same webhook is a fact about the gateway, not a
- * fault to raise.
+ * The payment's own `Line[].LinkedTxn` names every invoice it was applied to, so
+ * a retry can be VERIFIED rather than merely recognised: the second delivery
+ * re-reads the very invoice the first one named, instead of guessing which of
+ * the customer's invoices it was. That matters because by the time a retry
+ * arrives the invoice is settled, and a settled invoice is indistinguishable
+ * from any other settled one.
+ *
+ * A hit is treated as SUCCESS, not as an error: the money moved, and a
+ * redelivery of the same webhook is a fact about the gateway, not a fault.
  */
 export async function findPaymentByReference(
   request: QboRequest,
   reference: string,
-): Promise<{ found: boolean; calls: number }> {
+): Promise<{ found: boolean; invoiceIds: string[]; calls: number }> {
   const response = await request(
     queryPath(`select * from Payment where PaymentRefNum = ${sqlLiteral(reference)}`),
   );
   assertQboOk(response, 'QuickBooks payment lookup');
-  return {
-    found: queryRows<QboPaymentCreated>(response.body, 'Payment').length > 0,
-    calls: 1,
-  };
+  const payments = queryRows<QboPaymentCreated>(response.body, 'Payment');
+
+  const invoiceIds: string[] = [];
+  for (const payment of payments) {
+    for (const line of payment.Line ?? []) {
+      for (const linked of line.LinkedTxn ?? []) {
+        if (linked.TxnType === 'Invoice' && linked.TxnId) invoiceIds.push(linked.TxnId);
+      }
+    }
+  }
+  return { found: payments.length > 0, invoiceIds, calls: 1 };
 }
 
 /* --- 3. APPLY ------------------------------------------------------------ */

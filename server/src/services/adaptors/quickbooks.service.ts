@@ -176,30 +176,49 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
       );
     }
 
-    const { invoices } = await findOpenInvoices(request, lookup.customer.id);
-    const invoice = selectInvoiceToPay(invoices);
-
     /*
-      BEFORE THE WRITE, and against the upstream rather than our own dedup
-      table. A retry arrives here after a release, so the local claim is gone
-      by construction — only the upstream still knows this reference was paid.
+      THE ALREADY-DONE CHECK COMES BEFORE THE INVOICE LOOKUP, and the order is
+      not incidental.
+
+      It used to come after, which was wrong in a way only a real run exposed.
+      By the time a retry arrives the first attempt's payment has SETTLED the
+      invoice, so "the customer's outstanding invoices" is empty — and selecting
+      one threw `invoice-not-found` BEFORE the idempotency probe was ever
+      reached. A payment that had been applied exactly once, correctly, was
+      reported as a failure: a spurious critical finding, a webhook stuck
+      retrying, and an operator told to chase a payment that was already paid.
+
+      The customer is still resolved first, because a reference that matches
+      nobody must not be quietly treated as already done.
     */
     const seen = await findPaymentByReference(request, payment.id);
     if (seen.found) {
-      const settled = await verifyInvoiceCleared(request, invoice.Id);
+      /*
+        Verify the invoice the ORIGINAL payment named, read from that payment's
+        own linked transactions. Not the outstanding-invoice lookup: that
+        invoice is settled now, and a settled invoice cannot be told apart from
+        any other settled one.
+      */
+      const alreadyPaid = seen.invoiceIds[0] ?? null;
+      const settled = alreadyPaid
+        ? await verifyInvoiceCleared(request, alreadyPaid)
+        : { verified: false, calls: 0 };
       logger.info(
-        { adaptor: this.id, invoice: invoice.Id, ms: Date.now() - started },
+        { adaptor: this.id, invoice: alreadyPaid, ms: Date.now() - started },
         'Payment reference already recorded upstream; nothing written',
       );
       return {
         externalRef: payment.transactionId,
         at: new Date().toISOString(),
-        invoiceRef: invoice.Id,
+        invoiceRef: alreadyPaid,
         matchedBy: match.strategy,
         alreadyApplied: true,
         verified: settled.verified,
       };
     }
+
+    const { invoices } = await findOpenInvoices(request, lookup.customer.id);
+    const invoice = selectInvoiceToPay(invoices);
 
     const created = await createPaymentForInvoice(request, invoice, {
       customerId: lookup.customer.id,
@@ -361,9 +380,29 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     const base = (this.credentials.baseUrl ?? '').replace(/\/+$/, '');
     const realm = this.credentials.realmId ?? '';
     const fullUrl = `${base}/v3/company/${realm}${path}`;
-    const headers: Record<string, string> = this.oauthToken
-      ? { Authorization: `Bearer ${this.oauthToken}` }
-      : {};
+    const headers: Record<string, string> = {};
+    if (this.oauthToken) {
+      headers['Authorization'] = `Bearer ${this.oauthToken}`;
+    }
+    /*
+      ★ THE WRITE PATH NEVER SET A CONTENT TYPE, so it could never have worked.
+
+      `httpTransport` picks its body encoding from the caller's `Content-Type`:
+      form-encoding when it says so, JSON otherwise. It JSON-encodes in that
+      branch, but the header is the CALLER's to set — and this one did not, so a
+      payment POST went out with a JSON body and no content type. Every read
+      succeeded (a GET has no body), which is why the connection looked healthy
+      and the probes passed; the first real write came back
+
+        400 — "Operation Cannot consume content type is not supported."
+
+      Verified against the live company 2026-09-28. There is no unit test that
+      could have caught it: the transport is injected in every adaptor test, and
+      the fault is in the header this method omits.
+    */
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
     return this.transport(method, fullUrl, body, headers);
   }
 }
