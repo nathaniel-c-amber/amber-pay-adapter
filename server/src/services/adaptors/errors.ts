@@ -45,6 +45,51 @@ export class AdaptorSyncError extends AdaptorError {
 }
 
 /**
+ * WHY applying a payment to the ledger did not produce a payment.
+ *
+ * A value rather than a sentence, for the same reason `AdaptorFailureReason` is
+ * one: the failure tracker, the lifecycle event and the console all need to
+ * tell these apart, and none of them can afford to pattern-match an error
+ * message that someone will eventually reword.
+ *
+ * These are OPERATOR problems, not transport problems. An upstream that is
+ * unreachable is `AdaptorConnectionError`; a payment that could not be placed
+ * is this.
+ */
+export type AdaptorApplyFailure =
+  /** The identifier matched no customer at all. */
+  | 'customer-not-found'
+  /** More than one customer matched, so choosing one would be a guess. */
+  | 'customer-ambiguous'
+  /** The customer matched but has nothing outstanding. */
+  | 'invoice-not-found'
+  /** The customer has several open invoices and no rule to pick between them. */
+  | 'invoice-ambiguous'
+  /** The payment was recorded but the invoice did not clear. */
+  | 'invoice-not-cleared'
+  /** A bounded scan ran out of pages before it found a match. */
+  | 'scan-limit-reached';
+
+/**
+ * A payment that could not be applied. Thrown, never returned, so it cannot be
+ * mistaken for success — the processor turns it into a critical finding and
+ * keeps the webhook retryable.
+ *
+ * `matches` is the number of candidates found, for the ambiguous cases. It is a
+ * count and never a name, a reference or a figure, which is what lets it go
+ * straight into an operator-facing message.
+ */
+export class AdaptorApplyError extends AdaptorError {
+  constructor(
+    readonly reason: AdaptorApplyFailure,
+    message: string,
+    readonly matches: number | null = null,
+  ) {
+    super(502, 'ADAPTOR_APPLY_ERROR', message);
+  }
+}
+
+/**
  * Map an upstream HTTP status to the appropriate adaptor error. Used by
  * adaptors when a transport response is non-2xx.
  */

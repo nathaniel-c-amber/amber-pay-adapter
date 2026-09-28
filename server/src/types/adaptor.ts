@@ -34,11 +34,61 @@ export interface SyncResult {
 }
 
 /**
+ * How a completed payment is matched to an accounting customer.
+ *
+ * `displayName` and `customField` are resolved by a single upstream QUERY.
+ * `notes` is NOT: QuickBooks does not mark `Customer.Notes` filterable, so it
+ * can only be matched by paging every customer and comparing in memory. It
+ * works, it costs several rate-limited calls, and the console says so.
+ */
+export type CustomerMatchStrategy = 'displayName' | 'customField' | 'notes';
+
+/** Whether a match must be the whole value or may be a substring. */
+export type CustomerMatchMode = 'exact' | 'contains';
+
+/**
+ * HOW an adaptor resolves a payment to a customer and an invoice.
+ *
+ * Deployment configuration, supplied by the CALLER — an adaptor reads no
+ * environment and no settings row, so the strategy has to arrive as an
+ * argument. Without it there is exactly one strategy, hard-coded in whichever
+ * adaptor is called, and a second deployment cannot use a different one.
+ */
+export interface CustomerMatchConfig {
+  strategy: CustomerMatchStrategy;
+  mode: CustomerMatchMode;
+  /**
+   * The upstream custom field's NAME, required when `strategy` is
+   * `customField`. Names are matched exactly, so this is not case-insensitive
+   * and not a wildcard.
+   */
+  fieldName: string | null;
+  /**
+   * Where received money is deposited. `null` omits the reference, which the
+   * upstream resolves to its undeposited-funds account.
+   */
+  depositAccountId: string | null;
+}
+
+/**
  * Success-shaped push result. On failure the method THROWS `AdaptorError`.
+ *
+ * EVERY field here is safe to put in a log line, an event detail or a failure
+ * title: opaque upstream ids, a strategy name and three booleans. There is
+ * deliberately no field for a name, an amount or a balance — `privacy.test.ts`
+ * checks that, and the adaptor's own request bodies are where money lives.
  */
 export interface PushResult {
   externalRef: string;
   at: string; // ISO 8601
+  /** The upstream invoice the payment was applied to, or null when none. */
+  invoiceRef: string | null;
+  /** Which strategy resolved the customer. `none` means nothing matched. */
+  matchedBy: CustomerMatchStrategy | 'none';
+  /** A prior payment already covered this reference; nothing was written. */
+  alreadyApplied: boolean;
+  /** The post-write re-read confirmed the invoice cleared. */
+  verified: boolean;
 }
 
 /**
@@ -67,11 +117,36 @@ export interface HealthCheckResult {
 /**
  * Minimal, privacy-safe reference to a completed payment that an adaptor
  * consumes. NO amounts, NO PII, NO raw card data.
+ *
+ * THERE IS NO INVOICE ID HERE, and that is the correction this type exists to
+ * make. It used to carry `externalInvoiceId`, which the webhook processor
+ * filled with the GATEWAY's order reference — a value QuickBooks has never
+ * heard of, passed where an upstream transaction id belongs. An adaptor given
+ * it had no way to do anything honest: apply a payment to a transaction that
+ * does not exist, or guess. The invoice is now DISCOVERED, from the customer
+ * the payment identifies.
  */
 export interface PaymentRef {
+  /**
+   * The gateway's transaction id for this payment. It is the pipeline's
+   * dedup key, which makes it the right value for an upstream idempotency
+   * field: it is the one identifier a retry is guaranteed to repeat.
+   */
   id: string;
+  /** The gateway's own stable reference for the payment. */
   transactionId: string;
-  externalInvoiceId: string;
+  /**
+   * The value an adaptor matches an accounting customer on — a student id, a
+   * member number, whatever the deployment configured. It is today the same
+   * string as `transactionId`, because the gateway sends one opaque reference
+   * and the privacy boundary drops everything else. It is a separate field so
+   * that a gateway able to report the identifier separately needs no change
+   * here, and so the two roles cannot be silently conflated.
+   *
+   * Constrained to `OPAQUE_REFERENCE` at the adaptor boundary, because it is
+   * interpolated into an upstream query string.
+   */
+  matchValue: string;
   status: PaymentStatus;
   processedAt: string; // ISO 8601
 }
@@ -138,6 +213,9 @@ export interface ConnectResult {
  * - All methods that talk to the upstream MUST be called after `connect()`;
  *   they throw `AdaptorConnectionError` if the adaptor is not connected.
  * - `connect` takes its credentials as an argument and reads no environment.
+ * - `pushCompletedPayment` takes its matching strategy as an argument for the
+ *   same reason. An adaptor that reads configuration itself is the coupling
+ *   this codebase removed from `connect`, reintroduced one method later.
  */
 export interface AccountingAdaptor {
   readonly id: AdaptorId;
@@ -145,7 +223,16 @@ export interface AccountingAdaptor {
   connect(credentials: AdaptorCredentials): Promise<ConnectResult | void>;
   disconnect(): Promise<void>;
   status(): Promise<AdaptorStatus>;
-  pushCompletedPayment(payment: PaymentRef): Promise<PushResult>;
+  /**
+   * Apply a completed payment in the accounting system: resolve the customer,
+   * find their open invoice, record the payment against it, and confirm it
+   * cleared. Throws on any failure, including a match that found nothing or
+   * found too much — a wrong customer is not a state to guess your way out of.
+   */
+  pushCompletedPayment(
+    payment: PaymentRef,
+    match: CustomerMatchConfig,
+  ): Promise<PushResult>;
   pullSyncStatus(): Promise<SyncResult>;
   healthCheck(): Promise<HealthCheckResult>;
 }

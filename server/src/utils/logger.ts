@@ -7,6 +7,100 @@ import { RotatingLogFile } from './logFile.js';
 
 const isDev = env.NODE_ENV === 'development';
 
+/**
+ * Key names whose values must never reach a log sink.
+ *
+ * LISTED ONCE AND EXPANDED, because the list was wrong in a way a comment
+ * would not have caught: it named `amount`, and the accounting API this
+ * adapter talks to spells the same thing `TotalAmt` on a write and `Balance`
+ * on a read. A redactor that matches the concept but not the wire spelling
+ * protects nothing — the value is in the body either way. Every name here is
+ * therefore emitted bare, one level deep and two levels deep, because pino's
+ * `*` matches a single level and an upstream body nests.
+ *
+ * CAPITALISED AND LOWERCASE PAIRS ARE BOTH SPELLED OUT, never derived. QuickBooks'
+ * own casing is the contract, and the test in `logger.test.ts` is what holds
+ * the two spellings honest — `Line[0].Amount` survived while `TotalAmt` beside
+ * it was caught, which is the exact failure a "the list covers amounts" comment
+ * would have shipped through.
+ *
+ * WHAT IS DELIBERATELY NOT LISTED: `value`. It was here on the theory that
+ * QBO's `*.Ref.value` is sensitive, and that is wrong. A reference id is the
+ * category the domain model already permits — `Invoice.externalInvoiceId` is
+ * documented as "External reference hash / id (e.g. QuickBooks)" — and the
+ * customer id is the one field that makes a payment log line answer "who did
+ * we pay", which is the only question it exists for. Redacting it protects no
+ * one and blinds the operator.
+ */
+const REDACTED_KEYS = [
+  // Existing privacy surface: credentials and identity.
+  'password',
+  'secret',
+  'token',
+  'card',
+  'email',
+  'ref',
+  // Financial values, under every spelling the accounting API uses.
+  'amount',
+  'Amount',
+  'total',
+  'totalAmt',
+  'TotalAmt',
+  'balance',
+  'Balance',
+  'unappliedAmt',
+  'UnappliedAmt',
+  'price',
+  'currency',
+  'CurrencyRef',
+  // Credentials the onboarding wizard writes, plus the QBO transaction they
+  // authenticate. A log line carrying a bearer token is the worst of these.
+  'secretsKey',
+  'clientSecret',
+  'webhookSecret',
+  'accessToken',
+  'refreshToken',
+  'adaptorCredentials',
+  'credentials',
+] as const;
+
+/**
+ * `key`, `*.key`, `*.*.key` … to `MAX_REDACT_DEPTH`.
+ *
+ * THE DEPTH IS NOT PARANOIA — IT WAS A BUG. The list named `amount`, and a
+ * QuickBooks payment body carries it as `TotalAmt` (caught) and as
+ * `Line[0].Amount` (NOT caught). pino's `*` matches one object level, and an
+ * array element is reached by index, so a body nested one level deeper than the
+ * path list assumed wrote the figure to disk in plain text. The test that
+ * caught it is `utils/logger.test.ts`; the depth below is its fix.
+ *
+ * Broadening the DEPTH is safe in a way broadening the KEY list is not:
+ * redaction matches on the key's name, so a deeper path only ever reaches
+ * something called `amount` or `totalAmt`. `LinkedTxn.TxnId` — which the same
+ * test asserts must survive, because it is the one operational handle on the
+ * write — is untouched at any depth.
+ */
+const MAX_REDACT_DEPTH = 3;
+
+function redactPaths(keys: readonly string[]): string[] {
+  return keys.flatMap((key) =>
+    Array.from({ length: MAX_REDACT_DEPTH + 1 }, (_, depth) =>
+      depth === 0 ? key : `${Array.from({ length: depth }, () => '*').join('.')}.${key}`,
+    ),
+  );
+}
+
+/**
+ * The shipped redact list, exported so a test can assert it.
+ *
+ * EXPORTED, not merely used, because the list is a security control and the
+ * suite could otherwise only reach it by constructing its own logger with its
+ * own paths — which proves the test's list works, not the shipped one. A
+ * control nothing asserts is a control that decays silently.
+ */
+export const redactPathsFor = redactPaths;
+export const redactedKeyNames: readonly string[] = REDACTED_KEYS;
+
 const baseOptions = {
   level: env.LOG_LEVEL,
   // Privacy guarantee: never log sensitive keys. Redact them from any log
@@ -15,34 +109,7 @@ const baseOptions = {
     paths: [
       'req.headers.authorization',
       'req.headers.cookie',
-      'password',
-      'secret',
-      'token',
-      'card',
-      'amount',
-      'email',
-      'ref',
-      '*.password',
-      '*.secret',
-      '*.token',
-      '*.card',
-      '*.amount',
-      '*.email',
-      '*.ref',
-      // Credentials the onboarding wizard writes. Redacted by NAME as well as by
-      // pino's wildcard path match: these are the values whose leak would be
-      // worst, and a log line that includes a field called `webhookSecret` is
-      // exactly the accident this list exists to prevent.
-      'secretsKey',
-      'clientSecret',
-      'webhookSecret',
-      'adaptorCredentials',
-      'credentials',
-      '*.secretsKey',
-      '*.clientSecret',
-      '*.webhookSecret',
-      '*.adaptorCredentials',
-      '*.credentials',
+      ...redactPaths(REDACTED_KEYS),
     ],
     censor: '[REDACTED]',
   },

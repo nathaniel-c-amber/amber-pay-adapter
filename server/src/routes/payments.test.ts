@@ -68,6 +68,45 @@ describe('payments routes', () => {
     expect(forbiddenKeysIn(res.body)).toEqual([]);
   });
 
+  /*
+    A genuine gateway link must not claim to be simulated. The field is
+    added by an explicit projection rather than copied wholesale, so the
+    default stub above exercises the "real link" branch and would fail if the
+    flag were ever defaulted to true.
+  */
+  it('omits the simulated flag for a genuine gateway link', async () => {
+    const repositories = createInMemoryRepositories();
+    const res = await request(buildApp(repositories))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.link).not.toHaveProperty('simulated');
+  });
+
+  it('marks a link as simulated when the gateway fabricated it', async () => {
+    const repositories = createInMemoryRepositories();
+    const simulatedGateway: AmberPayGateway = {
+      ...stubGateway(),
+      async createPaymentLink(): Promise<PaymentLinkResult> {
+        return {
+          linkUrl: 'https://amberpay.example.com/pay/ref-0001',
+          reference: 'ref-0001',
+          expiresAt: '2026-01-02T00:00:00.000Z',
+          simulated: true,
+        };
+      },
+    };
+    const res = await request(createApp({ repositories, gateway: simulatedGateway }))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.link.simulated).toBe(true);
+  });
+
   it('accepts a non-uuid string invoiceId and round-trips it (201)', async () => {
     const repositories = createInMemoryRepositories();
     const app = buildApp(repositories);

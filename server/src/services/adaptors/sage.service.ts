@@ -7,6 +7,7 @@ import type {
   AdaptorStatus,
   AdaptorTransport,
   ConnectResult,
+  CustomerMatchConfig,
   HealthCheckResult,
   HttpMethod,
   PaymentRef,
@@ -16,6 +17,7 @@ import type {
 import {
   AdaptorAuthError,
   AdaptorConnectionError,
+  AdaptorError,
   adaptorErrorForStatus,
   failureReasonForError,
   failureReasonForStatus,
@@ -24,8 +26,8 @@ import {
 /**
  * Sage adaptor.
  *
- * NOTE: Real Sage HTTP calls are stubbed pending credentials. The transport
- * (`request`) is the single seam where real API calls will land.
+ * CONNECTION AND HEALTH ARE REAL ENOUGH TO REPORT. The payment path is not
+ * implemented and says so — see `pushCompletedPayment`.
  */
 export class SageAdaptor implements AccountingAdaptor {
   readonly id: AdaptorId = 'sage';
@@ -68,14 +70,29 @@ export class SageAdaptor implements AccountingAdaptor {
     return this.connected ? 'connected' : 'disconnected';
   }
 
-  async pushCompletedPayment(payment: PaymentRef): Promise<PushResult> {
+  /**
+   * Sage has no implemented payment path.
+   *
+   * It used to `POST /invoices/{id}/pay`, which is as fictional as the
+   * QuickBooks URL it mirrored — and it was mirroring a fiction, which is how
+   * an invented endpoint survived a rewrite of the other adaptor. A deployment
+   * that selects Sage can connect, probe and report health, but a completed
+   * payment has nowhere to go.
+   *
+   * That is now said plainly rather than returning a result that reads like a
+   * success. The processor turns this into a critical finding, which is the
+   * truth: money was collected and the ledger does not know.
+   */
+  async pushCompletedPayment(
+    _payment: PaymentRef,
+    _match: CustomerMatchConfig,
+  ): Promise<PushResult> {
     this.assertConnected();
-    const response = await this.request('POST', `/invoices/${payment.externalInvoiceId}/pay`);
-    this.assertOk(response, 'Sage push failed');
-    return {
-      externalRef: payment.transactionId,
-      at: new Date().toISOString(),
-    };
+    throw new AdaptorError(
+      501,
+      'ADAPTOR_PUSH_UNSUPPORTED',
+      'Applying a completed payment is not implemented for Sage. A collected payment cannot be recorded in the ledger.',
+    );
   }
 
   async pullSyncStatus(): Promise<SyncResult> {

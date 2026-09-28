@@ -2,6 +2,7 @@ import { ConflictError, NotFoundError } from '../../utils/errors.js';
 import type { AccountingAdaptor, AdaptorId } from '../../types/adaptor.js';
 import { QuickBooksAdaptor } from './quickbooks.service.js';
 import { SageAdaptor } from './sage.service.js';
+import { rotationSink } from './credentials.provider.js';
 
 export type AdaptorFactory = () => AccountingAdaptor;
 
@@ -104,5 +105,22 @@ export class AdaptorRegistry {
 
 /** Singleton pre-registered with QuickBooks and Sage. */
 export const adaptorRegistry = new AdaptorRegistry();
-adaptorRegistry.register('quickbooks', () => new QuickBooksAdaptor());
+/*
+  THE ROTATION SINK IS WIRED HERE, at the factory, because the only place that
+  knows both "which adaptor" and "how to persist configuration" is this file's
+  neighbourhood. An adaptor that mints a credential outside an explicit
+  `connect()` — QuickBooks re-mints on a 401 so a long-running process survives
+  an expired access token — has to tell someone, because Intuit spends the token
+  it just issued. A deployment that persisted rotations only at boot works right
+  up to its next restart and then cannot connect, which reads as an expired
+  credential and is not one.
+
+  `verify.service.ts` builds its adaptor through `createAdaptor()` for the same
+  registry, so a verification can rotate too; it does not write, and that is
+  deliberate — proving a credential works must not change stored state.
+*/
+adaptorRegistry.register(
+  'quickbooks',
+  () => new QuickBooksAdaptor(undefined, rotationSink('quickbooks')),
+);
 adaptorRegistry.register('sage', () => new SageAdaptor());

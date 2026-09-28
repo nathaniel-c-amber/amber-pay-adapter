@@ -1,13 +1,20 @@
 import { SageAdaptor } from './sage.service.js';
 import { AdaptorConnectionError, AdaptorError } from './errors.js';
-import type { AdaptorCredentials, PaymentRef } from '../../types/adaptor.js';
+import type { AdaptorCredentials, CustomerMatchConfig, PaymentRef } from '../../types/adaptor.js';
 
 const payment: PaymentRef = {
   id: 'p1',
   transactionId: 'tx-1',
-  externalInvoiceId: 'inv-1',
+  matchValue: 'S1234567',
   status: 'collected',
   processedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const match: CustomerMatchConfig = {
+  strategy: 'displayName',
+  mode: 'exact',
+  fieldName: null,
+  depositAccountId: null,
 };
 
 /** Supplied explicitly — the adaptor reads no environment (see the QB suite). */
@@ -61,25 +68,27 @@ describe('SageAdaptor', () => {
     expect(String(url)).toBe('https://sage.example.test/health');
   });
 
-  it('pushCompletedPayment returns a PushResult shape', async () => {
+  it('refuses to apply a payment, and says why', async () => {
+    /*
+      Sage has no payment path. It used to `POST /invoices/{id}/pay`, which was
+      as fictional as the QuickBooks URL it mirrored, and it returned a
+      PushResult that read exactly like success. A collected payment with
+      nowhere to go is a critical operational failure, and the error has to say
+      that rather than look like a 2xx.
+    */
     const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
     const adaptor = new SageAdaptor(transport);
     await adaptor.connect(credentials);
-    const result = await adaptor.pushCompletedPayment(payment);
-    expect(result).toEqual({ externalRef: 'tx-1', at: expect.any(String) });
+    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toBeInstanceOf(AdaptorError);
+    // Nothing was sent upstream: a refusal that still made a call would be a
+    // call whose result nobody looks at.
+    expect(transport).not.toHaveBeenCalled();
   });
 
-  it('pushCompletedPayment throws AdaptorError on non-2xx', async () => {
-    const transport = jest.fn().mockResolvedValue({ status: 500, body: {} });
-    const adaptor = new SageAdaptor(transport);
-    await adaptor.connect(credentials);
-    await expect(adaptor.pushCompletedPayment(payment)).rejects.toBeInstanceOf(AdaptorError);
-  });
-
-  it('pushCompletedPayment throws AdaptorConnectionError when not connected', async () => {
+  it('refuses to apply a payment before it is connected', async () => {
     const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
     const adaptor = new SageAdaptor(transport);
-    await expect(adaptor.pushCompletedPayment(payment)).rejects.toBeInstanceOf(
+    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toBeInstanceOf(
       AdaptorConnectionError,
     );
   });

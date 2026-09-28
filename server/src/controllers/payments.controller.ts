@@ -59,7 +59,19 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
 
       res.status(201).json({
         payment,
-        link: { linkUrl: link.linkUrl, reference: link.reference, expiresAt: link.expiresAt },
+        /*
+          An explicit field-by-field projection, not an omit-rest idiom, so a
+          new service field cannot be published by accident. `simulated` is
+          added only when the link was fabricated locally — it rides on the
+          real configured host, so without it a developer cannot tell a test
+          link from a genuine one.
+        */
+        link: {
+          linkUrl: link.linkUrl,
+          reference: link.reference,
+          expiresAt: link.expiresAt,
+          ...(link.simulated === true ? { simulated: true } : {}),
+        },
       });
     }),
 

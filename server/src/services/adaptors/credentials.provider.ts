@@ -24,7 +24,12 @@
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import { settingsService } from '../settings/settings.service.js';
-import type { AccountingAdaptor, AdaptorCredentials, AdaptorId } from '../../types/adaptor.js';
+import type {
+  AccountingAdaptor,
+  AdaptorCredentials,
+  AdaptorId,
+  ConnectResult,
+} from '../../types/adaptor.js';
 
 /**
  * Resolve the credentials to connect an adaptor with.
@@ -93,27 +98,38 @@ export async function credentialsForAdaptor(id: AdaptorId): Promise<AdaptorCrede
 }
 
 /**
- * Connect an adaptor, and persist anything the upstream rotated.
+ * Write back a credential the upstream rotated, if there is anywhere to write it.
  *
- * The single entry point for connecting, so no call site can connect with
- * credentials that skipped the provider or drop a rotation on the floor.
+ * Extracted from `connectAdaptor` because a rotation is not tied to connecting:
+ * `QuickBooksAdaptor.healthCheck` re-mints when its access token expires, and
+ * that mint spends the refresh token exactly as thoroughly as a boot. A
+ * rotation persisted only on the boot path leaves the process healthy and the
+ * NEXT RESTART dead — the deployment works right up until it is redeployed and
+ * then cannot connect with "Incorrect or invalid refresh token", which reads as
+ * a credential problem and is not one.
  */
-export async function connectAdaptor(adaptor: AccountingAdaptor): Promise<void> {
-  const result = await adaptor.connect(await credentialsForAdaptor(adaptor.id));
-
-  const rotated = result?.rotated;
+export async function persistRotation(
+  adaptorId: AdaptorId,
+  rotated: AdaptorCredentials | undefined,
+): Promise<void> {
   if (!rotated) return;
 
   const stored = (await settingsService.resolveCredentials()).adaptor;
-  if (!stored || stored.id !== adaptor.id) {
+  if (!stored || stored.id !== adaptorId) {
     /*
       The credentials came from the ENVIRONMENT, so there is nothing to update.
       Writing the rotated token into the store here would invent a stored
       credential set out of an env fallback, and no later reader could tell which
       of the two sources was authoritative.
+
+      This is the transitional state an env-configured deployment lives in, and
+      it is a REAL limitation rather than a warning to shrug off: Intuit spends
+      a refresh token on every exchange, so an env-sourced token works until the
+      process restarts and then does not. The fix is a stored credential, which
+      is what the onboarding wizard writes.
     */
     logger.warn(
-      { adaptor: adaptor.id },
+      { adaptor: adaptorId },
       'Upstream rotated a credential, but the credentials come from the environment: the rotated value cannot be persisted, so a restart will present a spent token',
     );
     return;
@@ -123,4 +139,29 @@ export async function connectAdaptor(adaptor: AccountingAdaptor): Promise<void> 
     ...stored.fields,
     ...definedFields(rotated),
   });
+}
+
+/**
+ * Connect an adaptor, and persist anything the upstream rotated.
+ *
+ * The single entry point for connecting, so no call site can connect with
+ * credentials that skipped the provider or drop a rotation on the floor.
+ */
+export async function connectAdaptor(adaptor: AccountingAdaptor): Promise<void> {
+  const result = await adaptor.connect(await credentialsForAdaptor(adaptor.id));
+  await persistRotation(adaptor.id, result?.rotated);
+}
+
+/**
+ * The rotation sink for an adaptor that mints on its own.
+ *
+ * Handed to the adaptor's constructor so a `healthCheck` re-mint is persisted by
+ * whoever wired the adaptor, rather than the adaptor reaching into settings
+ * itself — an adaptor that persisted its own credentials would reintroduce the
+ * dependency on configuration that injected credentials exist to remove.
+ */
+export function rotationSink(adaptorId: AdaptorId) {
+  return async (result: ConnectResult | void): Promise<void> => {
+    await persistRotation(adaptorId, result?.rotated);
+  };
 }

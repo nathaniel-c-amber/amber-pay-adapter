@@ -47,6 +47,23 @@ const adaptorBodySchema = z
      * the service as "not filled in", and an absent key changes nothing.
      */
     credentials: z.record(z.string().nullable()).nullable().optional(),
+    /**
+     * The customer matching rule, or `null` to clear the whole thing.
+     *
+     * `.strict()` INSIDE this object too, for the reason the outer schema is
+     * strict: a typo in a nested key would otherwise be stripped, and the
+     * service would answer "saved" for a rule that did not change.
+     */
+    invoiceMatching: z
+      .object({
+        strategy: z.enum(['displayName', 'customField', 'notes']).nullable().optional(),
+        mode: z.enum(['exact', 'contains']).nullable().optional(),
+        fieldName: z.string().min(1).nullable().optional(),
+        depositAccountId: z.string().min(1).nullable().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 

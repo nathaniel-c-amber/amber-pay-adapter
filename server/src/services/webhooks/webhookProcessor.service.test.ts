@@ -4,7 +4,15 @@ import { FailureTracker } from '../events/failureTracker.service.js';
 import { QuickBooksAdaptor } from '../adaptors/quickbooks.service.js';
 import { env } from '../../config/env.js';
 import type { WebhookEvent } from '../../types/gateway.js';
-import type { AccountingAdaptor } from '../../types/adaptor.js';
+import type {
+  AccountingAdaptor,
+  CustomerMatchConfig,
+  PushResult,
+} from '../../types/adaptor.js';
+import type {
+  AdaptorResolver,
+  WebhookProcessorOverrides,
+} from './webhookProcessor.service.js';
 
 const collectedEvent: WebhookEvent = {
   id: 'w1',
@@ -14,6 +22,96 @@ const collectedEvent: WebhookEvent = {
   at: '2026-01-01T00:00:00.000Z',
 };
 
+/*
+  A configured matching rule, supplied by DEFAULT to every processor in this
+  file. It is a test override rather than a change to the real settings row
+  because the alternative — a suite that has to configure a database to assert
+  a webhook handler — is a suite that fails for reasons unrelated to the code
+  being tested. The UNCONFIGURED path has its own test below, because "refuses
+  rather than guessing" is a behaviour worth pinning rather than a nuisance to
+  work around.
+*/
+const MATCH: CustomerMatchConfig = {
+  strategy: 'customField',
+  mode: 'exact',
+  fieldName: 'Student ID',
+  depositAccountId: null,
+};
+
+const applied: PushResult = {
+  externalRef: 'pay-1',
+  at: '2026-01-01T00:00:00.000Z',
+  invoiceRef: 'inv-1',
+  matchedBy: 'customField',
+  alreadyApplied: false,
+  verified: true,
+};
+
+/**
+ * A QuickBooks that answers the whole pipeline.
+ *
+ * The real adaptor is used in one test on purpose — it is the only place the
+ * connection, the matching and the write are exercised together. That test used
+ * to stub the transport with a blanket `{status:200}`, which is why it passed
+ * against an endpoint that does not exist; a pipeline needs its stages
+ * answered by name.
+ */
+function quickBooksScript() {
+  const transport = jest.fn(async (_method: string, url: string) => {
+    const statement = decodeURIComponent(String(url).split('query=')[1]?.split('&')[0] ?? '');
+    if (statement.includes('from Customer')) {
+      return {
+        status: 200,
+        body: {
+          QueryResponse: {
+            Customer: [
+              { Id: 'cust-1', CustomField: [{ Name: 'Student ID', StringValue: 'ref-0001' }] },
+            ],
+          },
+        },
+      };
+    }
+    if (statement.includes('from Invoice where CustomerRef')) {
+      return {
+        status: 200,
+        body: { QueryResponse: { Invoice: [{ Id: 'inv-1', DueDate: '2026-02-01', Balance: 100 }] } },
+      };
+    }
+    if (statement.includes('from Payment')) {
+      return { status: 200, body: { QueryResponse: { Payment: [] } } };
+    }
+    if (String(url).endsWith('/payment')) {
+      return { status: 200, body: { Payment: { Id: 'pay-1' } } };
+    }
+    if (String(url).includes('/invoice/')) {
+      return { status: 200, body: { Invoice: { Id: 'inv-1', Balance: 0 } } };
+    }
+    return { status: 200, body: {} };
+  });
+  return { transport };
+}
+
+/** Build a processor carrying the default matching rule. */
+function buildProcessor(
+  eventLog: EventLog,
+  failureTracker: FailureTracker,
+  resolver: AdaptorResolver,
+  pushTimeoutMs = 5000,
+  activeAdaptorId?: 'quickbooks' | 'sage',
+  overrides: WebhookProcessorOverrides = { matchConfig: MATCH },
+): WebhookProcessor {
+  return new WebhookProcessor(
+    eventLog,
+    failureTracker,
+    resolver,
+    pushTimeoutMs,
+    activeAdaptorId,
+    undefined,
+    undefined,
+    overrides,
+  );
+}
+
 function makeAdaptor(overrides?: Partial<AccountingAdaptor>): AccountingAdaptor {
   return {
     id: 'quickbooks',
@@ -21,9 +119,7 @@ function makeAdaptor(overrides?: Partial<AccountingAdaptor>): AccountingAdaptor 
     connect: jest.fn().mockResolvedValue(undefined),
     disconnect: jest.fn().mockResolvedValue(undefined),
     status: jest.fn().mockResolvedValue('disconnected'),
-    pushCompletedPayment: jest
-      .fn()
-      .mockResolvedValue({ externalRef: 'ref-0001', at: '2026-01-01T00:00:00.000Z' }),
+    pushCompletedPayment: jest.fn().mockResolvedValue(applied),
     pullSyncStatus: jest.fn(),
     healthCheck: jest.fn(),
     ...overrides,
@@ -36,7 +132,7 @@ describe('the push target is configured, not assumed', () => {
     const failureTracker = new FailureTracker();
     const resolver = { get: jest.fn().mockReturnValue(makeAdaptor()) };
     // No adaptor id passed: the processor must ask configuration.
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook(collectedEvent);
 
@@ -49,7 +145,7 @@ describe('the push target is configured, not assumed', () => {
     const eventLog = new EventLog();
     const failureTracker = new FailureTracker();
     const resolver = { get: jest.fn().mockReturnValue(makeAdaptor()) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver, 5000, 'sage');
+    const processor = buildProcessor(eventLog, failureTracker, resolver, 5000, 'sage');
 
     await processor.processWebhook(collectedEvent);
 
@@ -87,7 +183,7 @@ describe('WebhookProcessor', () => {
     const failureTracker = new FailureTracker();
     const adaptor = makeAdaptor();
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook(collectedEvent);
 
@@ -108,15 +204,15 @@ describe('WebhookProcessor', () => {
   it('connects the adaptor before pushing (real adaptor)', async () => {
     const eventLog = new EventLog();
     const failureTracker = new FailureTracker();
-    const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
-    const adaptor = new QuickBooksAdaptor(transport);
+    const scripted = quickBooksScript();
+    const adaptor = new QuickBooksAdaptor(scripted.transport);
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook(collectedEvent);
 
     expect(await adaptor.status()).toBe('connected');
-    expect(transport).toHaveBeenCalled();
+    expect(scripted.transport).toHaveBeenCalled();
     expect(await failureTracker.list(['org-1'])).toHaveLength(0);
   });
 
@@ -125,7 +221,7 @@ describe('WebhookProcessor', () => {
     const failureTracker = new FailureTracker();
     const adaptor = makeAdaptor({ id: 'sage', name: 'Sage' });
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver, 5000, 'sage');
+    const processor = buildProcessor(eventLog, failureTracker, resolver, 5000, 'sage');
 
     await processor.processWebhook(collectedEvent);
 
@@ -137,7 +233,7 @@ describe('WebhookProcessor', () => {
     const failureTracker = new FailureTracker();
     const adaptor = makeAdaptor();
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook(collectedEvent);
     await processor.processWebhook(collectedEvent);
@@ -153,7 +249,7 @@ describe('WebhookProcessor', () => {
       pushCompletedPayment: jest.fn().mockRejectedValue(new Error('boom')),
     });
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     // First delivery fails (adaptor push throws).
     await processor.processWebhook(collectedEvent);
@@ -178,11 +274,11 @@ describe('WebhookProcessor', () => {
         // the first is still in flight — the window the old
         // hasProcessed-then-markProcessing pair could not close.
         await gate;
-        return { externalRef: 'ref-0001', at: '2026-01-01T00:00:00.000Z' };
+        return applied;
       }),
     });
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     const first = processor.processWebhook(collectedEvent);
     const second = processor.processWebhook(collectedEvent);
@@ -199,7 +295,7 @@ describe('WebhookProcessor', () => {
     const failureTracker = new FailureTracker();
     const adaptor = makeAdaptor();
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook({
       ...collectedEvent,
@@ -212,6 +308,7 @@ describe('WebhookProcessor', () => {
     expect(events.map((e) => e.type).sort()).toEqual(['payment-refunded', 'record-updated']);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'refunded' }),
+      MATCH,
     );
   });
 
@@ -220,7 +317,7 @@ describe('WebhookProcessor', () => {
     const failureTracker = new FailureTracker();
     const adaptor = makeAdaptor();
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await processor.processWebhook(collectedEvent);
     await processor.processWebhook(collectedEvent);
@@ -236,7 +333,7 @@ describe('WebhookProcessor', () => {
       pushCompletedPayment: jest.fn().mockRejectedValue(new Error('boom')),
     });
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver);
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
 
     await expect(processor.processWebhook(collectedEvent)).resolves.toBeUndefined();
 
@@ -251,11 +348,11 @@ describe('WebhookProcessor', () => {
     const adaptor = makeAdaptor({
       pushCompletedPayment: jest.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return { externalRef: 'ref-0001', at: '2026-01-01T00:00:00.000Z' };
+        return applied;
       }),
     });
     const resolver = { get: jest.fn().mockReturnValue(adaptor) };
-    const processor = new WebhookProcessor(eventLog, failureTracker, resolver, 5);
+    const processor = buildProcessor(eventLog, failureTracker, resolver, 5);
 
     await processor.processWebhook(collectedEvent);
 
@@ -294,5 +391,84 @@ describe('WebhookProcessor', () => {
 
     const events = await eventLog.list(['org-1']);
     expect(events[0]?.type).toBe('payment-failed');
+  });
+});
+
+describe('the customer matching rule', () => {
+  it('hands the adaptor the configured rule rather than a default it chose', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    // The adaptor's behaviour depends entirely on this argument, so it is
+    // asserted rather than assumed: a change here is a change to which ledger a
+    // student's money lands in.
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ matchValue: 'ref-0001' }),
+      MATCH,
+    );
+  });
+
+  it('refuses to place a payment when no rule is configured', async () => {
+    /*
+      The failure mode this prevents is silent and expensive. A default strategy
+      would decide, for every deployment, that a student's identifier is their
+      name — and pay whichever ledger happened to answer. Refusing is visible;
+      guessing is not.
+    */
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { settings: { resolveMatchConfig: async () => null } },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(adaptor.pushCompletedPayment).not.toHaveBeenCalled();
+    const failures = await failureTracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.severity).toBe('critical');
+  });
+
+  it('reads the rule from configuration rather than from the environment', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const stored: CustomerMatchConfig = {
+      strategy: 'displayName',
+      mode: 'contains',
+      fieldName: null,
+      depositAccountId: '35',
+    };
+    const resolveMatchConfig = jest.fn().mockResolvedValue(stored);
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { settings: { resolveMatchConfig } },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(resolveMatchConfig).toHaveBeenCalled();
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      stored,
+    );
   });
 });

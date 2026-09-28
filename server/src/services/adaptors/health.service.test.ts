@@ -142,7 +142,14 @@ describe('connectConfiguredAdaptors', () => {
       },
       disconnect: async () => undefined,
       status: async () => 'disconnected',
-      pushCompletedPayment: async () => ({ externalRef: 'x', at: new Date().toISOString() }),
+      pushCompletedPayment: async () => ({
+        externalRef: 'x',
+        at: new Date().toISOString(),
+        invoiceRef: null,
+        matchedBy: 'none',
+        alreadyApplied: false,
+        verified: false,
+      }),
       pullSyncStatus: async () => ({
         status: 'ok',
         ranAt: new Date().toISOString(),

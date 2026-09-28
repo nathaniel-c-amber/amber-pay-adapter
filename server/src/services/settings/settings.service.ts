@@ -26,10 +26,13 @@ import { lastFourOf, openSecret, sealSecret, secretsConfigured } from '../../uti
 import { getRepositories } from '../../repositories/index.js';
 import { env } from '../../config/env.js';
 import type { SettingsRepository } from '../../types/repository.js';
+import type { CustomerMatchConfig, CustomerMatchMode, CustomerMatchStrategy } from '../../types/adaptor.js';
+import { CUSTOM_FIELD_NAME } from '../adaptors/quickbooksWire.js';
 import type {
   ConfiguredAdaptorId,
   DeploymentSettings,
   DeploymentSettingsPatch,
+  InvoiceMatchingSettings,
 } from '../../models/deploymentSettings.js';
 
 /**
@@ -71,6 +74,23 @@ export interface PublicAdaptorSettings {
    * be told a secret to decide whether it can ask the server to start a flow.
    */
   canAuthorize: boolean;
+  /**
+   * The customer matching rule, and whether it is complete enough to run.
+   *
+   * `fieldName` is echoed because the operator typed it and needs to see what
+   * was saved. `ready` is the field the pipeline actually gates on, and it is
+   * stricter than "a strategy is set": the `customField` strategy is
+   * unusable without the field it names, and a console that showed a rule as
+   * configured while the pipeline refused every payment would be worse than
+   * showing nothing.
+   */
+  invoiceMatching: {
+    strategy: CustomerMatchStrategy | null;
+    mode: CustomerMatchMode | null;
+    fieldName: string | null;
+    depositAccountId: string | null;
+    ready: boolean;
+  };
 }
 
 export interface PublicDeploymentSettings {
@@ -158,6 +178,13 @@ function toPublic(
       baseUrl: settings.adaptorBaseUrl,
       credentials: presence(settings.adaptorCredentials),
       canAuthorize: canAuthorize(settings.adaptorCredentials),
+      invoiceMatching: {
+        strategy: settings.invoiceMatchStrategy,
+        mode: settings.invoiceMatchMode,
+        fieldName: settings.invoiceMatchField,
+        depositAccountId: settings.paymentDepositAccountId,
+        ready: isMatchRuleReady(matchRuleOf(settings)),
+      },
     },
     syncInterval: settings.syncInterval,
     alertTarget: settings.alertTarget,
@@ -210,6 +237,112 @@ function assertStorable(): void {
   }
 }
 
+const MATCH_STRATEGIES: readonly CustomerMatchStrategy[] = ['displayName', 'customField', 'notes'];
+const MATCH_MODES: readonly CustomerMatchMode[] = ['exact', 'contains'];
+
+/** A partial matching rule as a write carries it. */
+export interface InvoiceMatchingUpdate {
+  strategy?: CustomerMatchStrategy | null;
+  mode?: CustomerMatchMode | null;
+  fieldName?: string | null;
+  depositAccountId?: string | null;
+}
+
+/**
+ * Validate one half of the matching rule.
+ *
+ * THE FIELD NAME IS CHECKED HERE, at the write, even though the pipeline
+ * checks it again before building a query. It is the only value in this whole
+ * file a person types freely, and it ends up inside a quoted identifier in a
+ * statement sent to the company's accounting system. A double quote is
+ * therefore refused, which is what makes the quoting downstream safe: the name
+ * cannot terminate its own literal. The error names the rule, because "invalid
+ * field" would send an operator looking at the wrong part of their setup.
+ */
+function validateMatchField(fieldName: string): void {
+  if (!CUSTOM_FIELD_NAME.test(fieldName)) {
+    throw new ValidationError(
+      'invoiceMatching.fieldName must be a custom field name as QuickBooks shows it — letters, digits, spaces, hyphens and underscores only, up to 100 characters',
+    );
+  }
+}
+
+/**
+ * Validate a write to the matching rule as a WHOLE rather than field by field.
+ *
+ * A partial write is legal and common — an operator changing the mode should
+ * not have to resend the strategy — so the cross-field rule ("`customField`
+ * needs a name") is checked against the value that will be stored, not against
+ * what arrived. That needs the current row, so it is resolved here and passed
+ * in.
+ */
+function validateMatchRule(update: InvoiceMatchingUpdate, current: InvoiceMatchingSettings): void {
+  const strategy = update.strategy !== undefined ? update.strategy : current.strategy;
+  const fieldName = update.fieldName !== undefined ? update.fieldName : current.fieldName;
+
+  if (update.strategy !== undefined && update.strategy !== null) {
+    if (!MATCH_STRATEGIES.includes(update.strategy)) {
+      throw new ValidationError('invoiceMatching.strategy is not a supported matching rule');
+    }
+  }
+  if (update.mode !== undefined && update.mode !== null && !MATCH_MODES.includes(update.mode)) {
+    throw new ValidationError('invoiceMatching.mode must be "exact" or "contains"');
+  }
+  if (update.fieldName !== undefined && update.fieldName !== null) {
+    validateMatchField(update.fieldName);
+  }
+  if (strategy === 'customField' && (fieldName === null || fieldName === '')) {
+    throw new ValidationError(
+      'invoiceMatching.fieldName is required when matching on a custom field — it is the field that holds the identifier',
+    );
+  }
+}
+
+/** Is the stored rule complete enough for the pipeline to run a payment through? */
+function isMatchRuleReady(rule: InvoiceMatchingSettings): boolean {
+  if (!rule.strategy) return false;
+  if (rule.strategy === 'customField') {
+    return typeof rule.fieldName === 'string' && rule.fieldName.length > 0;
+  }
+  return true;
+}
+
+/**
+ * The four matching columns, lifted out of the settings row.
+ *
+ * One place that knows the column-to-field mapping, so the readiness check and
+ * the runtime projection cannot disagree about which fields they are looking
+ * at — the failure mode of a rule that is "complete" to one reader and missing
+ * a field to the next.
+ */
+function matchRuleOf(settings: DeploymentSettings): InvoiceMatchingSettings {
+  return {
+    strategy: settings.invoiceMatchStrategy,
+    mode: settings.invoiceMatchMode,
+    fieldName: settings.invoiceMatchField,
+    depositAccountId: settings.paymentDepositAccountId,
+  };
+}
+
+/**
+ * The matching rule as the pipeline receives it, or `null` when unconfigured.
+ *
+ * `null` is a REAL STATE, not an error: a deployment that has connected its
+ * accounting system and has not yet said how payments should be matched cannot
+ * place a payment anywhere, and the caller needs to say so in terms an operator
+ * can act on. Returning a default instead would silently decide that a
+ * student's identifier is their name.
+ */
+function toMatchConfig(rule: InvoiceMatchingSettings): CustomerMatchConfig | null {
+  if (!isMatchRuleReady(rule) || !rule.strategy) return null;
+  return {
+    strategy: rule.strategy,
+    mode: rule.mode ?? 'exact',
+    fieldName: rule.fieldName,
+    depositAccountId: rule.depositAccountId,
+  };
+}
+
 function assertHttpUrl(value: string, field: string): void {
   let parsed: URL;
   try {
@@ -237,6 +370,8 @@ export interface AdaptorUpdate {
    * field; a blank or absent value leaves it alone. See `mergeCredentials`.
    */
   credentials?: Record<string, string | null> | null;
+  /** The customer matching rule. See `validateMatchRule`. */
+  invoiceMatching?: InvoiceMatchingUpdate | null;
 }
 
 export interface PreferencesUpdate {
@@ -307,6 +442,7 @@ export class SettingsService {
   async updateAdaptor(update: AdaptorUpdate): Promise<PublicDeploymentSettings> {
     const patch: DeploymentSettingsPatch = {};
     const changed: string[] = [];
+    const current = await this.repository.get();
 
     if (update.id !== undefined) {
       patch.adaptorId = update.id;
@@ -326,7 +462,6 @@ export class SettingsService {
         patch.adaptorCredentials = null;
       } else {
         assertStorable();
-        const current = await this.repository.get();
         patch.adaptorCredentials = await mergeCredentials(
           current.adaptorCredentials,
           update.credentials,
@@ -348,8 +483,41 @@ export class SettingsService {
       }
       changed.push('adaptor.credentials');
     }
+    if (update.invoiceMatching !== undefined) {
+      if (update.invoiceMatching === null) {
+        // Clearing the whole rule in one instruction, spelled as `null`, so it
+        // is never confused with "no opinion about any of it".
+        patch.invoiceMatchStrategy = null;
+        patch.invoiceMatchMode = null;
+        patch.invoiceMatchField = null;
+        patch.paymentDepositAccountId = null;
+      } else {
+        validateMatchRule(update.invoiceMatching, matchRuleOf(current));
+        const rule = update.invoiceMatching;
+        if (rule.strategy !== undefined) patch.invoiceMatchStrategy = rule.strategy;
+        if (rule.mode !== undefined) patch.invoiceMatchMode = rule.mode;
+        if (rule.fieldName !== undefined) patch.invoiceMatchField = rule.fieldName;
+        if (rule.depositAccountId !== undefined) {
+          patch.paymentDepositAccountId = rule.depositAccountId;
+        }
+      }
+      changed.push('adaptor.invoiceMatching');
+    }
 
     return this.apply(patch, changed);
+  }
+
+  /**
+   * The matching rule the pipeline needs, or `null` when it is not configured.
+   *
+   * The ONLY reader of the rule outside the settings API, and it returns the
+   * runtime `CustomerMatchConfig` rather than the stored row so no caller has
+   * to know about the four columns or re-derive the `customField` completeness
+   * rule — the one rule that decides whether a configured-looking setting can
+   * actually run.
+   */
+  async resolveMatchConfig(): Promise<CustomerMatchConfig | null> {
+    return toMatchConfig(matchRuleOf(await this.repository.get()));
   }
 
   async updatePreferences(update: PreferencesUpdate): Promise<PublicDeploymentSettings> {

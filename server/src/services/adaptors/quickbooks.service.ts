@@ -7,6 +7,7 @@ import type {
   AdaptorStatus,
   AdaptorTransport,
   ConnectResult,
+  CustomerMatchConfig,
   HealthCheckResult,
   HttpMethod,
   PaymentRef,
@@ -14,13 +15,24 @@ import type {
   SyncResult,
 } from '../../types/adaptor.js';
 import {
+  AdaptorApplyError,
   AdaptorConnectionError,
   adaptorErrorForStatus,
   failureReasonForError,
   failureReasonForStatus,
 } from './errors.js';
+import { findCustomerByIdentifier } from './quickbooksCustomer.js';
+import {
+  createPaymentForInvoice,
+  findOpenInvoices,
+  findPaymentByReference,
+  selectInvoiceToPay,
+  unappliedRemainder,
+  verifyInvoiceCleared,
+} from './quickbooksInvoice.js';
 import { httpTransport } from './httpTransport.js';
 import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
+import type { QboRequest } from './quickbooksWire.js';
 
 /**
  * QuickBooks Online adaptor.
@@ -33,15 +45,22 @@ import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
  *   2. The default transport threw (`... stubbed pending credentials`), so no
  *      probe could ever reach Intuit.
  * The transport is now `fetch` (see `httpTransport`), the token comes from
- * `QUICKBOOKS_ACCESS_TOKEN` or a refresh-token exchange (`oauth.ts`), and the
+ * supplied credentials or a refresh-token exchange (`oauth.ts`), and the
  * health probe asks Intuit for the company record of the configured realm —
  * the cheapest call that proves realm, token and network together.
  *
- * WHAT REMAINS APPROXIMATE: the payment push and the sync pull keep their
- * existing paths. Making those semantically correct (a QuickBooks `Payment`
- * referencing an invoice; the query API for sync state) is separate work from
- * establishing the connection, and is called out here rather than left to look
- * finished.
+ * THE PAYMENT PATH IS REAL NOW TOO. It used to be one call to
+ * `/invoice/{id}/payment`, which is not a QuickBooks endpoint. Applying a
+ * payment now means matching a customer, finding their outstanding invoice,
+ * creating a `Payment` linked to it, and re-reading the invoice to confirm it
+ * cleared — see `pushCompletedPayment`, `quickbooksCustomer` and
+ * `quickbooksInvoice`.
+ *
+ * WHAT REMAINS APPROXIMATE: `pullSyncStatus` still returns fixed zeroes. It
+ * reports that a sync ran rather than what it found, and the reconciliation
+ * figures the console shows come from local state, not from a comparison
+ * against QuickBooks. That is separate work, and it is called out here rather
+ * than left to look finished.
  */
 export class QuickBooksAdaptor implements AccountingAdaptor {
   readonly id: AdaptorId = 'quickbooks';
@@ -62,9 +81,28 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
   /** Credentials most recently supplied to `connect`. Never read from the environment. */
   private credentials: AdaptorCredentials = {};
   private readonly transport: AdaptorTransport;
+  /**
+   * Told about a credential the upstream rotated OUTSIDE an explicit
+   * `connect()` call, so the caller can persist it.
+   *
+   * Intuition says this is unnecessary — `connect()` already returns its
+   * rotation, and every boot path goes through `connectAdaptor`, which
+   * persists it. It is not unnecessary, because `healthCheck` also mints: it
+   * re-mints on a 401 to keep a long-running process alive, and that mint
+   * spends the refresh token just as thoroughly. A rotation nobody is told
+   * about is a deployment that reconnects until it does not. See the call site.
+   *
+   * Optional so a test can construct the adaptor without one; production
+   * supplies it. `undefined` means "nobody is listening", not "nothing rotates".
+   */
+  private readonly onRotation?: (result: ConnectResult | void) => Promise<void>;
 
-  constructor(transport?: AdaptorTransport) {
+  constructor(
+    transport?: AdaptorTransport,
+    onRotation?: (result: ConnectResult | void) => Promise<void>,
+  ) {
     this.transport = transport ?? httpTransport;
+    if (onRotation) this.onRotation = onRotation;
   }
 
   async connect(credentials: AdaptorCredentials): Promise<ConnectResult | void> {
@@ -101,13 +139,108 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     return this.connected ? 'connected' : 'disconnected';
   }
 
-  async pushCompletedPayment(payment: PaymentRef): Promise<PushResult> {
+  /**
+   * Apply a completed payment to an invoice, discovering the invoice first.
+   *
+   * WHAT THIS REPLACED: a single `POST /invoice/{id}/payment`, which is not a
+   * QuickBooks URL. There is no such endpoint, so the call had never succeeded
+   * against a real company — it had only never met one, because the webhook
+   * push is the only path that reaches it and a stored token is the only thing
+   * that enables it. The `{id}` in that path was a gateway order reference, not
+   * a QuickBooks transaction id, so even a URL that existed would have been
+   * given an identifier QuickBooks has never heard of.
+   *
+   * The order below is the whole design and is not incidental: match, check,
+   * confirm-not-already-done, write, re-read. The re-read is what lets the
+   * caller report "posted" truthfully; the already-done check is what makes a
+   * retry safe. Both live here rather than in the caller because both need the
+   * adaptor's connection, and a caller that could skip them would eventually
+   * skip them.
+   */
+  async pushCompletedPayment(
+    payment: PaymentRef,
+    match: CustomerMatchConfig,
+  ): Promise<PushResult> {
     this.assertConnected();
-    const response = await this.request('POST', `/invoice/${payment.externalInvoiceId}/payment`);
-    this.assertOk(response, 'QuickBooks push failed');
+    const request = this.qboRequest;
+    const started = Date.now();
+
+    const lookup = await findCustomerByIdentifier(request, match, payment.matchValue);
+    if (!lookup.ok) {
+      throw new AdaptorApplyError(
+        lookup.reason,
+        lookup.reason === 'customer-ambiguous'
+          ? `${lookup.matches} QuickBooks customers match this payment. The payment was not applied to any of them.`
+          : 'No QuickBooks customer matches this payment',
+        lookup.matches,
+      );
+    }
+
+    const { invoices } = await findOpenInvoices(request, lookup.customer.id);
+    const invoice = selectInvoiceToPay(invoices);
+
+    /*
+      BEFORE THE WRITE, and against the upstream rather than our own dedup
+      table. A retry arrives here after a release, so the local claim is gone
+      by construction — only the upstream still knows this reference was paid.
+    */
+    const seen = await findPaymentByReference(request, payment.id);
+    if (seen.found) {
+      const settled = await verifyInvoiceCleared(request, invoice.Id);
+      logger.info(
+        { adaptor: this.id, invoice: invoice.Id, ms: Date.now() - started },
+        'Payment reference already recorded upstream; nothing written',
+      );
+      return {
+        externalRef: payment.transactionId,
+        at: new Date().toISOString(),
+        invoiceRef: invoice.Id,
+        matchedBy: match.strategy,
+        alreadyApplied: true,
+        verified: settled.verified,
+      };
+    }
+
+    const created = await createPaymentForInvoice(request, invoice, {
+      customerId: lookup.customer.id,
+      reference: payment.id,
+      match,
+    });
+
+    const remainder = unappliedRemainder(created);
+    const settled = await verifyInvoiceCleared(request, invoice.Id);
+
+    if (remainder > 0) {
+      /*
+        The invoice cleared but the payment is for more than it needed, which
+        means the balance moved between our read and our write. Reported, never
+        swallowed: the money is safe and the ledger disagrees, and only a person
+        can reconcile that.
+      */
+      logger.warn(
+        { adaptor: this.id, invoice: invoice.Id, unapplied: remainder },
+        'Payment applied with an unapplied remainder; the invoice balance changed during the write',
+      );
+    }
+
+    if (!settled.verified) {
+      throw new AdaptorApplyError(
+        'invoice-not-cleared',
+        `QuickBooks recorded payment ${created.Id} but invoice ${invoice.Id} is still outstanding`,
+      );
+    }
+
+    logger.info(
+      { adaptor: this.id, invoice: invoice.Id, strategy: match.strategy, ms: Date.now() - started },
+      'QuickBooks invoice paid',
+    );
     return {
-      externalRef: payment.transactionId,
+      externalRef: created.Id,
       at: new Date().toISOString(),
+      invoiceRef: invoice.Id,
+      matchedBy: match.strategy,
+      alreadyApplied: false,
+      verified: true,
     };
   }
 
@@ -142,9 +275,26 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     try {
       let response = await this.probe();
       if (response.status === 401 && this.credentials.refreshToken) {
-        // Re-connect with the SAME credentials (plus the rotated token the
-        // instance is holding) and retry once.
-        await this.connect(this.credentials);
+        /*
+          Re-mint and retry ONCE.
+
+          ★ THE ROTATION IS HANDED BACK, NOT DISCARDED — this was a live outage.
+          `connect()` re-mints the refresh token, and Intuit INVALIDATES the one
+          it just spent. This method used to call `connect()` for its side effect
+          and ignore what it returned, so the new token lived only in this
+          process. It worked right up to the next restart, which presented the
+          spent token and failed with "Incorrect or invalid refresh token" —
+          leaving a deployment that connected fine until it was redeployed and
+          then could not connect at all. The service went red on its own and no
+          configuration change had caused it.
+
+          The re-mint is reported so the CALLER persists it, exactly as
+          `connectAdaptor` does for the boot path. The rule that every connect
+          goes through the provider exists for this reason; a health check is
+          still a connect.
+        */
+        const reminted = await this.connect(this.credentials);
+        await this.onRotation?.(reminted);
         response = await this.probe();
       }
       const latencyMs = Date.now() - started;
@@ -174,6 +324,18 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     const realm = this.credentials.realmId ?? '';
     return this.request('GET', `/companyinfo/${realm}`);
   }
+
+  /**
+   * The pipeline's view of this adaptor's connection.
+   *
+   * A bound field rather than a method reference so `findCustomerByIdentifier`
+   * and friends can be handed it without every one of them re-deriving the URL
+   * and the bearer token. It is private because handing it out is how the URL
+   * shape would end up duplicated somewhere that does not own it — which is how
+   * `{base}/realm/{realm}/...` survived as long as it did.
+   */
+  private qboRequest: QboRequest = (path: string, body?: unknown): Promise<AdaptorResponse> =>
+    body === undefined ? this.request('GET', path) : this.request('POST', path, body);
 
   private assertConnected(): void {
     if (!this.connected) {

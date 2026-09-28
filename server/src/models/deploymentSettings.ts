@@ -19,9 +19,25 @@
  */
 
 import type { AdaptorId } from '../types/adaptor.js';
+import type { CustomerMatchMode, CustomerMatchStrategy } from '../types/adaptor.js';
 
 /** Which accounting system this deployment pushes to. One choice, not a set. */
 export type ConfiguredAdaptorId = AdaptorId;
+
+/**
+ * The stored shape of the matching rule. Three of these four are a choice from
+ * a list; `fieldName` is the single value an operator types.
+ *
+ * It is stored as four columns rather than one value on purpose — see
+ * migration 006. The runtime shape is `CustomerMatchConfig`, which is what the
+ * pipeline actually receives.
+ */
+export interface InvoiceMatchingSettings {
+  strategy: CustomerMatchStrategy | null;
+  mode: CustomerMatchMode | null;
+  fieldName: string | null;
+  depositAccountId: string | null;
+}
 
 export interface DeploymentSettings {
   /** Display name for the organization, set by the wizard. */
@@ -38,6 +54,27 @@ export interface DeploymentSettings {
   adaptorBaseUrl: string | null;
   /** Sealed. `null` means "not configured". */
   adaptorCredentials: Buffer | null;
+
+  /* --- invoice matching (migration 006) --- */
+  /**
+   * Where on an accounting customer the payment's identifier is looked for.
+   * `null` means unconfigured, and the pipeline REFUSES to guess one — see
+   * `WebhookProcessor.resolveMatchConfig`.
+   */
+  invoiceMatchStrategy: CustomerMatchStrategy | null;
+  /** Exact or substring, for the strategies that support a choice. */
+  invoiceMatchMode: CustomerMatchMode | null;
+  /**
+   * The accounting custom field's NAME. Required by, and only meaningful for,
+   * the `customField` strategy. A name rather than a numeric id because that is
+   * the only way the accounting query language can address the field.
+   */
+  invoiceMatchField: string | null;
+  /**
+   * Where received money is deposited. `null` omits the reference, so the
+   * provider applies it to undeposited funds.
+   */
+  paymentDepositAccountId: string | null;
 
   /* --- operational preferences --- */
   /** Sync pull cadence (FR-3.3). Validated on read, never trusted as stored. */
@@ -75,6 +112,10 @@ export function defaultDeploymentSettings(now = new Date().toISOString()): Deplo
     adaptorRealmId: null,
     adaptorBaseUrl: null,
     adaptorCredentials: null,
+    invoiceMatchStrategy: null,
+    invoiceMatchMode: null,
+    invoiceMatchField: null,
+    paymentDepositAccountId: null,
     syncInterval: null,
     alertTarget: null,
     verifiedAt: null,

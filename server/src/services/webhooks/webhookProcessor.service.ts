@@ -2,22 +2,95 @@ import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import { connectAdaptor } from '../adaptors/credentials.provider.js';
 import { resolveConfiguredAdaptorId } from '../adaptors/activeAdaptor.service.js';
-import { AdaptorConnectionError } from '../adaptors/errors.js';
+import { AdaptorApplyError, AdaptorConnectionError } from '../adaptors/errors.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
+import { settingsService } from '../settings/settings.service.js';
 import { getRepositories } from '../../repositories/index.js';
 import { InMemoryWebhookDedupRepository } from '../../repositories/inMemory.js';
 import type { WebhookDedupRepository } from '../../types/repository.js';
-import type { AccountingAdaptor, AdaptorId, PaymentRef } from '../../types/adaptor.js';
+import type {
+  AccountingAdaptor,
+  AdaptorId,
+  CustomerMatchConfig,
+  PaymentRef,
+  PushResult,
+} from '../../types/adaptor.js';
 import type { WebhookEvent } from '../../types/gateway.js';
 import type { LifecycleEventType } from '../../models/domain.js';
 import type { EventLog } from '../events/eventLog.service.js';
 import type { FailureTracker } from '../events/failureTracker.service.js';
+import type { SettingsService } from '../settings/settings.service.js';
+
+/**
+ * What a failed push should be CALLED on the dashboard.
+ *
+ * The apply failures are named, and each one names the action an operator can
+ * take, because "payment push failed" is the least useful sentence available:
+ * it is equally true of a credential that expired, an identifier nobody
+ * matched, and a company with three customers called the same. The upstream's
+ * own error text is deliberately NOT used — a QuickBooks fault quotes back the
+ * entity it refused, which is often a customer's name.
+ */
+function describePushFailure(action: string, err: unknown): string {
+  if (err instanceof AdaptorApplyError) {
+    switch (err.reason) {
+      case 'customer-not-found':
+        return 'No accounting customer matches this payment';
+      case 'customer-ambiguous':
+        return `${err.matches ?? 0} accounting customers match this payment; none was paid`;
+      case 'invoice-not-found':
+        return 'The matched accounting customer has no outstanding invoice';
+      case 'invoice-ambiguous':
+        return 'The matched accounting customer has several outstanding invoices';
+      case 'invoice-not-cleared':
+        return 'The payment was recorded but the invoice is still outstanding';
+      case 'scan-limit-reached':
+        return 'The customer scan hit its limit before finding a match';
+    }
+  }
+  return `Payment push to adaptor failed (${action})`;
+}
+
+/**
+ * The success line, naming the invoice so an operator can go and look at it.
+ *
+ * An invoice id is the one upstream identifier worth putting in an event: it is
+ * what the operator needs to find the record, and it identifies a transaction
+ * rather than a person. Counts and figures are not — there are none here.
+ */
+function describeApplied(adaptorName: string, result: PushResult): string {
+  if (result.alreadyApplied) {
+    return `Already recorded in ${adaptorName} on invoice ${result.invoiceRef ?? 'unknown'}`;
+  }
+  return `Invoice ${result.invoiceRef ?? 'unknown'} paid in ${adaptorName}`;
+}
 
 /** Resolves an accounting adaptor by id (defaults to the singleton registry). */
 export interface AdaptorResolver {
   get(id: AdaptorId): AccountingAdaptor;
+}
+
+/**
+ * Test seams that are not positional.
+ *
+ * AN OBJECT, DELIBERATELY, and after this codebase has already paid for the
+ * alternative: the singleton once passed its organization as a literal
+ * positional, which silently DEFEATED the configured-organization default
+ * because an explicit argument beats a default parameter. Every positional
+ * added to this constructor is another one that can quietly outrank a default
+ * in production while looking like configuration in a test.
+ *
+ * Both members are overrides. With neither set the processor reads the real
+ * configuration, which is what the singleton does and what a test exercising
+ * the unconfigured path needs.
+ */
+export interface WebhookProcessorOverrides {
+  /** Skip the settings read and use this rule. */
+  matchConfig?: CustomerMatchConfig;
+  /** Stand in for the settings service. */
+  settings?: Pick<SettingsService, 'resolveMatchConfig'>;
 }
 
 /**
@@ -53,6 +126,7 @@ export class WebhookProcessor {
       are about, and only a wildcard super admin would ever see them.
     */
     private readonly organizationId = env.ORGANIZATION_ID,
+    private readonly overrides: WebhookProcessorOverrides = {},
   ) {}
 
   async processWebhook(event: WebhookEvent): Promise<void> {
@@ -141,7 +215,7 @@ export class WebhookProcessor {
   }
 
   /**
-   * Connect if needed, then push the payment to the active accounting adaptor.
+   * Connect if needed, then apply the payment in the active accounting system.
    *
    * On failure a critical Failure is recorded (FR-5.3) and the error is
    * rethrown so the webhook is NOT marked processed and stays retryable (M2).
@@ -167,13 +241,16 @@ export class WebhookProcessor {
         // call is what persists a rotated credential.
         await connectAdaptor(adaptor);
       }
-      await this.pushWithTimeout(adaptor, {
+      const result = await this.pushWithTimeout(adaptor, {
         id: event.id,
         transactionId: event.reference,
-        externalInvoiceId: event.reference,
+        // The gateway's order reference is the value an accounting customer is
+        // matched on. It was previously ALSO being passed as an upstream
+        // invoice id, which it is not — see `PaymentRef.matchValue`.
+        matchValue: event.reference,
         status: event.status,
         processedAt: event.at,
-      });
+      }, await this.resolveMatchConfig());
       // The terminal stage of the ledger: the record now exists in the
       // accounting system. Derived from `record-updated`, which (like
       // `webhook-received`) nothing ever wrote, so a successful push left no
@@ -182,7 +259,7 @@ export class WebhookProcessor {
         type: 'record-updated',
         channel: 'accounting',
         ref: event.reference,
-        detail: `Record updated in ${adaptor.name}`,
+        detail: describeApplied(adaptor.name, result),
         organizationId: this.organizationId,
       });
     } catch (err) {
@@ -190,7 +267,7 @@ export class WebhookProcessor {
       await this.failureTracker.recordFailure({
         severity: 'critical',
         channel: 'accounting',
-        title: 'Payment push to adaptor failed',
+        title: describePushFailure(action, err),
         detail: `Failed to push ${action} to accounting adaptor`,
         organizationId: this.organizationId,
       });
@@ -199,10 +276,46 @@ export class WebhookProcessor {
   }
 
   /**
-   * Enforce the ≤5s push budget (FR-3.2). A hung adaptor call is surfaced as
-   * a timeout rejection (treated as a push failure) instead of hanging forever.
+   * How this deployment matches a payment to an accounting customer.
+   *
+   * Resolved HERE rather than inside the adaptor, and injected for the same
+   * reason the adaptor's credentials are: an adaptor that reads configuration
+   * itself is the coupling this codebase removed from `connect`, and it would
+   * come straight back through a method added later.
    */
-  private async pushWithTimeout(adaptor: AccountingAdaptor, payment: PaymentRef): Promise<void> {
+  private async resolveMatchConfig(): Promise<CustomerMatchConfig> {
+    if (this.overrides.matchConfig) return this.overrides.matchConfig;
+    const settings = this.overrides.settings ?? settingsService;
+    const stored = await settings.resolveMatchConfig();
+    if (stored) return stored;
+    /*
+      No match configured. Refusing is the only safe answer, and the refusal
+      names the fix: the alternative is a default strategy nobody chose, which
+      would quietly decide that a student's identifier is their name and pay
+      whichever ledger happened to match.
+    */
+    throw new AdaptorConnectionError(
+      'No customer matching rule is configured, so a completed payment cannot be placed on an invoice. Set one in system configuration.',
+    );
+  }
+
+  /**
+   * Enforce the push budget (FR-3.2). A hung adaptor call is surfaced as
+   * a timeout rejection (treated as a push failure) instead of hanging forever.
+   *
+   * THE BUDGET IS THE STALE PART OF THIS COMMENT AND OF THE REQUIREMENT. It was
+   * set against a single upstream call; the real pipeline is up to five
+   * sequential ones (match, invoice, already-done, create, verify), so ≤5s is
+   * no longer what this measures. It is kept at 5s rather than quietly widened,
+   * because the number in REQUIREMENTS is a promise to the operator and
+   * changing it is a decision, not an implementation detail. The measured cold
+   * and warm costs are in `dev/QUICKBOOKS-INVOICE-PIPELINE.md`.
+   */
+  private async pushWithTimeout(
+    adaptor: AccountingAdaptor,
+    payment: PaymentRef,
+    match: CustomerMatchConfig,
+  ): Promise<PushResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(
@@ -213,7 +326,7 @@ export class WebhookProcessor {
     });
 
     try {
-      await Promise.race([adaptor.pushCompletedPayment(payment), timeout]);
+      return await Promise.race([adaptor.pushCompletedPayment(payment, match), timeout]);
     } finally {
       if (timer) {
         clearTimeout(timer);

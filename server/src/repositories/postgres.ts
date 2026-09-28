@@ -759,6 +759,10 @@ interface SettingsRow {
   adaptor_realm_id: string | null;
   adaptor_base_url: string | null;
   adaptor_credentials_sealed: Buffer | null;
+  invoice_match_strategy: string | null;
+  invoice_match_mode: string | null;
+  invoice_match_field: string | null;
+  payment_deposit_account_id: string | null;
   sync_interval: string | null;
   alert_target: string | null;
   verified_at: Date | null;
@@ -770,6 +774,8 @@ interface SettingsRow {
 const SETTINGS_COLUMNS = `
   organization_name, gateway_client_id, gateway_webhook_secret_sealed,
   adaptor_id, adaptor_realm_id, adaptor_base_url, adaptor_credentials_sealed,
+  invoice_match_strategy, invoice_match_mode, invoice_match_field,
+  payment_deposit_account_id,
   sync_interval, alert_target, verified_at, configured_at, created_at, updated_at`;
 
 function toSettings(row: SettingsRow): DeploymentSettings {
@@ -781,6 +787,11 @@ function toSettings(row: SettingsRow): DeploymentSettings {
     adaptorRealmId: row.adaptor_realm_id,
     adaptorBaseUrl: row.adaptor_base_url,
     adaptorCredentials: row.adaptor_credentials_sealed,
+    invoiceMatchStrategy:
+      (row.invoice_match_strategy as DeploymentSettings['invoiceMatchStrategy']) ?? null,
+    invoiceMatchMode: (row.invoice_match_mode as DeploymentSettings['invoiceMatchMode']) ?? null,
+    invoiceMatchField: row.invoice_match_field,
+    paymentDepositAccountId: row.payment_deposit_account_id,
     syncInterval: row.sync_interval,
     alertTarget: row.alert_target,
     verifiedAt: row.verified_at ? toIso(row.verified_at) : null,
@@ -824,7 +835,10 @@ export class PostgresSettingsRepository implements SettingsRepository {
          organization_name = $1, gateway_client_id = $2, gateway_webhook_secret_sealed = $3,
          adaptor_id = $4, adaptor_realm_id = $5, adaptor_base_url = $6,
          adaptor_credentials_sealed = $7, sync_interval = $8, alert_target = $9,
-         verified_at = $10, configured_at = $11, updated_at = now()
+         verified_at = $10, configured_at = $11,
+         invoice_match_strategy = $12, invoice_match_mode = $13,
+         invoice_match_field = $14, payment_deposit_account_id = $15,
+         updated_at = now()
        WHERE id = true`,
       [
         next.organizationName,
@@ -838,6 +852,10 @@ export class PostgresSettingsRepository implements SettingsRepository {
         next.alertTarget,
         next.verifiedAt,
         next.configuredAt,
+        next.invoiceMatchStrategy,
+        next.invoiceMatchMode,
+        next.invoiceMatchField,
+        next.paymentDepositAccountId,
       ],
     );
     return this.get();
