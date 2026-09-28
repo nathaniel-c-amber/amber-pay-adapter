@@ -168,13 +168,18 @@ export const OPAQUE_REFERENCE = /^[A-Za-z0-9_-]{8,64}$/;
  */
 export const CUSTOM_FIELD_NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$/;
 
-/** Render a validated custom field name as a quoted SQL identifier. */
-export function sqlIdentifier(name: string): string {
-  if (!CUSTOM_FIELD_NAME.test(name)) {
-    throw new Error('Invalid custom field name');
-  }
-  return `"${name}"`;
-}
+/*
+  `sqlIdentifier` — which used to render a custom field as a quoted SQL
+  identifier — IS GONE, and deliberately not left behind.
+
+  It existed for one caller: `select * from Customer where "Field" = '…'`. A live
+  company answers that with HTTP 400 "Error parsing query", so the call is
+  unreachable and the helper with it. Keeping it would have been worse than dead
+  code: it reads as a security control guarding a query that no longer exists,
+  and a future change reaching for it would rebuild exactly the query the
+  provider rejects. `CUSTOM_FIELD_NAME` remains, because the field name is still
+  validated — as configuration, by the settings service and again before a scan.
+*/
 
 /**
  * Turn a transport response into a parsed body, or throw the classified error.

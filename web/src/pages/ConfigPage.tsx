@@ -27,22 +27,56 @@ import { useCallback, useEffect, useState } from "react";
 import { IconEdit, IconLedger, IconServer } from "@/components/icons";
 import { BTN, BTN_PRIMARY, Card, DemoTag, INPUT, LINK_BTN, PageHeader, cx } from "@/components/ui";
 import { Can, Cannot } from "@/components/Can";
-import { SYSTEM_MANAGE } from "@/utils/permissions";
+import { ABILITY, SYSTEM_MANAGE } from "@/utils/permissions";
 import {
   ApiRequestError,
   UnauthorizedError,
   beginQuickBooksConnect,
   getSettings,
   updateGatewaySettings,
+  updateInvoiceMatchingSettings,
   updatePreferenceSettings,
   verifyAdaptor,
 } from "@/services/client";
 import { formatDateTime } from "@/utils/datetime";
 import { adaptorChoice, readingForVerification, validateOrganizationName } from "@/utils/settingsRules";
 import type { VerificationReading } from "@/utils/settingsRules";
-import type { ApiDeploymentSettings } from "@/types/api";
+import type {
+  ApiDeploymentSettings,
+  ApiInvoiceMatchMode,
+  ApiInvoiceMatchStrategy,
+} from "@/types/api";
 
-type Section = "deployment" | "gateway" | "accounting";
+type Section = "deployment" | "gateway" | "accounting" | "matching";
+
+/**
+ * The three places an identifier can live on an accounting customer.
+ *
+ * Offered as DATA so the select, the read-only summary and the warning about
+ * cost cannot drift apart — they are three renderings of one list, and a fourth
+ * strategy added to only one of them would leave the console describing a
+ * choice it does not offer.
+ *
+ * The wording about speed is not marketing. QuickBooks rejects both a
+ * `Notes like` filter and any custom-field filter with an HTTP 400, so ONLY the
+ * name is a single call; the other two read customers a page at a time. That was
+ * verified against the live company on 2026-09-28, and the console says so
+ * before an operator chooses rather than after their payments stop posting.
+ */
+const MATCH_STRATEGY_OPTIONS: { value: ApiInvoiceMatchStrategy; label: string }[] = [
+  { value: "displayName", label: "The customer name is the identifier" },
+  { value: "customField", label: "In a custom field" },
+  { value: "notes", label: "In the customer notes" },
+];
+
+const MATCH_STRATEGY_TEXT: Record<string, string> = Object.fromEntries(
+  MATCH_STRATEGY_OPTIONS.map((option) => [option.value, option.label]),
+);
+
+const MATCH_MODE_TEXT: Record<ApiInvoiceMatchMode, string> = {
+  exact: "Whole identifier",
+  contains: "Part of the name",
+};
 
 function messageOf(err: unknown): string {
   if (err instanceof ApiRequestError) return err.message;
@@ -126,6 +160,18 @@ export function ConfigPage({
   const [verified, setVerified] = useState<VerificationReading | null>(null);
   const [verifying, setVerifying] = useState(false);
 
+  /*
+    The matching rule, held as a draft rather than written straight from the
+    loaded settings. Every section on this page keeps a draft, and the reason is
+    the same for all of them: the field is write-only, so the value in `settings`
+    is the LAST SAVED one, and binding the inputs to it would mean a reload
+    silently discards what somebody typed.
+  */
+  const [strategy, setStrategy] = useState<ApiInvoiceMatchStrategy | "">("");
+  const [matchMode, setMatchMode] = useState<ApiInvoiceMatchMode>("exact");
+  const [fieldName, setFieldName] = useState("");
+  const [depositAccountId, setDepositAccountId] = useState("");
+
   const load = useCallback(async () => {
     if (!token) return;
     try {
@@ -134,6 +180,11 @@ export function ConfigPage({
       setLoadError(null);
       setName(loaded.organizationName ?? "");
       setClientId(loaded.gateway.clientId ?? "");
+      const rule = loaded.adaptor.invoiceMatching;
+      setStrategy(rule.strategy ?? "");
+      setMatchMode(rule.mode ?? "exact");
+      setFieldName(rule.fieldName ?? "");
+      setDepositAccountId(rule.depositAccountId ?? "");
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         onRequireSignIn();
@@ -189,6 +240,52 @@ export function ConfigPage({
       note("gateway", "ok", "Saved. The stored secret is in use for the next delivery.");
     } catch (err) {
       note("gateway", "error", messageOf(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Save the matching rule.
+   *
+   * Sends ONLY the fields that changed, because the server validates the rule as
+   * a whole against the value that will be STORED — so resending an untouched
+   * field as an empty string would be read as "clear this one field", and a
+   * half-typed custom-field name would clear the very field the rule depends on.
+   */
+  const saveMatching = async () => {
+    if (!token || !settings) return;
+    if (!strategy) {
+      note("matching", "error", "Choose where the identifier is found on the customer.");
+      return;
+    }
+    if (strategy === "customField" && fieldName.trim().length === 0) {
+      note(
+        "matching",
+        "error",
+        "Matching on a custom field needs the field's name — it is what holds the identifier.",
+      );
+      return;
+    }
+    const current = settings.adaptor.invoiceMatching;
+    setBusy("matching");
+    try {
+      const next = await updateInvoiceMatchingSettings(token, {
+        strategy,
+        ...(matchMode !== (current.mode ?? "exact") ? { mode: matchMode } : {}),
+        // Absent when unchanged, so the server keeps what is stored rather than
+        // being handed a blank it would have to treat as an instruction.
+        ...(strategy === "customField" && fieldName.trim() !== (current.fieldName ?? "")
+          ? { fieldName: fieldName.trim() }
+          : {}),
+        ...(depositAccountId.trim() !== (current.depositAccountId ?? "")
+          ? { depositAccountId: depositAccountId.trim() || null }
+          : {}),
+      });
+      setSettings(next);
+      note("matching", "ok", "Saved. Completed payments will be matched using this rule.");
+    } catch (err) {
+      note("matching", "error", messageOf(err));
     } finally {
       setBusy(null);
     }
@@ -351,19 +448,6 @@ export function ConfigPage({
               autoComplete="organization"
               aria-describedby="cfg-name-hint"
             />
-            <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3" id="cfg-name-hint">
-              This deployment serves one organization, so its name is the organization's name. It
-              appears in the page header, the browser tab, and the emails people are invited to.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1 rounded-panel border border-rule-enamel-soft bg-midnight-2 p-3">
-            <span className="mono text-micro uppercase tracking-label text-ink-3">Organization ID</span>
-            <code className="mono text-md text-ink-1">{settings.organizationId}</code>
-            <p className="m-0 max-w-[62ch] text-xs leading-prose text-ink-3">
-              Read-only: set when the deployment was provisioned. Every stored row and every access
-              grant is filed under it, so editing it here would hide the records already held.
-            </p>
           </div>
 
           <dl className="m-0 flex flex-col">
@@ -391,7 +475,7 @@ export function ConfigPage({
         </div>
       </Card>
 
-      <Card title="Gateway">
+      <Card title="Payment Gateway">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <label
@@ -562,6 +646,187 @@ export function ConfigPage({
               </p>
             </div>
           )}
+        </div>
+      </Card>
+
+      {/*
+        THE MATCHING RULE — READ FOR EVERYONE, WRITTEN BY AN ADMINISTRATOR ONLY.
+
+        The asymmetry is the design. An operator who cannot SEE the rule cannot
+        tell whether a completed payment is being matched to the right student,
+        and that is the question this page exists to answer. So a reader gets the
+        rule stated in full and no control, and `<Cannot>` says why in one line
+        rather than leaving a reader to wonder whether an omission is a bug.
+
+        The control is hidden rather than disabled, which is the console's
+        standing rule for a denied surface. Hiding it is a courtesy, not the
+        control: the server refuses the write for a non-administrator, and
+        `PUT /settings/invoice-matching` is gated on `admin` alone.
+      */}
+      <Card title="Matching a payment to a customer">
+        <div className="flex flex-col gap-4">
+          <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
+            When a payment completes, the reference the gateway sent is looked up on the accounting
+            system to find the customer it belongs to, and this rule says where to look. An identifier
+            that matches more than one customer is refused rather than guessed, so a payment is never
+            applied to the wrong ledger.
+          </p>
+
+          {/*
+            THE CONFIGURED RULE, ALWAYS SHOWN — including to a reader, and
+            including when nothing is set. "No rule configured" is itself the
+            answer to "why did the last payment not post", and rendering only the
+            editable form would have made that state invisible to everyone but the
+            one person who caused it.
+          */}
+          <dl className="m-0 flex flex-col">
+            <Fact label="Where the identifier is found" value={MATCH_STRATEGY_TEXT[strategy] ?? "Not set"} />
+            <Fact label="Match" value={strategy ? MATCH_MODE_TEXT[matchMode] : "—"} />
+            <Fact
+              label="Field"
+              value={strategy === "customField" ? fieldName || "Not set" : "—"}
+            />
+            <Fact
+              label="Deposit account"
+              value={depositAccountId || "Undeposited funds"}
+            />
+          </dl>
+
+          {!settings.adaptor.invoiceMatching.strategy && (
+            <div className="rounded-panel border border-state-delayed bg-midnight-2 px-4 py-3">
+              <p className="m-0 text-md font-semibold text-state-delayed">No matching rule is set</p>
+              <p className="m-0 mt-1 max-w-[62ch] text-sm leading-prose text-ink-2">
+                A completed payment has nowhere to go, so it is held rather than posted. This is
+                the reason a payment can complete and still not appear in the accounting system.
+              </p>
+            </div>
+          )}
+
+          <Can ability={ABILITY.systemAdmin}>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <label
+                  className="mono text-micro uppercase tracking-label text-ink-3"
+                  htmlFor="cfg-strategy"
+                >
+                  Where the identifier is found
+                </label>
+                <select
+                  id="cfg-strategy"
+                  className={INPUT}
+                  value={strategy}
+                  onChange={(event) =>
+                    setStrategy(event.target.value as ApiInvoiceMatchStrategy | "")
+                  }
+                  aria-describedby="cfg-strategy-hint"
+                >
+                  <option value="">Not set</option>
+                  {MATCH_STRATEGY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <p id="cfg-strategy-hint" className="m-0 text-xs leading-prose text-ink-3">
+                  {strategy === "notes"
+                    ? "QuickBooks cannot search a customer's notes, so this looks at them page by page — slower, and metered against the provider's limits."
+                    : strategy === "customField"
+                      ? "QuickBooks cannot search a custom field either, so the field you name below is read from customers one at a time. It works; it is not instant."
+                      : strategy === "displayName"
+                        ? "A single lookup — but the reference the gateway sends has no spaces in it, so this only works where the customer's name is the identifier itself."
+                        : "Choose where the identifier is found."}
+                </p>
+              </div>
+
+              {strategy === "customField" && (
+                <div className="flex flex-col gap-1">
+                  <label
+                    className="mono text-micro uppercase tracking-label text-ink-3"
+                    htmlFor="cfg-field"
+                  >
+                    Custom field name
+                  </label>
+                  <input
+                    id="cfg-field"
+                    className={INPUT}
+                    value={fieldName}
+                    onChange={(event) => setFieldName(event.target.value)}
+                    placeholder="Student ID"
+                    aria-describedby="cfg-field-hint"
+                  />
+                  <p id="cfg-field-hint" className="m-0 text-xs leading-prose text-ink-3">
+                    The name exactly as the accounting system shows it, spaces included.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <label
+                  className="mono text-micro uppercase tracking-label text-ink-3"
+                  htmlFor="cfg-mode"
+                >
+                  Match
+                </label>
+                <select
+                  id="cfg-mode"
+                  className={INPUT}
+                  value={matchMode}
+                  onChange={(event) => setMatchMode(event.target.value as ApiInvoiceMatchMode)}
+                  aria-describedby="cfg-mode-hint"
+                >
+                  <option value="exact">Whole identifier</option>
+                  <option value="contains">Part of the name</option>
+                </select>
+                <p id="cfg-mode-hint" className="m-0 text-xs leading-prose text-ink-3">
+                  {matchMode === "exact"
+                    ? "Matches one customer, or none."
+                    : "Matches anything containing the identifier, so a short one can match more than one customer — and that is refused, not guessed."}
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label
+                  className="mono text-micro uppercase tracking-label text-ink-3"
+                  htmlFor="cfg-deposit"
+                >
+                  Deposit account
+                </label>
+                <input
+                  id="cfg-deposit"
+                  className={INPUT}
+                  value={depositAccountId}
+                  onChange={(event) => setDepositAccountId(event.target.value)}
+                  placeholder="Undeposited funds"
+                  aria-describedby="cfg-deposit-hint"
+                />
+                <p id="cfg-deposit-hint" className="m-0 text-xs leading-prose text-ink-3">
+                  Optional. Left blank, received money goes to undeposited funds.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  className={BTN_PRIMARY}
+                  onClick={() => void saveMatching()}
+                  disabled={busy !== null}
+                >
+                  Save matching rule
+                </button>
+                {outcome.matching && (
+                  <Outcome tone={outcome.matching.tone}>{outcome.matching.text}</Outcome>
+                )}
+              </div>
+            </div>
+          </Can>
+
+          <Cannot ability={ABILITY.systemAdmin}>
+            <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-3">
+              Only a scope with the <code>admin</code> action can change this rule. It decides which
+              customer's ledger a payment is applied to, so it is deliberately narrower than the rest
+              of this page.
+            </p>
+          </Cannot>
         </div>
       </Card>
 

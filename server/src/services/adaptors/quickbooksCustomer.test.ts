@@ -114,7 +114,21 @@ describe('matching by customer name', () => {
 });
 
 describe('matching by custom field', () => {
-  it('addresses the field by the name the operator typed', async () => {
+  /*
+    ★ THIS STRATEGY SCANS, and that is a VERIFIED FACT rather than a design
+    choice. This test used to assert the opposite — that the field was addressed
+    in the query string — and it was wrong: a live QuickBooks company answers
+    `select * from Customer where "Student ID" = '…'` with HTTP 400 "Error
+    parsing query", and the single-quoted spelling is refused too. Verified
+    2026-09-28 against realm 9341457936805547.
+
+    So the test now pins what the provider actually allows: a page of customers
+    with NO field filter, and the comparison made in memory. It also asserts the
+    field name never reaches the query, because the previous behaviour was not
+    merely inefficient — it failed every payment with an upstream parse error
+    while the configuration screen showed the rule as correctly set.
+  */
+  it('reads the field off each customer rather than filtering on it upstream', async () => {
     const { request, seen } = responder(
       customers([
         { Id: 'cust-1', CustomField: [{ Name: 'Student ID', StringValue: 'S1234567' }] },
@@ -122,9 +136,31 @@ describe('matching by custom field', () => {
     );
     const outcome = await findCustomerByIdentifier(request, customField, 'S1234567');
 
-    expect(seen[0]).toContain('"Student ID"');
-    expect(seen[0]).toContain("= 'S1234567'");
+    // The statement asks for customers, and does not mention the field at all.
+    expect(seen[0]).toContain('from Customer');
+    expect(seen[0]).not.toContain('Student ID');
+    expect(seen[0]).not.toContain('WHERE');
     expect(outcome).toEqual({ ok: true, customer: { id: 'cust-1' }, scanned: 1 });
+  });
+
+  it('surfaces a provider that refuses the request, rather than reporting no match', async () => {
+    /*
+      The shape of the provider's answer, captured so the decision cannot be
+      quietly reversed by someone who believes the field is filterable again.
+      Every other test would still pass against a re-broken implementation,
+      because they use a fake that answers whatever it is asked.
+
+      "Refused" and "found nobody" must stay different: one means the connection
+      or the company is the problem, the other means check the identifier. A
+      silent "no match" here would send an operator hunting for a student who
+      exists.
+    */
+    const rejecting = jest
+      .fn()
+      .mockResolvedValue({ status: 400, body: { Fault: { Error: [{ Message: 'Error parsing query' }] } } });
+    await expect(
+      findCustomerByIdentifier(rejecting, { ...customField }, 'S1234567'),
+    ).rejects.toThrow(/customer scan failed \(status 400\)/);
   });
 
   it('reads a value returned in either of the two fields QuickBooks uses', async () => {
@@ -134,7 +170,7 @@ describe('matching by custom field', () => {
     expect((await findCustomerByIdentifier(request, customField, 'S1234567')).ok).toBe(true);
   });
 
-  it('refuses to build a query when no field name is set', async () => {
+  it('refuses before making a request when no field name is set', async () => {
     const { request, seen } = responder(customers([]));
     await expect(
       findCustomerByIdentifier(request, { ...customField, fieldName: null }, 'S1234567'),

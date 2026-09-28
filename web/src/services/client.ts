@@ -8,6 +8,8 @@ import type {
   ApiDirectoryUser,
   ApiIdentity,
   ApiInviteDetail,
+  ApiInvoiceMatchMode,
+  ApiInvoiceMatchStrategy,
   ApiPolicyAttribute,
   ApiServiceStatus,
   MetricsResponse,
@@ -390,6 +392,32 @@ export async function updateAdaptorSettings(
   },
 ): Promise<ApiDeploymentSettings> {
   const result = await request<{ settings: ApiDeploymentSettings }>("/settings/adaptor", {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  return result.settings;
+}
+
+/**
+ * PUT /settings/invoice-matching — the customer matching rule. ADMIN ONLY.
+ *
+ * Its own endpoint rather than a key on `updateAdaptorSettings`, because the
+ * server gates it on `admin` while that one is open to `write` as well. The
+ * console hides the control from a non-administrator too, but that is a
+ * courtesy: this function is the boundary, and the route is the one that
+ * actually refuses.
+ */
+export async function updateInvoiceMatchingSettings(
+  token: string,
+  body: {
+    strategy?: ApiInvoiceMatchStrategy | null;
+    mode?: ApiInvoiceMatchMode | null;
+    fieldName?: string | null;
+    depositAccountId?: string | null;
+  },
+): Promise<ApiDeploymentSettings> {
+  const result = await request<{ settings: ApiDeploymentSettings }>("/settings/invoice-matching", {
     method: "PUT",
     headers: authHeaders(token),
     body: JSON.stringify(body),

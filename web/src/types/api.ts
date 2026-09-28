@@ -220,6 +220,21 @@ export interface ApiDirectoryUser {
 export type ApiAdaptorId = "quickbooks" | "sage";
 
 /**
+ * Where a payment's identifier is found on a QuickBooks customer.
+ *
+ * NOT interchangeable in cost, and only ONE of them is a single call. Verified
+ * against a live QuickBooks company on 2026-09-28: a `DisplayName` filter is
+ * accepted, while both `Notes like` and a custom-field filter are answered with
+ * HTTP 400 — the provider cannot search either. The other two therefore read
+ * customers a page at a time, which is metered against its rate limit and
+ * bounded, and the console says so before an operator chooses.
+ */
+export type ApiInvoiceMatchStrategy = "displayName" | "customField" | "notes";
+
+/** `contains` is a substring search and can match more than one customer. */
+export type ApiInvoiceMatchMode = "exact" | "contains";
+
+/**
  * What a read may say about a stored secret: whether one exists, and its last four
  * characters. NEVER the value.
  *
@@ -261,6 +276,21 @@ export interface ApiDeploymentSettings {
      * browser needs this to avoid offering a button the server will refuse.
      */
     canAuthorize: boolean;
+    /**
+     * The customer matching rule, or all-null when none is set.
+     *
+     * READABLE BY ANYONE WHO CAN READ THIS PAGE, writable only by an
+     * administrator. The split is deliberate and it is not symmetric: seeing the
+     * rule is how an operator tells whether a payment is being matched to the
+     * right student, while changing it is how money gets steered. So a reader
+     * sees the same field an admin edits, and gets no control.
+     */
+    invoiceMatching: {
+      strategy: ApiInvoiceMatchStrategy | null;
+      mode: ApiInvoiceMatchMode | null;
+      fieldName: string | null;
+      depositAccountId: string | null;
+    };
   };
   syncInterval: string | null;
   alertTarget: string | null;

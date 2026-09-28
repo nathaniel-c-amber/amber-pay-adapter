@@ -127,6 +127,34 @@ export function createSettingsRouter(deps: SettingsRouteDeps = {}): express.Rout
   // PUT /api/v1/settings/preferences
   router.put('/settings/preferences', ...mayManage, mutationLimiter, controller.updatePreferences);
 
+  /*
+    THE MATCHING RULE IS ADMIN-ONLY, and this is the only line in the file that
+    says so.
+
+    It is its own route rather than a key inside `PUT /settings/adaptor` because
+    that route is `write OR admin` — the two gates cannot simply be stacked,
+    since two in sequence require BOTH and would lock a genuine administrator
+    out of a control they are entitled to. Splitting the route gives the setting
+    its own, stricter authorization.
+
+    The distinction is not cosmetic. Every other field here describes the
+    CONNECTION; this one decides which customer's ledger a real payment is
+    applied to. A wrong rule does not fail loudly — it posts against the wrong
+    books, or matches nobody and quietly stops posting. Gating only the console
+    would have left the capability exactly where it already was, because the API
+    is the boundary; hiding the control is a courtesy, not a control.
+  */
+  const mayAdministerMatching: express.RequestHandler[] = [
+    requireAuth,
+    requirePolicyAnyAction(['admin'], settingsResource),
+  ];
+  router.put(
+    '/settings/invoice-matching',
+    ...mayAdministerMatching,
+    mutationLimiter,
+    controller.updateInvoiceMatching,
+  );
+
   // POST /api/v1/settings/adaptor/verify — transient probe; records no lifecycle event.
   router.post('/settings/adaptor/verify', ...mayManage, verifyLimiter, controller.verifyAdaptor);
 

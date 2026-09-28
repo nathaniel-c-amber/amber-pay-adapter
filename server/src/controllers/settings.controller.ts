@@ -47,23 +47,23 @@ const adaptorBodySchema = z
      * the service as "not filled in", and an absent key changes nothing.
      */
     credentials: z.record(z.string().nullable()).nullable().optional(),
-    /**
-     * The customer matching rule, or `null` to clear the whole thing.
-     *
-     * `.strict()` INSIDE this object too, for the reason the outer schema is
-     * strict: a typo in a nested key would otherwise be stripped, and the
-     * service would answer "saved" for a rule that did not change.
-     */
-    invoiceMatching: z
-      .object({
-        strategy: z.enum(['displayName', 'customField', 'notes']).nullable().optional(),
-        mode: z.enum(['exact', 'contains']).nullable().optional(),
-        fieldName: z.string().min(1).nullable().optional(),
-        depositAccountId: z.string().min(1).nullable().optional(),
-      })
-      .strict()
-      .nullable()
-      .optional(),
+  })
+  .strict();
+
+/**
+ * The customer matching rule, on its own route.
+ *
+ * `.strict()` for the same reason as every other body here: zod strips unknown
+ * keys by default, which would answer "saved" for a rule that did not change —
+ * and this rule decides which customer's ledger a payment is applied to, so a
+ * silently dropped key is worse here than anywhere else on the page.
+ */
+const invoiceMatchingBodySchema = z
+  .object({
+    strategy: z.enum(['displayName', 'customField', 'notes']).nullable().optional(),
+    mode: z.enum(['exact', 'contains']).nullable().optional(),
+    fieldName: z.string().min(1).nullable().optional(),
+    depositAccountId: z.string().min(1).nullable().optional(),
   })
   .strict();
 
@@ -112,6 +112,14 @@ export interface SettingsController {
   updateGateway: RequestHandler;
   /** PUT /api/v1/settings/adaptor */
   updateAdaptor: RequestHandler;
+  /**
+   * PUT /api/v1/settings/invoice-matching — ADMIN ONLY.
+   *
+   * A separate handler, and a separate route, because this setting decides which
+   * customer's ledger a real payment lands in. Every other field on this page
+   * describes the connection; this one steers the money.
+   */
+  updateInvoiceMatching: RequestHandler;
   /** PUT /api/v1/settings/preferences */
   updatePreferences: RequestHandler;
   /** POST /api/v1/settings/adaptor/verify — transient, writes nothing it tested. */
@@ -183,6 +191,17 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
       }
 
       res.status(200).json({ settings });
+    }),
+
+    updateInvoiceMatching: asyncHandler(async (req, res) => {
+      // `null` clears the whole rule; anything else is a partial write.
+      const parsed = invoiceMatchingBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new ValidationError('Invalid invoice matching payload');
+      }
+      res.status(200).json({
+        settings: await deps.settingsService.updateInvoiceMatching(parsed.data),
+      });
     }),
 
     updatePreferences: asyncHandler(async (req, res) => {

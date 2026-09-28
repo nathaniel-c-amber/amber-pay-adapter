@@ -246,6 +246,141 @@ describe('the chosen accounting system', () => {
   });
 });
 
+/*
+  THE MATCHING RULE IS ADMIN-ONLY.
+
+  Every other field on this page describes the connection. This one decides
+  which customer's ledger a real payment is applied to, and getting it wrong
+  does not fail loudly — it posts against the wrong books, or matches nobody and
+  quietly stops posting. So it is admin-only, on its own route.
+
+  The tests below exist because the split was easy to get wrong in a way that
+  looked fine: the route it used to live on is `write OR admin`, and the obvious
+  "just add admin to the list" fix requires BOTH in sequence, which would lock a
+  genuine administrator out of a control they are entitled to. A second, quieter
+  mistake is leaving the key accepted on the old route and gating only the new
+  one — the control would then still be reachable by a writer via the API, with
+  the console hiding it and nothing wrong showing in the build.
+*/
+describe('PUT /settings/invoice-matching', () => {
+  it('refuses a writer, who can change everything else on this page', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(systemWriter))
+      .send({ strategy: 'displayName' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a reader', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(systemReader))
+      .send({ strategy: 'displayName' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('accepts a writer on the OTHER settings, proving the refusal is specific', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemWriter))
+      .send({ id: 'quickbooks' });
+
+    // Without this, "403" would be indistinguishable from a broken route or a
+    // mis-scoped writer — the test would pass for entirely the wrong reason.
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an administrator who holds only `admin`', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ strategy: 'customField', mode: 'exact', fieldName: 'Student ID' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.settings.adaptor.invoiceMatching).toMatchObject({
+      strategy: 'customField',
+      mode: 'exact',
+      fieldName: 'Student ID',
+    });
+  });
+
+  it('refuses a system administrator of a DIFFERENT organization', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(foreignSystemAdmin))
+      .send({ strategy: 'displayName' });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a custom field rule with no field to look in', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ strategy: 'customField', fieldName: null });
+
+    // The name is what identifies the field, and it is checked against the value
+    // that will be STORED — so this refuses a rule that looks configured and
+    // cannot run.
+    expect(res.status).toBe(400);
+  });
+
+  it('no longer accepts the rule on the writer-accessible adaptor route', async () => {
+    const { app } = harness();
+
+    const res = await request(app)
+      .put('/api/v1/settings/adaptor')
+      .set('Authorization', bearer(systemWriter))
+      .send({ id: 'quickbooks', invoiceMatching: { strategy: 'displayName' } });
+
+    /*
+      THE REACHABILITY HOLE, CLOSED.
+
+      Moving the rule to its own route is only half of it. If the old route still
+      accepted the key, an administrator-only control would remain fully
+      reachable by any writer who read the API — with the console hiding the
+      field, no build error, and no evidence anything was wrong. `.strict()` is
+      what turns that into a refusal.
+    */
+    expect(res.status).toBe(400);
+  });
+
+  it('reports a stored rule to a reader, who must be able to see what it is', async () => {
+    const { app } = harness();
+    await request(app)
+      .put('/api/v1/settings/invoice-matching')
+      .set('Authorization', bearer(systemAdmin))
+      .send({ strategy: 'customField', fieldName: 'Student ID' });
+
+    const res = await request(app)
+      .get('/api/v1/settings')
+      .set('Authorization', bearer(systemReader));
+
+    // Reading is not the sensitive act. An operator who cannot SEE the rule
+    // cannot tell whether a payment is being matched correctly, which is the
+    // question this page exists to answer.
+    expect(res.status).toBe(200);
+    expect(res.body.settings.adaptor.invoiceMatching).toMatchObject({
+      strategy: 'customField',
+      fieldName: 'Student ID',
+    });
+  });
+});
+
 describe('POST /settings/adaptor/verify', () => {
   it('records NO lifecycle event and NO finding when the credentials are wrong', async () => {
     const adaptor = fakeAdaptor({

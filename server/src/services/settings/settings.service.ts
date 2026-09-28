@@ -370,8 +370,7 @@ export interface AdaptorUpdate {
    * field; a blank or absent value leaves it alone. See `mergeCredentials`.
    */
   credentials?: Record<string, string | null> | null;
-  /** The customer matching rule. See `validateMatchRule`. */
-  invoiceMatching?: InvoiceMatchingUpdate | null;
+
 }
 
 export interface PreferencesUpdate {
@@ -483,28 +482,51 @@ export class SettingsService {
       }
       changed.push('adaptor.credentials');
     }
-    if (update.invoiceMatching !== undefined) {
-      if (update.invoiceMatching === null) {
-        // Clearing the whole rule in one instruction, spelled as `null`, so it
-        // is never confused with "no opinion about any of it".
-        patch.invoiceMatchStrategy = null;
-        patch.invoiceMatchMode = null;
-        patch.invoiceMatchField = null;
-        patch.paymentDepositAccountId = null;
-      } else {
-        validateMatchRule(update.invoiceMatching, matchRuleOf(current));
-        const rule = update.invoiceMatching;
-        if (rule.strategy !== undefined) patch.invoiceMatchStrategy = rule.strategy;
-        if (rule.mode !== undefined) patch.invoiceMatchMode = rule.mode;
-        if (rule.fieldName !== undefined) patch.invoiceMatchField = rule.fieldName;
-        if (rule.depositAccountId !== undefined) {
-          patch.paymentDepositAccountId = rule.depositAccountId;
-        }
-      }
-      changed.push('adaptor.invoiceMatching');
-    }
 
     return this.apply(patch, changed);
+  }
+
+  /**
+   * The customer matching rule, written on its own.
+   *
+   * ★ ADMIN-ONLY, AND THE SEPARATION IS THE POINT. This used to be a key inside
+   * `updateAdaptor`, reachable by any holder of `system.write` — because that
+   * route is gated on `write OR admin`, and the two gates in sequence would
+   * have required BOTH and locked out a legitimate administrator. So the rule
+   * moved to its own route with its own authorization instead.
+   *
+   * That matters because of what this setting DOES. Every other field on this
+   * page describes the connection; this one decides which customer's ledger a
+   * real payment is applied to. Getting it wrong does not fail visibly — it
+   * moves money against the wrong books, or matches nobody and quietly stops
+   * posting. It is therefore not a preference a `write` holder should reach,
+   * and the API is the only place that can say so; hiding the control in the
+   * console would leave the capability exactly where it was.
+   */
+  async updateInvoiceMatching(
+    update: InvoiceMatchingUpdate | null,
+  ): Promise<PublicDeploymentSettings> {
+    const current = await this.repository.get();
+    const patch: DeploymentSettingsPatch = {};
+
+    if (update === null) {
+      // Clearing the whole rule in one instruction, spelled as `null`, so it is
+      // never confused with "no opinion about any of it".
+      patch.invoiceMatchStrategy = null;
+      patch.invoiceMatchMode = null;
+      patch.invoiceMatchField = null;
+      patch.paymentDepositAccountId = null;
+    } else {
+      validateMatchRule(update, matchRuleOf(current));
+      if (update.strategy !== undefined) patch.invoiceMatchStrategy = update.strategy;
+      if (update.mode !== undefined) patch.invoiceMatchMode = update.mode;
+      if (update.fieldName !== undefined) patch.invoiceMatchField = update.fieldName;
+      if (update.depositAccountId !== undefined) {
+        patch.paymentDepositAccountId = update.depositAccountId;
+      }
+    }
+
+    return this.apply(patch, ['adaptor.invoiceMatching']);
   }
 
   /**

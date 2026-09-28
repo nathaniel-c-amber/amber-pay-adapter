@@ -10,12 +10,22 @@
  * rather than a matter of taste:
  *
  *   displayName  one upstream query. `DisplayName` is documented filterable.
- *   customField  one upstream query, against a field name the operator typed.
+ *   customField  A SCAN. A custom field is returned on the customer but is NOT
+ *                queryable — the provider rejects `where "Field" = …` — so the
+ *                value is read off each row as the scan passes. VERIFIED against
+ *                a live company on 2026-09-28, not assumed.
  *   notes        A SCAN. QuickBooks does not mark `Customer.Notes` filterable,
- *                so there is no query for it; the only way to find a match is
- *                to page every customer and compare in memory. Bounded, and it
- *                says so when it runs out of pages rather than reporting
- *                "no match" for a customer it never looked at.
+ *                so a `Notes like` filter is refused as an invalid query — also
+ *                verified, not assumed. There is no query for it; the only way
+ *                to find a match is to page every customer and compare in
+ *                memory. Bounded, and it says so when it runs out of pages
+ *                rather than reporting "no match" for a customer it never
+ *                looked at.
+ *
+ * SO ONLY `displayName` IS A SINGLE CALL. The other two page through customers,
+ * which costs several requests against a rate-limited provider — a real cost of
+ * the operator's choice of where the identifier lives, and stated in the console
+ * rather than discovered in production.
  *
  * A MATCH IS NEVER GUESSED. Zero matches and several matches are both
  * failures, and they are different failures: "we found nobody" and "we found
@@ -31,7 +41,6 @@ import {
   queryReturned,
   queryRows,
   queryPath,
-  sqlIdentifier,
   sqlLiteral,
 } from './quickbooksWire.js';
 import type {
@@ -109,28 +118,38 @@ export function assertMatchValue(value: string): void {
   }
 }
 
-/** The one query that resolves a customer by name or by custom field. */
+/**
+ * The one query that resolves a customer by name.
+ *
+ * CUSTOM FIELDS ARE NOT ADDRESSED HERE ANY MORE, and that is a verified fact
+ * rather than a preference: the accounting query language rejects
+ * `where "Field" = '…'` with HTTP 400 "Error parsing query". `rowMatches` reads
+ * a custom field off each row instead, which is what the scan does.
+ */
 function buildMatchQuery(config: CustomerMatchConfig, value: string): string {
-  if (config.strategy === 'customField') {
-    /*
-      A custom field is addressed by the NAME the operator sees in QuickBooks,
-      not by its numeric definition id — the query language has no other way to
-      name it. So the name is the one piece of configuration a user types
-      freely, and it is validated to a set that cannot break out of its own
-      quoted identifier before it gets here.
-    */
-    if (!config.fieldName || !CUSTOM_FIELD_NAME.test(config.fieldName)) {
-      throw new AdaptorApplyError(
-        'customer-not-found',
-        'This deployment matches on a QuickBooks custom field but has not set which field',
-      );
-    }
-    return `select * from Customer where ${sqlIdentifier(config.fieldName)} = ${sqlLiteral(value)}`;
-  }
   if (config.mode === 'contains') {
     return `select * from Customer where DisplayName like '%${value}%'`;
   }
   return `select * from Customer where DisplayName = ${sqlLiteral(value)}`;
+}
+
+/**
+ * Refuse a custom-field rule that names no field.
+ *
+ * Checked before any request rather than inside the comparison, because the
+ * comparison would simply match nothing — and "no field configured" would then
+ * be reported as "no such customer", sending an operator to check their student
+ * identifiers instead of their own settings. Both are true; only one is worth
+ * their time right now.
+ */
+function assertCustomFieldNamed(config: CustomerMatchConfig): void {
+  if (config.strategy !== 'customField') return;
+  if (!config.fieldName || !CUSTOM_FIELD_NAME.test(config.fieldName)) {
+    throw new AdaptorApplyError(
+      'customer-not-found',
+      'This deployment matches on a QuickBooks custom field but has not set which field',
+    );
+  }
 }
 
 /** Does this customer satisfy the configured strategy, given a row? */
@@ -158,8 +177,28 @@ export async function findCustomerByIdentifier(
   value: string,
 ): Promise<CustomerLookupOutcome> {
   assertMatchValue(value);
+  assertCustomFieldNamed(config);
 
-  if (config.strategy === 'notes') {
+  /*
+    ★ `customField` SCANS, and this was verified against a real company rather
+    than assumed. The plan said a custom field is addressed by name in the
+    accounting query language; that is WRONG. Asking a live QuickBooks company
+
+      select * from Customer where "Student ID" = 'S1234567'
+
+    is answered with HTTP 400 "Error parsing query", and the single-quoted
+    spelling is rejected too. A custom field is returned on the Customer object
+    but is not a queryable field in the dialect. So a rule that looks configured
+    would have failed EVERY payment with an upstream parse error — worse than no
+    rule at all, because the configuration screen showed it as set.
+
+    The scan is the only way to read one, and `rowMatches` already knows how,
+    so the fix is to route the strategy to the same bounded scan `notes` uses.
+    It costs the same several paged calls, and `rowMatches` still compares the
+    field client-side. `displayName` remains the one single-call strategy:
+    `DisplayName = …` and `DisplayName like …` were both accepted.
+  */
+  if (config.strategy === 'customField' || config.strategy === 'notes') {
     return scanForCustomer(request, config, value);
   }
 
@@ -221,7 +260,7 @@ async function scanForCustomer(
   */
   throw new AdaptorApplyError(
     'scan-limit-reached',
-    `Scanned ${scanned} QuickBooks customers without a unique match. Match on a custom field or the customer name instead of notes.`,
+    `Scanned ${scanned} QuickBooks customers without a unique match. Match on the customer name instead, or lower the number of customers to search.`,
   );
 }
 
@@ -257,14 +296,38 @@ export const MATCH_STRATEGY_INFO: ReadonlyArray<{
     label: 'Customer name',
     expensive: false,
     needsFieldName: false,
-    note: 'One lookup. Matches the customer name QuickBooks already shows.',
+    /*
+      "Exactly the customer's name" IS the honest label, and it is narrower than
+      it sounds. The value that arrives is the gateway's transaction reference,
+      which the webhook parser holds to `^[A-Za-z0-9_-]{8,64}$` — so it contains
+      no spaces and no apostrophes. This strategy therefore matches a customer
+      whose QuickBooks name IS that identifier (a school whose DisplayName is the
+      student ID), and cannot match "Samantha O'Brien". Verified live
+      2026-09-28: a real customer name is REFUSED by the pattern before any
+      request is made.
+
+      The pattern is left strict rather than widened to accept human names.
+      Widening it would permit nothing real — the value can never contain a
+      space — while weakening the guarantee that keeps an unvalidated string out
+      of a query against the company's books.
+    */
+    note: 'One lookup, but only where the customer name is the identifier itself. The reference the gateway sends contains no spaces, so this cannot match a name like "Samantha OBrien".',
   },
   {
     strategy: 'customField',
     label: 'Customer custom field',
-    expensive: false,
+    /*
+      `expensive: true` CHANGED, and it is the honest answer now. This was
+      described as a single lookup, on the belief that the accounting query
+      language could filter on a field by name. It cannot: a live company
+      answers that query with HTTP 400 "Error parsing query" (verified
+      2026-09-28). The value is read off each customer as the scan passes, so
+      the cost is the same as `notes` — and telling an operator otherwise would
+      have them choose a field expecting one call and get a crawl.
+    */
+    expensive: true,
     needsFieldName: true,
-    note: 'One lookup against the field you name, such as Student ID.',
+    note: 'QuickBooks cannot search a custom field either, so customers are read one by one until the value is found. Slow, and stops after a fixed number.',
   },
   {
     strategy: 'notes',
