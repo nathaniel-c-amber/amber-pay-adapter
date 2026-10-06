@@ -223,13 +223,36 @@ describe('privacy constraint', () => {
     const serverRoot = process.cwd();
     expect(existsSync(join(serverRoot, 'jest.config.js'))).toBe(true);
     expect(existsSync(join(serverRoot, 'src/services/adaptors/quickbooksWire.ts'))).toBe(true);
+    expect(existsSync(join(serverRoot, 'src/services/gateway/amberPayWire.ts'))).toBe(true);
 
-    /** Interfaces that legitimately carry a figure, all in the wire file. */
+    /**
+     * The TWO files permitted to declare a figure, and nothing else.
+     *
+     * The list grew from one entry to two, so it is enumerated here rather than
+     * globbed — an allow-list that could match a new file automatically is not an
+     * allow-list, it is a hole with extra steps. Every addition has to be
+     * argued here, in the test, where the next person will read it.
+     *
+     *   quickbooksWire.ts  — what the LEDGER says is owed. QuickBooks requires
+     *                        `TotalAmt` to apply a payment to an invoice, so
+     *                        there is no way to write one without the figure.
+     *   amberPayWire.ts    — what the CUSTOMER was asked to pay. The gateway
+     *                        requires `Amount` and `CurrencyCode` to sign a
+     *                        transaction at all, and its documentation requires
+     *                        storing them so the amount charged can be
+     *                        cross-checked against what was expected.
+     *
+     * Different questions, different files. What neither may do is leave its
+     * file: no domain type, no event, no failure, no log line, no response body
+     * may carry one — which is what the scan below enforces.
+     */
     const ALLOWED = new Set([
       'QboInvoice',
       'QboPaymentLine',
       'QboPaymentRequest',
       'QboPaymentCreated',
+      'GenerateSignatureRequest',
+      'StandardCheckoutParams',
     ]);
 
     /** Spelled the way the accounting API spells them, plus the local casing. */
@@ -247,7 +270,7 @@ describe('privacy constraint', () => {
       });
     }
 
-    it('declares no money field outside quickbooksWire.ts', () => {
+    it('declares no money field outside the two wire files', () => {
       const offenders: string[] = [];
       for (const file of serverSourceFiles(serverRoot)) {
         const source = readFileSync(file, 'utf8');
@@ -269,25 +292,38 @@ describe('privacy constraint', () => {
       expect(offenders).toEqual([]);
     });
 
-    it('finds the wire file itself, so the scan is proven to work', () => {
+    it('finds the wire files themselves, so the scan is proven to work', () => {
       /*
         A test that scans for a violation nothing can violate passes forever. It
-        would also have passed if the file walk silently found zero files, or if
-        the money fields were renamed. This asserts the positive: the interfaces
-        that DO carry a figure are found by the same code, at the same size.
+        would also have passed if the file walk silently found zero files, if
+        the money fields were renamed, or if the second allow-listed file were
+        empty. This asserts the positive: every interface that DOES carry a
+        figure is found by the same code, at the same size, in the same place.
       */
-      const wire = readFileSync(join(serverRoot, 'src/services/adaptors/quickbooksWire.ts'), 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/\/\/.*$/gm, '');
-      const declared = [...wire.matchAll(/(?:export\s+)?interface\s+([A-Za-z0-9_]+)/g)].map(
-        ([, name]) => name,
+      const sources = [
+        'src/services/adaptors/quickbooksWire.ts',
+        'src/services/gateway/amberPayWire.ts',
+      ].map((relative) =>
+        readFileSync(join(serverRoot, relative), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/\/\/.*$/gm, ''),
       );
+
+      const declared = sources.flatMap((source) =>
+        [...source.matchAll(/(?:export\s+)?interface\s+([A-Za-z0-9_]+)/g)].map(([, name]) => name),
+      );
+      // Every allowed name must actually exist, or the allow-list has drifted
+      // into permitting something that is no longer there — which would let a
+      // real one back in unnoticed.
       for (const allowed of ALLOWED) {
         expect(declared).toContain(allowed);
       }
+
       const moneyBearing = declared.filter((name) =>
-        MONEY_FIELD.test(
-          wire.match(new RegExp(`interface\\s+${name}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '',
+        sources.some((source) =>
+          MONEY_FIELD.test(
+            source.match(new RegExp(`interface\\s+${name}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '',
+          ),
         ),
       );
       expect(new Set(moneyBearing)).toEqual(ALLOWED);
