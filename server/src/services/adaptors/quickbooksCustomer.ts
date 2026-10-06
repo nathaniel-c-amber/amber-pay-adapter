@@ -36,7 +36,7 @@
 import { AdaptorApplyError } from './errors.js';
 import {
   CUSTOM_FIELD_NAME,
-  OPAQUE_REFERENCE,
+  MATCH_VALUE,
   assertQboOk,
   queryReturned,
   queryRows,
@@ -110,7 +110,7 @@ function customFieldValue(customer: QboCustomer, name: string): string | undefin
  * convenience rather than the boundary.
  */
 export function assertMatchValue(value: string): void {
-  if (!OPAQUE_REFERENCE.test(value)) {
+  if (!MATCH_VALUE.test(value)) {
     throw new AdaptorApplyError(
       'customer-not-found',
       'The payment reference is not in the format this accounting connection can match on',

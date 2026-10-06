@@ -4,6 +4,7 @@ import { env } from '../../config/env.js';
 import { ValidationError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { AdaptorConnectionError, adaptorErrorForStatus } from '../adaptors/errors.js';
+import { MATCH_VALUE, OPAQUE_REFERENCE } from '../adaptors/quickbooksWire.js';
 import { createDevGatewayTransport } from './devTransport.js';
 import type { AdaptorResponse, HttpMethod } from '../../types/adaptor.js';
 import type { PaymentStatus } from '../../models/domain.js';
@@ -17,31 +18,107 @@ import type {
 } from '../../types/gateway.js';
 
 /**
- * Opaque reference pattern promised by `WebhookEvent.reference`. It is the
- * backstop that stops customer PII (an email address, say) reaching the event
- * log, so it is enforced on every reference we accept.
+ * The reference patterns now live in `quickbooksWire.ts`, beside the query they
+ * guard, and are imported rather than re-declared here.
+ *
+ * This copy claimed to protect `WebhookEvent.reference`, but the value it was
+ * actually applied to was the gateway's own `OrderId` — a timestamp plus random
+ * characters, which cannot contain customer PII because it is not derived from
+ * the customer at all. It was protecting nothing, while the field that genuinely
+ * does carry an identifier (`StudentID`) was unguarded and seven characters long,
+ * which the 8+ floor here would have rejected.
  */
-const OPAQUE_REFERENCE = /^[A-Za-z0-9_-]{8,64}$/;
 
 /**
  * Amber Pay's webhook wire payload.
  *
- * DELIBERATELY NARROW. The gateway also sends `Amount`, `CurrencyCode`,
- * `CustomerReference` and `CardToken`; not declaring them here means zod drops
- * them during parse, so financial data and card-adjacent identifiers cannot
- * travel past this boundary into the event log, the adaptor push, or a log
- * line (FR-2.3 / FR-5.2). Unknown extra fields are ignored rather than
- * rejected, so a gateway-side addition cannot break ingestion.
+ * The shapes here are taken from a REAL callback response (supplied 2026-10-06),
+ * not from the PDF — and the two disagree in ways that matter.
+ *
+ * WHAT IS DECLARED, AND WHY IT IS SO NARROW. The live payload also carries
+ * `AmountCharged`, `CurrencyCode`, `CardHolderName`, `PaddedCardNo` ("4012XXXX…"),
+ * `BillingEmail`, `BillingPhone`, `AuthCode`, `CardType` and `CardToken`. Not
+ * declaring them means zod drops them during parse, so financial data and
+ * card-adjacent identifiers cannot travel past this boundary into the event
+ * log, the adaptor push, or a log line (FR-2.3 / FR-5.2). That decision is now
+ * evidence-backed rather than theoretical — the PII really is on the wire.
+ *
+ * `StudentID` is the ONE identity field declared, because it is the whole
+ * point of the pipeline: an opaque organization identifier, not personal data
+ * like the fields beside it.
+ *
+ * `OrderId` is parsed ONLY so a malformed payload is rejected loudly. It is
+ * never used as an identity — see the note on `reference` below.
  */
 const webhookSchema = z.object({
   ClientId: z.string().min(1),
+  /**
+   * OURS. Generated before checkout and echoed back unchanged (a real response
+   * shows a 12-character value). It is the delivery's identity: the dedup key,
+   * and the value we must use to correlate a callback with our own record.
+   */
   TransactionId: z.string().regex(OPAQUE_REFERENCE),
-  OrderId: z.string().regex(OPAQUE_REFERENCE),
-  PaymentStatus: z.enum(['Success', 'Failed', 'Refunded']),
-  // Amber Pay does not document this field; when present it is the honest
-  // event time, and when absent the processor falls back to arrival time.
-  EventTimestamp: z.string().datetime().optional(),
+  /**
+   * NOT OURS. A real response shows `OrderId = "17906110924250WKjMPE0MR0u3"` —
+   * a timestamp the gateway generated, concatenated with OUR `TransactionId`.
+   * The gateway builds it; we never send it. It is validated purely so a
+   * malformed payload fails loudly instead of half-parsing, and it MUST NOT be
+   * used as a match value: it is a timestamp plus randomness and can never
+   * identify a customer.
+   */
+  OrderId: z.string().min(1),
+  /**
+   * The customer this payment was FOR. An opaque organization identifier, e.g.
+   * `STU0026` — which is SEVEN characters, and would be rejected by the 8+
+   * floor `OPAQUE_REFERENCE` enforces. Hence `MATCH_VALUE`.
+   *
+   * Optional, and that is deliberate rather than lax: a callback with no
+   * StudentID still means money arrived, so rejecting it would lose a real
+   * payment and retry it forever. It is recorded as collected and the push is
+   * REFUSED with a reason — see `webhookProcessor`.
+   */
+  StudentID: z.string().regex(MATCH_VALUE).optional(),
+  /**
+   * The callback only ever reports Success or Failure. `Canceled` and `Pending`
+   * come from the status API, never from here, so they are NOT members of this
+   * enum — a payload carrying one is not a callback and is rejected rather than
+   * quietly mapped onto a state it does not mean.
+   *
+   * `Refunded` was once here and never should have been: a refund is an API
+   * call plus a terminal state, not a status the gateway reports.
+   */
+  PaymentStatus: z.enum(['Success', 'Failed']),
+  /**
+   * The event time, when the gateway supplies one.
+   *
+   * NAMED `TransactionDate`, because that is what the live payload calls it.
+   * An earlier `EventTimestamp` field was invented here, matched nothing, and
+   * so was silently absent from every real delivery.
+   *
+   * The value is MALFORMED — a real response reads `"2026-09-28T15: 58: 15Z"`,
+   * with spaces after the time separators, which `Date` refuses. It is
+   * therefore parsed leniently by `parseWireDate` rather than by `.datetime()`;
+   * validating it strictly would reject every real callback.
+   */
+  TransactionDate: z.string().optional(),
 });
+
+/**
+ * Read the gateway's event time, tolerating its formatting.
+ *
+ * The live payload separates the time components with a SPACE
+ * (`15: 58: 15`), which neither `Date.parse` nor zod's `.datetime()` accepts.
+ * The spaces are collapsed and the result is normalised to ISO, so the value
+ * that reaches the lifecycle log is a real instant rather than whatever the
+ * gateway wrote. Anything still unreadable returns null, and the caller falls
+ * back to arrival time — a wrong timestamp is worse than a late one.
+ */
+export function parseWireDate(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const collapsed = value.replace(/(\d{2}):\s+(\d{2}):\s+(\d{2})/, '$1:$2:$3');
+  const parsed = Date.parse(collapsed);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
 
 type WirePaymentStatus = z.infer<typeof webhookSchema>['PaymentStatus'];
 
@@ -49,14 +126,12 @@ type WirePaymentStatus = z.infer<typeof webhookSchema>['PaymentStatus'];
 const EVENT_TYPE_OF_STATUS: Record<WirePaymentStatus, WebhookEventType> = {
   Success: 'payment.collected',
   Failed: 'payment.failed',
-  Refunded: 'payment.refunded',
 };
 
 /** Wire status -> the domain payment status carried to the adaptor. */
 const PAYMENT_STATUS_OF_STATUS: Record<WirePaymentStatus, PaymentStatus> = {
   Success: 'collected',
   Failed: 'failed',
-  Refunded: 'refunded',
 };
 
 /**
@@ -150,9 +225,16 @@ export class AmberPayGatewayImpl implements AmberPayGateway {
     return {
       id: wire.TransactionId,
       type: EVENT_TYPE_OF_STATUS[wire.PaymentStatus],
-      reference: wire.OrderId,
+      // ★ THE MATCH VALUE IS `StudentID`, NOT `OrderId`.
+      // A real callback (2026-10-06) carries three ids: `TransactionId` (ours,
+      // echoed back), `StudentID` (the customer) and `OrderId` (NOT ours — the
+      // gateway builds it as a timestamp plus our TransactionId appended). This
+      // returned `OrderId`, which flows into the accounting customer's NAME, so
+      // the matcher had been searching for a timestamp-plus-random string that
+      // no customer could ever be named and every payment failed to match.
+      reference: wire.StudentID ?? null,
       status: PAYMENT_STATUS_OF_STATUS[wire.PaymentStatus],
-      at: wire.EventTimestamp ?? new Date().toISOString(),
+      at: parseWireDate(wire.TransactionDate) ?? new Date().toISOString(),
     };
   }
 

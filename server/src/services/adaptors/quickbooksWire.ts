@@ -168,6 +168,25 @@ export function sqlLiteral(value: string): string {
 export const OPAQUE_REFERENCE = /^[A-Za-z0-9_-]{8,64}$/;
 
 /**
+ * The pattern a CUSTOMER MATCH VALUE may take — the student identifier the
+ * gateway echoes back.
+ *
+ * SEPARATE FROM `OPAQUE_REFERENCE`, and the difference is a length floor, not a
+ * character set. Both admit exactly `[A-Za-z0-9_-]`, which contains no quote,
+ * no backslash and no space, so lowering the minimum does NOT weaken the
+ * guarantee that keeps an unvalidated string out of a query against the
+ * company's books. What changes is that a real identifier now fits:
+ * `STU0026` is 7 characters and would be rejected by the 8+ floor above.
+ *
+ * Kept as its own constant rather than one loosened pattern, because the two
+ * mean different things: a transaction id is issued BY the gateway's rules
+ * (8–12 per its documentation), while a student identifier is issued by the
+ * organization and its shape is theirs, not ours. Collapsing them would either
+ * loosen the transaction id or reject real students.
+ */
+export const MATCH_VALUE = /^[A-Za-z0-9_-]{4,64}$/;
+
+/**
  * A custom field name, as the operator sees it in QuickBooks.
  *
  * Spaces are allowed because that is how people actually name these — "Student

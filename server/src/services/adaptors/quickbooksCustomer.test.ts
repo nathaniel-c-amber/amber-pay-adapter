@@ -46,16 +46,34 @@ describe('the identifier is validated at the boundary', () => {
     "S1234567'; DROP TABLE Customer;--",
     'S 123 4567',
     'S1234567$',
-    'short',
     '',
+    'abc', // below the floor
     'S'.repeat(65),
   ])('refuses %p', (value) => {
     expect(() => assertMatchValue(value)).toThrow(AdaptorApplyError);
   });
 
-  it.each(['S1234567', 'STU-2026-0042', 'a_b-C9xxxxxxx'])('accepts %p', (value) => {
-    expect(() => assertMatchValue(value)).not.toThrow();
-  });
+  /*
+    THE FLOOR IS FOUR, not eight, and that is deliberate.
+
+    The value being matched is the organization's student identifier, echoed back
+    by the gateway. A real one is `STU0026` — SEVEN characters — which the old
+    8+ floor rejected outright, so every callback would have failed at the parser
+    before it could reach a customer.
+
+    The floor dropped; the CHARACTER SET did not. It is still `[A-Za-z0-9_-]`,
+    which admits no quote, no backslash and no space — and those, not the
+    length, are what make the value safe to interpolate into a statement sent to
+    the company's books. Every injection case above is still refused, which is
+    the property that matters and the reason this was a floor change rather than
+    the pattern being loosened.
+  */
+  it.each(['STU0026', 'short', 'abcd', 'S1234567', 'STU-2026-0042', 'a_b-C9xxxxxxx'])(
+    'accepts %p',
+    (value) => {
+      expect(() => assertMatchValue(value)).not.toThrow();
+    },
+  );
 
   it('refuses before opening a connection', async () => {
     const { request, seen } = responder(customers([]));

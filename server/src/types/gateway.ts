@@ -42,13 +42,35 @@ export interface PaymentLinkResult {
 
 /**
  * Parsed webhook event. NO amount, NO PII — only operational status and
- * reference hashes. `reference` is constrained by `parseWebhook` to a safe
- * opaque id pattern (`^[A-Za-z0-9_-]{8,64}$`).
+ * reference hashes.
+ *
+ * ★ `reference` IS THE CUSTOMER, NOT THE TRANSACTION, and that distinction is
+ * the correction this type records.
+ *
+ * A real Amber Pay callback (2026-10-06) carries three ids:
+ *   - `TransactionId` — OURS, generated before checkout, echoed back. This is
+ *     `id` here, and it is the dedup key.
+ *   - `StudentID` — the customer, e.g. `STU0026`. THIS is `reference`, and it is
+ *     what an accounting customer is matched on.
+ *   - `OrderId` — NOT ours; the gateway builds it as a timestamp plus our
+ *     TransactionId appended. It identifies nothing we can act on, and must
+ *     never be used to match a customer.
+ *
+ * `reference` was `OrderId` until this was corrected, so the matcher had been
+ * searching for a timestamp-plus-random string that no customer could be named.
+ *
+ * NULLABLE, because a callback can arrive without a StudentID. That is a real
+ * state, not a malformed one: the money arrived and we cannot say who it was
+ * for. Rejecting it would lose a real payment and retry it forever, and
+ * inventing a value would risk matching the wrong customer — so the processor
+ * records it and refuses the push with a reason.
  */
 export interface WebhookEvent {
+  /** The gateway's echo of OUR transaction id. The delivery's dedup key. */
   id: string;
   type: WebhookEventType;
-  reference: string;
+  /** The customer this payment was for, or null when the gateway did not say. */
+  reference: string | null;
   status: PaymentStatus;
   at: string; // ISO 8601
   // NOTE: no amount, no PII per privacy constraint.

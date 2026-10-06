@@ -172,11 +172,23 @@ export class WebhookProcessor {
     }
   }
 
+  /**
+   * The lifecycle `ref` for an event, when the gateway named a customer.
+   *
+   * Falls back to the TRANSACTION id when it did not. An unattributed payment is
+   * still a real payment that really happened, and recording it under our own
+   * transaction id keeps it visible — whereas dropping the ref, or inventing a
+   * subject, would make a collected payment look like it never arrived.
+   */
+  private refFor(event: WebhookEvent): string {
+    return event.reference ?? event.id;
+  }
+
   private async handleCollected(event: WebhookEvent): Promise<void> {
     await this.eventLog.recordEvent({
       type: 'collected',
       channel: 'webhook',
-      ref: event.reference,
+      ref: this.refFor(event),
       detail: 'Payment collected',
       organizationId: this.organizationId,
     });
@@ -189,7 +201,7 @@ export class WebhookProcessor {
     await this.eventLog.recordEvent({
       type: 'webhook-received',
       channel: 'webhook',
-      ref: event.reference,
+      ref: this.refFor(event),
       detail: 'Webhook accepted by the pipeline',
       organizationId: this.organizationId,
     });
@@ -206,7 +218,7 @@ export class WebhookProcessor {
     await this.eventLog.recordEvent({
       type: 'payment-refunded',
       channel: 'webhook',
-      ref: event.reference,
+      ref: this.refFor(event),
       detail: 'Payment refunded',
       organizationId: this.organizationId,
     });
@@ -223,6 +235,21 @@ export class WebhookProcessor {
    */
   private async pushToAdaptor(event: WebhookEvent, action: string): Promise<void> {
     try {
+      /*
+        ★ A PAYMENT WITH NO CUSTOMER IS REFUSED, NOT GUESSED AT.
+        The gateway can confirm a payment without naming a StudentID. The money
+        still arrived, and `handleCollected` has already recorded that — but it
+        cannot be applied to a ledger, because every candidate customer would be
+        a guess and a guess here means real money against the wrong books.
+        Throwing is deliberate: it files a finding an operator can act on, and
+        because `processWebhook` releases the claim on failure, the delivery
+        stays retryable in case a later callback does carry the identifier.
+      */
+      if (event.reference === null) {
+        throw new AdaptorConnectionError(
+          'The payment gateway confirmed this payment without saying which customer it was for, so it cannot be applied to an invoice',
+        );
+      }
       const adaptorId = this.activeAdaptorId ?? (await resolveConfiguredAdaptorId());
       if (!adaptorId) {
         /*
@@ -243,10 +270,13 @@ export class WebhookProcessor {
       }
       const result = await this.pushWithTimeout(adaptor, {
         id: event.id,
-        transactionId: event.reference,
-        // The gateway's order reference is the value an accounting customer is
-        // matched on. It was previously ALSO being passed as an upstream
-        // invoice id, which it is not — see `PaymentRef.matchValue`.
+        // `event.id` is the gateway's echo of OUR transaction id. It was
+        // `event.reference`, which is the CUSTOMER — so the payment that reached
+        // the ledger was labelled with a student id instead of the transaction
+        // it belonged to.
+        transactionId: event.id,
+        // And the reverse: the customer was being matched on the gateway's own
+        // timestamp-derived OrderId, which can never identify anybody.
         matchValue: event.reference,
         status: event.status,
         processedAt: event.at,
@@ -258,7 +288,7 @@ export class WebhookProcessor {
       await this.eventLog.recordEvent({
         type: 'record-updated',
         channel: 'accounting',
-        ref: event.reference,
+        ref: this.refFor(event),
         detail: describeApplied(adaptor.name, result),
         organizationId: this.organizationId,
       });
@@ -340,7 +370,7 @@ export class WebhookProcessor {
     await this.eventLog.recordEvent({
       type,
       channel: 'webhook',
-      ref: event.reference,
+      ref: this.refFor(event),
       detail: 'Payment declined or failed',
       organizationId: this.organizationId,
     });
@@ -357,7 +387,7 @@ export class WebhookProcessor {
     await this.eventLog.recordEvent({
       type: 'initiated',
       channel: 'webhook',
-      ref: event.reference,
+      ref: this.refFor(event),
       detail: 'Payment initiated',
       organizationId: this.organizationId,
     });
