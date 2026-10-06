@@ -31,6 +31,13 @@ export interface PaymentLinkResult {
   linkUrl: string;
   reference: string;
   expiresAt: string; // ISO 8601
+  /**
+   * Set only when the link was FABRICATED locally rather than issued by a
+   * gateway. The dev transport produces a link on the real configured host, so
+   * without this the response is indistinguishable from a genuine one — and a
+   * developer would have no way to tell they are not testing the upstream.
+   */
+  simulated?: boolean;
 }
 
 /**

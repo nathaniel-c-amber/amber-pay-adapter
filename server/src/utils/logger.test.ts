@@ -153,7 +153,17 @@ describe('the shipped redact list', () => {
     );
 
     const contents = readFileSync(join(dir, 'server.log'), 'utf8');
-    expect(contents).not.toContain('99');
+    /*
+      KEY + VALUE, never the bare `'99'`.
+
+      pino writes `time` (a ms epoch) and `pid` on EVERY line, so a two-digit
+      substring collides with that metadata: this assertion failed or passed
+      according to the wall clock, with no code change at all — "…929223742"
+      contains "99". That hides the real failure mode, which is a redaction
+      regression, behind a coin toss. Name the field being protected instead —
+      `99` unquoted is what pino emits for a number that escaped redaction.
+    */
+    expect(contents).not.toContain('"totalAmt":99');
     expect(contents).not.toContain('tok_live_abc');
   });
 

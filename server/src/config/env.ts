@@ -119,6 +119,18 @@ const envSchema = z.object({
   // Required: webhook signature verification must never silently fall back to
   // an empty secret. Fails fast when webhooks land.
   AMBER_PAY_WEBHOOK_SECRET: z.string().min(1),
+  /*
+    Fabricate payment links locally instead of calling the gateway (which is
+    still stubbed, so POST /payments cannot succeed without this).
+
+    TWO gates, not one. `NODE_ENV !== 'production'` alone is not enough: the
+    `tunnel` compose profile publishes this stack on a public ngrok URL, and a
+    non-production NODE_ENV is the normal setting for that profile. An endpoint
+    that mints payment links would then be on the open internet. Requiring an
+    explicit opt-in means a deployment is only ever exposed because somebody
+    wrote `AMBER_PAY_DEV_TRANSPORT=true` in its own .env.
+  */
+  AMBER_PAY_DEV_TRANSPORT: envBoolean(false),
 
   // CORS allowlist (comma-separated origins). Defaults to the Vite dev server.
   CORS_ORIGINS: z.string().default('http://localhost:5173'),

@@ -117,6 +117,32 @@ Those values are credentials. Keep `development` for machines only you can
 reach; anything shared or public stays on `production` (the default), where the
 server emails the code and never returns it.
 
+### Exercising `POST /payments` locally
+
+The Amber Pay gateway has no real upstream yet, so its transport throws and
+`POST /api/v1/payments` answers `502 ADAPTOR_CONNECTION_ERROR`. To exercise the
+endpoint end to end, set in `.env` and recreate `api`:
+
+```bash
+AMBER_PAY_DEV_TRANSPORT=true
+docker compose up -d api
+```
+
+`POST /payments` then returns `201` with a **fabricated** link, marked
+`"simulated": true`. No request leaves the machine.
+
+This needs two gates, not one: it is ignored entirely under `NODE_ENV=production`,
+*and* it requires the explicit opt-in. Keying on `NODE_ENV` alone would be a
+mistake here — the `tunnel` profile publishes this stack on a public ngrok URL,
+and `NODE_ENV=development` is the normal setting for that profile, which would
+leave a payment-minting endpoint on the open internet. The API logs a warning
+whenever the dev transport is active.
+
+The webhook route (`POST /api/v1/webhooks/amber-pay`) needs no such flag; it
+reaches the whole pipeline today. Both routes are exercised by a Postman
+collection kept alongside this project rather than in the repository, since it
+carries environment-specific values (your sign-in, your webhook secret).
+
 ### Connecting QuickBooks
 
 `QUICKBOOKS_CLIENT_ID` / `_SECRET` identify the app; they do **not** authorize a

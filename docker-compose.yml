@@ -89,6 +89,11 @@ services:
       # Amber Pay gateway
       AMBER_PAY_BASE_URL: ${AMBER_PAY_BASE_URL:-https://api.amberpay.example.com}
       AMBER_PAY_WEBHOOK_SECRET: ${AMBER_PAY_WEBHOOK_SECRET:-change-me-webhook-secret}
+      # No real gateway upstream yet, so POST /payments 502s by default. Set
+      # true in the root .env to fabricate links locally. The API additionally
+      # refuses this in production, so the public `tunnel` profile cannot be
+      # talked into exposing a payment-minting endpoint.
+      AMBER_PAY_DEV_TRANSPORT: ${AMBER_PAY_DEV_TRANSPORT:-false}
       # QuickBooks
       QUICKBOOKS_CLIENT_ID: ${QUICKBOOKS_CLIENT_ID:-}
       QUICKBOOKS_CLIENT_SECRET: ${QUICKBOOKS_CLIENT_SECRET:-}
