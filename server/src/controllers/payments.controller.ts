@@ -5,6 +5,7 @@ import { NotFoundError, UnauthorizedError, ValidationError } from '../utils/erro
 import { authorizedOrganizationIds } from '../utils/policyResource.js';
 import { env } from '../config/env.js';
 import { GATEWAY_CURRENCIES, STUDENT_ID } from '../services/gateway/amberPayWire.js';
+import { OPAQUE_REFERENCE } from '../services/adaptors/quickbooksWire.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
 
 const createPaymentBodySchema = z.object({
@@ -30,15 +31,25 @@ const createPaymentBodySchema = z.object({
   amountMinorUnits: z.number().int().positive(),
   currency: z.enum(GATEWAY_CURRENCIES),
   /*
-    Must be THIS deployment's organization. The field is kept, rather than the
-    server quietly ignoring it, so a caller that believes it is writing to a
-    different organization gets a refusal instead of a row filed somewhere it
-    did not ask for — and a row that its own policy would then not match.
+    OPTIONAL, and validated when supplied.
+
+    It was required, which meant every client had to echo back a constant the
+    server already holds — and the console had no way to obtain it, because
+    `/auth/me` carries the organization's NAME but not its id, and `/settings`
+    (which does carry the id) requires the `system` scope an ordinary operator
+    does not hold. So the only way a real console could have called this was to
+    hardcode the id.
+
+    Supplying a FOREIGN one is still refused rather than ignored, which is the
+    property that was worth keeping: a caller that believes it is writing to a
+    different organization gets told, instead of a row filed somewhere it did
+    not ask for.
   */
   organizationId: z
     .string()
     .min(1)
-    .refine((id) => id === env.ORGANIZATION_ID, {
+    .optional()
+    .refine((id) => id === undefined || id === env.ORGANIZATION_ID, {
       message: 'must be the organization this deployment serves',
     }),
 });
@@ -52,6 +63,13 @@ export interface PaymentsController {
   createPayment: RequestHandler;
   /** GET /api/v1/payments/:id */
   getPayment: RequestHandler;
+  /**
+   * GET /api/v1/payments/by-transaction/:transactionId
+   *
+   * For the customer arriving back from the gateway, who holds the transaction
+   * reference rather than our payment's uuid.
+   */
+  getPaymentByTransaction: RequestHandler;
 }
 
 /**
@@ -78,7 +96,7 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
         studentId: parsed.data.studentId,
         amountMinorUnits: parsed.data.amountMinorUnits,
         currency: parsed.data.currency,
-        organizationId: parsed.data.organizationId,
+        organizationId: parsed.data.organizationId ?? env.ORGANIZATION_ID,
       });
 
       res.status(201).json({
@@ -112,6 +130,26 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
       // C1: 404 when the payment's org is not in the caller's authorized orgs.
       const organizationIds = authorizedOrganizationIds(req.auth.policy, 'payments');
       const payment = await deps.service.findById(req.params['id'] ?? '', organizationIds);
+      if (!payment) {
+        throw new NotFoundError('Payment not found');
+      }
+      res.status(200).json({ payment });
+    }),
+
+    getPaymentByTransaction: asyncHandler(async (req, res) => {
+      if (!req.auth) {
+        throw new UnauthorizedError('Authentication required');
+      }
+      // Validated with the same shape the gateway generates, so a hand-typed
+      // URL cannot put anything into a query. It is not used in one — the
+      // repository binds it as a parameter — so this is about refusing
+      // nonsense, not about escaping.
+      const transactionId = req.params['transactionId'] ?? '';
+      if (!OPAQUE_REFERENCE.test(transactionId)) {
+        throw new NotFoundError('Payment not found');
+      }
+      const organizationIds = authorizedOrganizationIds(req.auth.policy, 'payments');
+      const payment = await deps.service.findByTransactionId(transactionId, organizationIds);
       if (!payment) {
         throw new NotFoundError('Payment not found');
       }

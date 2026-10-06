@@ -849,7 +849,24 @@ export class PostgresPaymentRepository implements PaymentRepository {
     const row = result.rows[0];
     return row ? toPayment(row) : undefined;
   }
-}
+  async findByTransactionId(
+    transactionId: string,
+    organizationIds: string[] | null,
+  ): Promise<Payment | undefined> {
+    const result =
+      organizationIds === null
+        ? await this.pool.query<PaymentRow>(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments WHERE transaction_id = $1 LIMIT 1`,
+            [transactionId],
+          )
+        : await this.pool.query<PaymentRow>(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments
+             WHERE transaction_id = $1 AND organization_id = ANY($2) LIMIT 1`,
+            [transactionId, organizationIds],
+          );
+    const row = result.rows[0];
+    return row === undefined ? undefined : toPayment(row);
+  }}
 
 // --- deployment settings ----------------------------------------------------
 

@@ -96,4 +96,17 @@ export class PaymentService {
   async findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined> {
     return this.payments.findById(id, organizationIds);
   }
+
+  /**
+   * Org-scoped read by the TRANSACTION id the gateway echoed.
+   *
+   * The identifier a customer can carry back from the gateway, which is not the
+   * uuid we generated here — see `PaymentRepository.findByTransactionId`.
+   */
+  async findByTransactionId(
+    transactionId: string,
+    organizationIds: string[] | null,
+  ): Promise<Payment | undefined> {
+    return this.payments.findByTransactionId(transactionId, organizationIds);
+  }
 }

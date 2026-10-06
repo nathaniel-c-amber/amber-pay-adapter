@@ -40,7 +40,13 @@ export type RouteName =
   /* First-run setup. Signed in, but rendered outside the console chrome: a
      deployment with no gateway and no accounting system has no pipeline to
      monitor, so framing this as a console page would put empty panels around it. */
-  | "onboarding";
+  | "onboarding"
+  /* The payment surfaces a CUSTOMER uses, which is not an operator. Both render
+     outside the console chrome and are reachable with no session — a parent
+     paying a fee has no console account, and asking them to sign in before they
+     can pay would be absurd. */
+  | "checkout"
+  | "payment-return";
 
 export interface Route {
   name: RouteName;
@@ -60,7 +66,19 @@ export interface Route {
 const DETAIL_ROUTES: RouteName[] = ["connections", "findings", "events", "invite", "reset"];
 
 function parse(hash: string): Route {
-  const clean = hash.replace(/^#\/?/, "").replace(/\/+$/, "");
+  /*
+    ★ THE QUERY STRING IS STRIPPED, AND BEFORE THE SPLIT.
+    *
+    `/#/payment-return?transactionId=ABC` used to parse as a route named
+    `payment-return?transactionId=ABC` — the whole string, query included — which
+    is not in `known`, so it silently normalised to `overview`. A customer
+    redirected back from the gateway with their reference in the query landed on
+    the console's Overview with nothing wrong showing. The type checker could not
+    see it and neither could a unit test: every route test used a bare segment.
+    Only loading the page in a browser showed it.
+    */
+  const withoutQuery = hash.split("?")[0] ?? "";
+  const clean = withoutQuery.replace(/^#\/?/, "").replace(/\/+$/, "");
   const parts = clean.split("/").filter(Boolean);
   const head = parts[0] ?? "overview";
   const param = parts[1] ?? null;
@@ -72,6 +90,12 @@ function parse(hash: string): Route {
     "overview", "connections", "findings", "events", "payments",
     "synchronization", "reconciliation", "users", "settings", "profile",
     "signin", "invite", "forgot", "reset", "onboarding",
+    // ★ A MISSING ENTRY HERE IS SILENT, NOT AN ERROR: an unrecognised first
+    // segment normalises to `overview`. A customer redirected to
+    // `#/payment-return` would land on the console's Overview with no indication
+    // anything was wrong, after having just paid. That is why these two are
+    // listed rather than left to default.
+    "checkout", "payment-return",
   ];
   if (!known.includes(name)) {
     return { name: "overview", param: null, path: "overview" };
@@ -144,6 +168,27 @@ export function navigate(name: RouteName, param?: string | null): void {
 export function useRoute(): Route {
   const path = useSyncExternalStore(subscribe, getSnapshot, () => "overview");
   return parse(path);
+}
+
+/**
+ * A parameter carried in the HASH's query string.
+ *
+ * ★ READ FROM THE HASH, NOT FROM `window.location.search`.
+ *
+ * In `#/payment-return?transactionId=ABC` the query is inside the fragment, so
+ * `window.location.search` is empty and reading it returns nothing. `parse`
+ * strips the same query to find the route name, so this reads it from the same
+ * place it was taken from — and both now agree by construction rather than by
+ * two implementations happening to match.
+ *
+ * Used by the payment return page to correlate the transaction the gateway
+ * echoed. It is a CORRELATION VALUE and never a CLAIM: nothing here is allowed
+ * to decide that a payment succeeded.
+ */
+export function hashQueryParam(name: string): string | null {
+  const query = currentPath().split("?")[1];
+  if (!query) return null;
+  return new URLSearchParams(query).get(name);
 }
 
 /** A stable navigate callback bound to no particular route. */

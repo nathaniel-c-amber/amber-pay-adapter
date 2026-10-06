@@ -2,18 +2,25 @@
    Uses fetch. All endpoints are under /api/v1. */
 
 import type {
+  ApiAcknowledgeFailuresResponse,
   ApiAdaptorId,
   ApiAdaptorVerification,
+  ApiCheckoutSession,
   ApiDeploymentSettings,
+  ApiGatewayCurrency,
   ApiDirectoryUser,
+  ApiFailure,
   ApiIdentity,
   ApiInviteDetail,
   ApiInvoiceMatchMode,
   ApiInvoiceMatchStrategy,
+  ApiPayment,
   ApiPolicyAttribute,
   ApiServiceStatus,
   MetricsResponse,
 } from "@/types/api";
+import type { Failure } from "@/types/domain";
+import { mapFailure } from "@/services/map.service";
 
 export const apiBaseUrl: string =
   import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -92,6 +99,56 @@ function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
+/**
+ * POST /payments — create a checkout for one customer.
+ *
+ * Returns a DESTINATION and the parameters for it, not a link: the gateway
+ * expects a signed POST and answers with the payment form. The browser submits
+ * that form to `checkoutUrl` directly, so card details reach the gateway and
+ * never pass through this application — which is also why the CSP has to name
+ * the gateway in `form-action`.
+ *
+ * The figure is MINOR UNITS (25000 is 250.00) and is only ever passed straight
+ * through to the gateway's form. It is not stored by this console and not shown
+ * anywhere else.
+ */
+export async function createCheckout(
+  token: string,
+  body: {
+    invoiceId: string;
+    studentId: string;
+    amountMinorUnits: number;
+    currency: ApiGatewayCurrency;
+  },
+): Promise<{ checkout: ApiCheckoutSession }> {
+  // No `organizationId` in the body: the server holds it and refuses a foreign
+  // one, and the console has no way to read it — `/auth/me` carries the name,
+  // `/settings` requires a scope an operator does not hold.
+  return request<{ checkout: ApiCheckoutSession }>("/payments", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * GET /payments/by-transaction/:transactionId — a payment by its gateway reference.
+ *
+ * The lookup the return page uses: a customer coming back from the gateway
+ * holds the TRANSACTION reference, not the uuid this application generated and
+ * never showed them.
+ */
+export async function getPaymentByTransaction(
+  token: string,
+  transactionId: string,
+): Promise<ApiPayment> {
+  const result = await request<{ payment: ApiPayment }>(
+    `/payments/by-transaction/${encodeURIComponent(transactionId)}`,
+    { headers: authHeaders(token) },
+  );
+  return result.payment;
+}
+
 /* ------------------------------------------------------------ liveness */
 
 export interface HealthResult {
@@ -137,11 +194,50 @@ export function getMetrics(token: string): Promise<MetricsResponse> {
   });
 }
 
-/** POST /failures/:id/acknowledge — persists an acknowledgement (Bearer token). */
-export function acknowledgeFailure(token: string, id: string): Promise<void> {
-  return request<void>(`/failures/${encodeURIComponent(id)}/acknowledge`, {
+/**
+ * POST /failures/:id/acknowledge — persists one acknowledgement (Bearer token).
+ *
+ * Returns the failure AS THE SERVER STORED IT, carrying `acknowledgedAt` and
+ * `acknowledgedBy`. The caller needs both: it merges this row into its snapshot
+ * instead of guessing at the values, which is what keeps every operator on the
+ * same page showing the same acknowledgement.
+ */
+export async function acknowledgeFailure(token: string, id: string): Promise<Failure> {
+  const acknowledged = await request<ApiFailure>(
+    `/failures/${encodeURIComponent(id)}/acknowledge`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  return mapFailure(acknowledged);
+}
+
+/**
+ * POST /failures/acknowledge — acknowledges many findings as ONE operator
+ * action (Bearer token).
+ *
+ * A batch rather than N calls to the single-id endpoint: the queue holds up to
+ * 500 findings, and 500 round-trips is a visible hang with 500 independent
+ * chances to half-fail. One request is one timestamp and one outcome, which is
+ * what clicking "Acknowledge all" actually means.
+ *
+ * Only the ids are sent. The actor is recorded by the server from the access
+ * token, so there is deliberately no `acknowledgedBy` field here to fill in —
+ * a client cannot acknowledge on someone else's behalf.
+ *
+ * Resolves with the rows the server ACTUALLY acknowledged, which may be fewer
+ * than were sent if the console was stale. Callers should reconcile against the
+ * response rather than assuming the whole list cleared.
+ */
+export function acknowledgeFailures(
+  token: string,
+  ids: string[],
+): Promise<ApiAcknowledgeFailuresResponse> {
+  return request<ApiAcknowledgeFailuresResponse>("/failures/acknowledge", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ ids }),
   });
 }
 

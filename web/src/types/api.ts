@@ -55,6 +55,20 @@ export interface ApiFailure {
   detail: string;
   since: string;
   acknowledgedAt?: string;
+  /**
+   * Email of the operator who acknowledged. ABSENT for findings acknowledged
+   * before attribution existed — the server writes null rather than inventing
+   * an actor, so the console must render a genuinely unknown actor instead of
+   * guessing or leaving a blank that reads as "unacknowledged".
+   */
+  acknowledgedBy?: string;
+}
+
+/** POST /failures/acknowledge */
+export interface ApiAcknowledgeFailuresResponse {
+  /** How many findings were actually acknowledged — not how many were sent. */
+  acknowledged: number;
+  failures: ApiFailure[];
 }
 
 /* ---------------------------------------------------------- stage flow */
@@ -231,8 +245,60 @@ export type ApiAdaptorId = "quickbooks" | "sage";
  */
 export type ApiInvoiceMatchStrategy = "displayName" | "customField" | "notes";
 
-/** `contains` is a substring search and can match more than one customer. */
+/** `Match` is `contains` when a fragment can match more than one customer. */
 export type ApiInvoiceMatchMode = "exact" | "contains";
+
+/**
+ * The currency codes the gateway documents. Anything else is refused at the
+ * boundary rather than passed through and rejected upstream.
+ */
+export type ApiGatewayCurrency = "USD" | "JMD";
+
+/**
+ * What `POST /payments` returns: a place to POST and the parameters to post.
+ *
+ * NOT a link. The gateway issues no URL a customer visits — it expects a signed
+ * POST and answers with the payment form. The browser posts directly to
+ * `checkoutUrl`, which is the point: card details go to the gateway and never
+ * reach this application.
+ */
+export interface ApiCheckoutParams {
+  ClientId: string;
+  TransactionId: string;
+  CurrencyCode: ApiGatewayCurrency;
+  /** Minor units — 25000 is 250.00. */
+  Amount: number;
+  Signature: string;
+  /** The customer this payment is for. */
+  CustomerReference: string;
+  CustomerInvoice: "Y" | "N";
+  ReturnToMerchant: "Y" | "N";
+  AutoRedirect: "Y" | "N";
+}
+
+export interface ApiCheckoutSession {
+  checkoutUrl: string;
+  params: ApiCheckoutParams;
+  transactionId: string;
+  /** True when fabricated locally. Never in production. */
+  simulated?: boolean;
+}
+
+/**
+ * The payment as the API returns it: operational status and reference only.
+ *
+ * `transactionId` is the reference the gateway echoes, which is what makes this
+ * resolvable by a customer coming back from the gateway — the uuid is ours and
+ * was never shown to anybody.
+ */
+export interface ApiPayment {
+  id: string;
+  invoiceId: string;
+  organizationId: string;
+  transactionId: string;
+  status: "initiated" | "collected" | "failed" | "refunded";
+  processedAt: string;
+}
 
 /**
  * What a read may say about a stored secret: whether one exists, and its last four

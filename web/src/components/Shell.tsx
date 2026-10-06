@@ -16,9 +16,10 @@ import {
   IconUser,
   IconUsers,
 } from "./icons";
-import type { PolicyScope } from "@/types/domain";
+import type { Failure, PolicyScope } from "@/types/domain";
 import { getToken, clearToken } from "@/services/auth.service";
 import {
+  acknowledgeFailures,
   acknowledgeFailure,
   checkHealth,
   completeTour,
@@ -31,14 +32,20 @@ import {
 } from "@/services/client";
 import type { ReconciliationReport } from "@/services/client";
 import type { ApiIdentity, ApiServiceStatus, ApiStageFlowSummary } from "@/types/api";
-import { mapMetrics } from "@/services/map.service";
+import { CheckoutHandoffPage } from "@/pages/CheckoutHandoffPage";
+import { PaymentReturnPage } from "@/pages/PaymentReturnPage";
+import {
+  clearPendingCheckout,
+  takePendingCheckout,
+} from "@/services/checkoutSession";
+import { mapFailure, mapMetrics } from "@/services/map.service";
 import type { MappedMetrics } from "@/services/map.service";
 import { compareFlows } from "@/utils/flow";
 import type { FlowComparison } from "@/utils/flow";
 import { formatDateTimeSeconds } from "@/utils/datetime";
 import { accessFor, isBroadest } from "@/utils/permissions";
 import type { PageId } from "@/utils/permissions";
-import { navigate, useRoute } from "@/router";
+import { navigate, useRoute, hashQueryParam } from "@/router";
 import type { RouteName } from "@/router";
 import { TOUR_STEPS } from "@/tour/steps";
 import { TourLayer } from "@/tour/TourLayer";
@@ -59,7 +66,7 @@ import { ForgotPasswordPage } from "@/pages/auth/ForgotPasswordPage";
 import { ResetPasswordPage } from "@/pages/auth/ResetPasswordPage";
 import { OnboardingPage } from "@/pages/onboarding/OnboardingPage";
 import { demoMetrics, DEMO_RECON, DEMO_POLICIES, demoService, DEMO_ENABLED } from "@/utils/fixtures";
-import { ErrorState, LoadingState, SearchBox, cx } from "./ui";
+import { ErrorState, LoadingState, SearchBox, cx, Card } from "./ui";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { ConnectionsPage, ConnectionDetailPage } from "@/pages/ConnectionsPage";
 import { FindingsPage, FindingDetailPage } from "@/pages/FindingsPage";
@@ -313,8 +320,10 @@ export default function Shell() {
   const [now, setNow] = useState(() => new Date());
   const [liveError, setLiveError] = useState<string | null>(null);
   const [ackError, setAckError] = useState<string | null>(null);
-  const [acked, setAcked] = useState<Set<string>>(new Set());
   const [ackNotice, setAckNotice] = useState<string | null>(null);
+  /* True while an acknowledgement is in flight, so the actions that trigger one
+     disable themselves rather than allowing a second click to race the first. */
+  const [ackBusy, setAckBusy] = useState(false);
   /* Set when a request is rejected with 401, so the sign-in page can say the
      session ended rather than presenting a bare form with no explanation. */
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -730,6 +739,47 @@ export default function Shell() {
     applyDemo();
   }, [applyDemo, requireSignIn]);
 
+  /*
+    Merge server-confirmed acknowledgements into the metrics snapshot.
+
+    The rows come back FROM THE SERVER, so this is not optimism — it is the
+    authoritative acknowledgement state, including which operator it was
+    recorded against. Patching from the response is used in preference to
+    calling `loadLive` afterwards because that function early-returns whenever a
+    refresh is already in flight; had the acknowledgement raced a poll, the
+    write would have succeeded and the screen would have kept showing the
+    finding as open until the next tick, with no indication anything was wrong.
+  */
+  const mergeAcknowledged = useCallback((rows: readonly Failure[]) => {
+    if (rows.length === 0) return;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    setData((prev) => ({
+      ...prev,
+      failures: prev.failures.map((failure) => byId.get(failure.id) ?? failure),
+    }));
+  }, []);
+
+  /*
+    Demo mode has no server to hold the acknowledgement, so it is stamped
+    locally against the signed-in identity. `acknowledgedBy` is omitted rather
+    than faked when there is no identity, so a demo row is honestly attributed
+    to nobody — the same treatment a pre-migration row gets.
+  */
+  const stampLocally = useCallback(
+    (ids: readonly string[]): Failure[] => {
+      const at = new Date().toISOString();
+      const stamped = data.failures
+        .filter((failure) => ids.includes(failure.id))
+        .map((failure) => ({
+          ...failure,
+          acknowledgedAt: at,
+          ...(identity ? { acknowledgedBy: identity.email } : {}),
+        }));
+      return stamped;
+    },
+    [data.failures, identity],
+  );
+
   const ackFinding = useCallback(
     async (id: string) => {
       setAckError(null);
@@ -738,14 +788,14 @@ export default function Shell() {
       const label = data.failures.find((f) => f.id === id);
       const confirmation = `${label ? label.title : id} acknowledged.`;
       if (!token || mode !== "live") {
-        // Demo: acknowledge locally so the flow is observable.
-        setAcked((prev) => new Set(prev).add(id));
+        mergeAcknowledged(stampLocally([id]));
         setAckNotice(confirmation);
         return;
       }
+      setAckBusy(true);
       try {
-        await acknowledgeFailure(token, id);
-        setAcked((prev) => new Set(prev).add(id));
+        const acknowledged = await acknowledgeFailure(token, id);
+        mergeAcknowledged([acknowledged]);
         setAckNotice(confirmation);
       } catch (e) {
         if (e instanceof UnauthorizedError) {
@@ -755,9 +805,55 @@ export default function Shell() {
         } else {
           setAckError(e instanceof Error ? e.message : "Failed to acknowledge");
         }
+      } finally {
+        setAckBusy(false);
       }
     },
-    [token, mode, applyDemo, data.failures, requireSignIn],
+    [token, mode, applyDemo, data.failures, requireSignIn, mergeAcknowledged, stampLocally],
+  );
+
+  /*
+    Acknowledge every OPEN finding as one operator action.
+
+    Only open findings are sent: re-acknowledging a finding somebody else
+    already handled would overwrite their name with the current operator's and
+    destroy the attribution this change exists to record. Acknowledged findings
+    stay visible under the page's own toggle.
+  */
+  const ackAllFindings = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+      setAckError(null);
+      const confirmation = `${ids.length} finding${ids.length === 1 ? "" : "s"} acknowledged.`;
+      if (!token || mode !== "live") {
+        mergeAcknowledged(stampLocally(ids));
+        setAckNotice(confirmation);
+        return;
+      }
+      setAckBusy(true);
+      try {
+        const result = await acknowledgeFailures(token, ids);
+        mergeAcknowledged(result.failures.map(mapFailure));
+        setAckNotice(
+          result.acknowledged === ids.length
+            ? confirmation
+            : // The server acknowledges only what the caller may see. Say what
+              // actually happened rather than claiming the queue cleared.
+              `${result.acknowledged} of ${ids.length} findings acknowledged.`,
+        );
+      } catch (e) {
+        if (e instanceof UnauthorizedError) {
+          clearToken();
+          requireSignIn();
+          applyDemo();
+        } else {
+          setAckError(e instanceof Error ? e.message : "Failed to acknowledge");
+        }
+      } finally {
+        setAckBusy(false);
+      }
+    },
+    [token, mode, applyDemo, requireSignIn, mergeAcknowledged, stampLocally],
   );
 
   // The acknowledgement confirmation is announced politely and then cleared,
@@ -769,9 +865,20 @@ export default function Shell() {
   }, [ackNotice]);
 
   const access = accessFor(activePolicy);
+  /*
+    "Open" is now derived from the SERVER's acknowledgement, not from a local
+    set of ids this browser has touched.
+
+    The local set was the defect: it reset on every page load and was never
+    shared, so an acknowledgement made by one operator vanished from their own
+    screen on refresh and had never applied to anybody else's. Reading
+    `acknowledgedAt` off the row makes every operator — and every reload — see
+    the same state, which is the behaviour an acknowledgement is supposed to
+    have had all along.
+  */
   const activeFailures = useMemo(
-    () => data.failures.filter((f) => !acked.has(f.id)),
-    [data.failures, acked],
+    () => data.failures.filter((f) => !f.acknowledgedAt),
+    [data.failures],
   );
   const criticalOpen = activeFailures.filter((f) => f.severity === "critical").length;
   /*
@@ -984,7 +1091,9 @@ export default function Shell() {
             connector={data.connectors.find((c) => c.id === route.param)}
             connectors={data.connectors}
             events={data.events}
-            failures={activeFailures}
+            /* The connector's findings are a LOG, not a to-do list: what
+               happened to this connector, including what has since been seen. */
+            failures={data.failures}
             activeId={mapFocus}
             onFocus={setMapFocus}
           />
@@ -1000,7 +1109,11 @@ export default function Shell() {
       case "findings":
         return route.param ? (
           <FindingDetailPage
-            finding={activeFailures.find((f) => f.id === route.param)}
+            /* Resolved against EVERY finding, not just the open ones: an
+               acknowledged finding still has an incident page, and looking it
+               up in the open set would make "View incident" on the
+               Acknowledged tab land on a not-found page. */
+            finding={data.failures.find((f) => f.id === route.param)}
             connectors={data.connectors}
             events={data.events}
             onAck={ackFinding}
@@ -1008,9 +1121,11 @@ export default function Shell() {
           />
         ) : (
           <FindingsPage
-            findings={activeFailures}
+            findings={data.failures}
             connectors={data.connectors}
             onAck={ackFinding}
+            onAckAll={ackAllFindings}
+            ackBusy={ackBusy}
             ackError={ackError}
             activePolicy={activePolicy}
           />
@@ -1098,6 +1213,60 @@ export default function Shell() {
         token={route.param}
         onGoToSignIn={() => navigate("signin")}
         onCancel={token ? () => navigate("overview") : undefined}
+      />
+    );
+  }
+
+  /*
+    THE PAYMENT SURFACES A CUSTOMER USES.
+
+    Both render outside the console chrome and both are reachable with no
+    session, because neither is for an operator: a parent paying a fee has no
+    console account, and putting the navigation of a monitoring tool around them
+    while they pay would frame the wrong product entirely.
+
+    `checkout` is NOT reachable by URL. It renders a signed form built from a
+    session held in memory by the caller, so there is no address it can be
+    reloaded from or pointed at — a checkout page a third party could link to
+    would be a payment page they control.
+
+    `payment-return` IS reachable, because the gateway redirects there, and it
+    correlates from the transaction reference in the query string rather than
+    from anything the URL asserts about the outcome.
+  */
+  if (route.name === "checkout") {
+    // The session lives in module state, not in the URL and not in this
+    // component. A reload lands here with nothing to render, and the customer
+    // is told so rather than shown a blank page or an empty form that would
+    // post nowhere.
+    const pending = takePendingCheckout();
+    if (!pending) {
+      return (
+        <Card title="Nothing to pay">
+          <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
+            This payment link has already been used, or the page was opened directly. Start again
+            from the message or link that brought you here.
+          </p>
+        </Card>
+      );
+    }
+    return (
+      <CheckoutHandoffPage
+        checkout={pending}
+        onCancelled={() => {
+          clearPendingCheckout();
+          navigate("payment-return");
+        }}
+      />
+    );
+  }
+
+  if (route.name === "payment-return") {
+    return (
+      <PaymentReturnPage
+        token={token}
+        transactionId={hashQueryParam("transactionId")}
+        onGoToConsole={() => navigate(token ? "overview" : "signin")}
       />
     );
   }

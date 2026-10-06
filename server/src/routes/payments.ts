@@ -42,6 +42,32 @@ export function createPaymentRouter(deps: PaymentRouteDeps = {}): express.Router
     controller.createPayment,
   );
 
+  /*
+    GET /api/v1/payments/by-transaction/:transactionId
+
+    ★ REGISTERED BEFORE `/payments/:id`, because Express matches in order and
+    `:id` would otherwise swallow `by-transaction` and answer every lookup with
+    a 404 about a payment id. That failure is silent — it looks exactly like
+    "no such payment" — which is why the ordering is commented rather than left
+    to whoever adds the next route.
+
+    It exists because a customer returning from the gateway knows their
+    TRANSACTION reference, not our payment's uuid. The uuid is generated here
+    and never leaves this origin until somebody is signed in to read it; the
+    transaction id is the one value the gateway echoes and the customer can
+    carry. Requiring a session to resolve it would make the return page
+    unreachable for the person who just paid.
+  */
+  router.get(
+    '/payments/by-transaction/:transactionId',
+    requireAuth,
+    requirePolicy('read', (req) => ({
+      scope: 'payments',
+      organizationId: organizationIdOf(req),
+    })),
+    controller.getPaymentByTransaction,
+  );
+
   // GET /api/v1/payments/:id — requires PBAC 'read' on scope 'payments'.
   router.get(
     '/payments/:id',

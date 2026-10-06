@@ -124,7 +124,29 @@ export interface FailureRepository {
     id: string,
     acknowledgedAt: string,
     organizationIds: string[] | null,
+    acknowledgedBy?: string,
   ): Promise<Failure | undefined>;
+  /**
+   * Acknowledge many findings as ONE operator action (FR-5.3).
+   *
+   * The batch deliberately takes a single `acknowledgedAt` and a single
+   * `acknowledgedBy`: the caller clicked once and means once. Giving each id
+   * its own timestamp would fabricate a sequence of separate observations
+   * that did not happen.
+   *
+   * Resolves to the rows ACTUALLY acknowledged, not a count. Ids outside the
+   * caller's authorized organizations are skipped rather than treated as an
+   * error — a batch must not fail wholesale because one id belongs to another
+   * tenant, and an id the caller may not see must not be distinguishable from
+   * one that does not exist. The controller passes the authorized set derived
+   * from the token; this layer enforces it.
+   */
+  acknowledgeMany(
+    ids: string[],
+    acknowledgedAt: string,
+    organizationIds: string[] | null,
+    acknowledgedBy?: string,
+  ): Promise<Failure[]>;
 }
 
 /**
@@ -177,6 +199,18 @@ export interface ConnectorStateRepository {
 export interface PaymentRepository {
   create(payment: Payment): Promise<Payment>;
   findById(id: string, organizationIds: string[] | null): Promise<Payment | undefined>;
+  /**
+   * Find by the TRANSACTION id the gateway echoed, org-scoped like every other
+   * read.
+   *
+   * Distinct from `findById` because the two identifiers have different
+   * audiences: the uuid is ours and never leaves this origin, while the
+   * transaction id is the one value a customer can carry back from the gateway.
+   */
+  findByTransactionId(
+    transactionId: string,
+    organizationIds: string[] | null,
+  ): Promise<Payment | undefined>;
 }
 
 /** Container of every repository, wired by the factory. */

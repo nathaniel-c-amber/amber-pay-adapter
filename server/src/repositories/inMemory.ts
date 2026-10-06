@@ -257,6 +257,7 @@ export class InMemoryFailureRepository implements FailureRepository {
     id: string,
     acknowledgedAt: string,
     organizationIds: string[] | null,
+    acknowledgedBy?: string,
   ): Promise<Failure | undefined> {
     const failure = this.failures.find(
       (candidate) =>
@@ -267,7 +268,39 @@ export class InMemoryFailureRepository implements FailureRepository {
       return undefined;
     }
     failure.acknowledgedAt = acknowledgedAt;
+    if (acknowledgedBy) {
+      failure.acknowledgedBy = acknowledgedBy;
+    }
     return failure;
+  }
+
+  /**
+   * Mirrors the Postgres statement exactly, per the parity convention above:
+   * one pass, one timestamp, org-scoped, returning only the rows that were
+   * actually acknowledged. `append` order is preserved rather than re-sorted,
+   * because the caller reconciles against the returned ids and does not care
+   * about display order.
+   */
+  async acknowledgeMany(
+    ids: string[],
+    acknowledgedAt: string,
+    organizationIds: string[] | null,
+    acknowledgedBy?: string,
+  ): Promise<Failure[]> {
+    const wanted = new Set(ids);
+    return this.failures.filter(
+      (failure) =>
+        wanted.has(failure.id) &&
+        (organizationIds === null || organizationIds.includes(failure.organizationId)),
+      // `acknowledge` already copies these fields onto the stored object, so
+      // mutating here and returning the same reference is consistent with it.
+    ).map((failure) => {
+      failure.acknowledgedAt = acknowledgedAt;
+      if (acknowledgedBy) {
+        failure.acknowledgedBy = acknowledgedBy;
+      }
+      return failure;
+    });
   }
 }
 
@@ -395,6 +428,28 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return organizationIds === null || organizationIds.includes(payment.organizationId)
       ? payment
       : undefined;
+  }
+
+  async findByTransactionId(
+    transactionId: string,
+    organizationIds: string[] | null,
+  ): Promise<Payment | undefined> {
+    /*
+      Scanned rather than indexed, because the in-memory store is for tests and
+      an index here would be a second thing to keep correct for no benefit. The
+      org filter is applied AFTER the match rather than skipped, because a test
+      that reads C1 (org isolation) must exercise the same path the database
+      does — a lookup that found the payment and then handed it over would pass
+      every test except the one it exists for.
+    */
+    for (const payment of this.byId.values()) {
+      if (payment.transactionId !== transactionId) continue;
+      if (organizationIds !== null && !organizationIds.includes(payment.organizationId)) {
+        continue;
+      }
+      return payment;
+    }
+    return undefined;
   }
 }
 
