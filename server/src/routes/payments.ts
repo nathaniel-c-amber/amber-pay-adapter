@@ -4,22 +4,29 @@ import { getRepositories } from '../repositories/index.js';
 import { organizationIdOf } from '../utils/policyResource.js';
 import { createPaymentsController } from '../controllers/payments.controller.js';
 import { PaymentService } from '../services/payments/payment.service.js';
-import type { AmberPayGateway } from '../types/gateway.js';
+import { CheckoutService } from '../services/gateway/checkout.service.js';
+import { PostgresCheckoutIntentStore } from '../repositories/postgres.js';
+import { getPool } from '../db/pool.js';
 import type { PaymentRepository } from '../types/repository.js';
 
 export interface PaymentRouteDeps {
   payments?: PaymentRepository;
-  gateway?: AmberPayGateway;
+  /** Test seam: the checkout, so a route test never reaches the gateway. */
+  checkout?: CheckoutService;
 }
 
 /**
- * Payment routes. Responses carry operational status and reference hashes
- * only — never amounts (FR-2.3 / FR-5.2).
+ * Payment routes.
+ *
+ * The response carries the checkout the browser posts to the gateway. The
+ * Payment entity has no amount field and never will (FR-2.3); the figure travels
+ * once, inside the checkout, and is not attached to anything we keep.
  */
 export function createPaymentRouter(deps: PaymentRouteDeps = {}): express.Router {
   const service = new PaymentService(
     deps.payments ?? getRepositories().payments,
-    deps.gateway,
+    deps.checkout ??
+      new CheckoutService(new PostgresCheckoutIntentStore(getPool())),
   );
   const controller = createPaymentsController({ service });
   const router = express.Router();

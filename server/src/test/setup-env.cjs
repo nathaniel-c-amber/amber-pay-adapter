@@ -5,6 +5,10 @@ process.env.LOG_LEVEL = 'silent';
 process.env.DATABASE_URL = 'postgres://placeholder:placeholder@localhost:5432/amber_pay';
 process.env.JWT_SECRET = 'test-secret-placeholder-0123456789';
 process.env.AMBER_PAY_WEBHOOK_SECRET = 'test-webhook-secret-placeholder';
+// The merchant account the gateway issues per project and environment. It goes
+// into every signature request, so a checkout cannot be created without it —
+// which is exactly why the schema requires it rather than defaulting.
+process.env.AMBER_PAY_CLIENT_ID = 'test-amber-client-id';
 process.env.QUICKBOOKS_CLIENT_ID = 'test-qb-client-id';
 process.env.QUICKBOOKS_CLIENT_SECRET = 'test-qb-client-secret';
 // A bearer token (or refresh token) is what authorizes a call; client id/secret

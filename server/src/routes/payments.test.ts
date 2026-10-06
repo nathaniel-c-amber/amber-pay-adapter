@@ -3,32 +3,74 @@ import { createApp } from '../app.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
 import { issueAccessToken } from '../utils/tokens.js';
 import { forbiddenKeysIn } from '../test/privacy.js';
+import { CheckoutService } from '../services/gateway/checkout.service.js';
 import type { Repositories } from '../types/repository.js';
-import type { AmberPayGateway, PaymentLinkResult } from '../types/gateway.js';
+import type { CheckoutIntentStore } from '../services/gateway/checkout.service.js';
+import type { AdaptorResponse, HttpMethod } from '../types/adaptor.js';
 import type { PolicyAttribute } from '../types/auth.js';
 
-function stubGateway(): AmberPayGateway {
+/**
+ * A checkout that reaches no gateway and no database.
+ *
+ * `POST /payments` used to return a fabricated `linkUrl`; it now returns the
+ * parameters the browser posts to the gateway, so the thing being stubbed is a
+ * CheckoutService rather than a gateway.
+ */
+function stubCheckout(simulated = false): CheckoutService {
+  const service = new CheckoutService(
+    {
+      async create() {
+        /* nothing to store */
+      },
+      async findByTransactionId() {
+        return undefined;
+      },
+    } satisfies CheckoutIntentStore,
+    (async (_method: HttpMethod, _url: string): Promise<AdaptorResponse> => ({
+      status: 200,
+      body: { success: 'Y', Signature: 'c2ln' },
+    })) as never,
+    () => 'ABCDEFGH1234',
+  );
+  if (!simulated) return service;
+  // `as unknown` because the stub replaces ONE method of a class: the object
+  // deliberately has none of the instance state, and saying so through `unknown`
+  // is more honest than widening CheckoutService for a test.
   return {
-    async createPaymentLink(): Promise<PaymentLinkResult> {
-      return {
-        linkUrl: 'https://amberpay.example.com/pay/ref-0001',
-        reference: 'ref-0001',
-        expiresAt: '2026-01-02T00:00:00.000Z',
-      };
-    },
-    verifyWebhookSignature: () => false,
-    parseWebhook: () => {
-      throw new Error('not used');
-    },
-  };
+    create: async () => ({
+      checkoutUrl: 'https://staging-payment.myamberpay.com/gateway/v1/standard-checkout',
+      params: {
+        ClientId: 'test-amber-client-id',
+        TransactionId: 'ABCDEFGH1234',
+        CurrencyCode: 'JMD' as const,
+        Amount: 25000,
+        Signature: 'c2ln',
+        CustomerReference: 'STU0026',
+        CustomerInvoice: 'N' as const,
+        ReturnToMerchant: 'Y' as const,
+        AutoRedirect: 'Y' as const,
+      },
+      transactionId: 'ABCDEFGH1234',
+      simulated: true,
+    }),
+  } as unknown as CheckoutService;
 }
+
+/** The body `POST /payments` now takes: a customer, a figure, and an org. */
+const body = {
+  invoiceId: 'inv-1',
+  studentId: 'STU0026',
+  amountMinorUnits: 25000,
+  currency: 'JMD' as const,
+  organizationId: 'org-1',
+};
 
 function token(policy: PolicyAttribute[]): string {
   return issueAccessToken({ id: 'u1', email: 'user@example.com', policyAttributes: policy });
 }
 
-function buildApp(repositories: Repositories) {
-  return createApp({ repositories, gateway: stubGateway() });
+function buildApp(repositories: Repositories, checkout: CheckoutService = stubCheckout()) {
+  return createApp({ repositories, checkout });
 }
 
 const writePolicy: PolicyAttribute[] = [
@@ -38,9 +80,7 @@ const writePolicy: PolicyAttribute[] = [
 describe('payments routes', () => {
   it('rejects POST /payments without a token (401)', async () => {
     const repositories = createInMemoryRepositories();
-    const res = await request(buildApp(repositories))
-      .post('/api/v1/payments')
-      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+    const res = await request(buildApp(repositories)).post('/api/v1/payments').send(body);
     expect(res.status).toBe(401);
   });
 
@@ -49,62 +89,78 @@ describe('payments routes', () => {
     const res = await request(buildApp(repositories))
       .post('/api/v1/payments')
       .set('Authorization', `Bearer ${token([{ scope: 'payments', organizationId: 'org-9', actions: ['write'] }])}`)
-      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+      .send(body);
     expect(res.status).toBe(403);
   });
 
-  it('creates a payment link and persists an operational payment (201)', async () => {
+  it('creates a checkout and persists an operational payment (201)', async () => {
     const repositories = createInMemoryRepositories();
     const res = await request(buildApp(repositories))
       .post('/api/v1/payments')
       .set('Authorization', `Bearer ${token(writePolicy)}`)
-      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+      .send(body);
 
     expect(res.status).toBe(201);
     expect(typeof res.body.payment.id).toBe('string');
     expect(res.body.payment.status).toBe('initiated');
-    expect(res.body.payment.transactionId).toBe('ref-0001');
-    expect(typeof res.body.link.linkUrl).toBe('string');
-    expect(forbiddenKeysIn(res.body)).toEqual([]);
+    // The transaction id the CHECKOUT minted, which is what the gateway will
+    // echo on the callback.
+    expect(res.body.payment.transactionId).toBe('ABCDEFGH1234');
+    expect(res.body.checkout.transactionId).toBe('ABCDEFGH1234');
   });
 
-  /*
-    A genuine gateway link must not claim to be simulated. The field is
-    added by an explicit projection rather than copied wholesale, so the
-    default stub above exercises the "real link" branch and would fail if the
-    flag were ever defaulted to true.
-  */
-  it('omits the simulated flag for a genuine gateway link', async () => {
+  it('returns a destination and parameters, not a link', async () => {
     const repositories = createInMemoryRepositories();
     const res = await request(buildApp(repositories))
       .post('/api/v1/payments')
       .set('Authorization', `Bearer ${token(writePolicy)}`)
-      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+      .send(body);
 
     expect(res.status).toBe(201);
-    expect(res.body.link).not.toHaveProperty('simulated');
+    // The gateway issues no URL a customer visits: it expects a signed POST and
+    // answers with the form. So the response is where to go and what to send.
+    expect(res.body.link).toBeUndefined();
+    expect(res.body.checkout.checkoutUrl).toMatch(/standard-checkout$/);
+    expect(res.body.checkout.params.CustomerReference).toBe('STU0026');
   });
 
-  it('marks a link as simulated when the gateway fabricated it', async () => {
+  /*
+    The figure goes out to the browser ONCE, inside the checkout, and is not
+    attached to anything we keep. `forbiddenKeysIn` is the repository-wide guard
+    on response shapes, so it is asserted here rather than trusted by inspection.
+  */
+  it('keeps the figure out of the payment entity', async () => {
     const repositories = createInMemoryRepositories();
-    const simulatedGateway: AmberPayGateway = {
-      ...stubGateway(),
-      async createPaymentLink(): Promise<PaymentLinkResult> {
-        return {
-          linkUrl: 'https://amberpay.example.com/pay/ref-0001',
-          reference: 'ref-0001',
-          expiresAt: '2026-01-02T00:00:00.000Z',
-          simulated: true,
-        };
-      },
-    };
-    const res = await request(createApp({ repositories, gateway: simulatedGateway }))
+    const res = await request(buildApp(repositories))
       .post('/api/v1/payments')
       .set('Authorization', `Bearer ${token(writePolicy)}`)
-      .send({ invoiceId: 'inv-1', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+      .send(body);
 
     expect(res.status).toBe(201);
-    expect(res.body.link.simulated).toBe(true);
+    expect(res.body.checkout.params.Amount).toBe(25000);
+    expect(JSON.stringify(res.body.payment)).not.toContain('25000');
+  });
+
+  it('omits the simulated flag for a genuine gateway checkout', async () => {
+    const repositories = createInMemoryRepositories();
+    const res = await request(buildApp(repositories))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.checkout).not.toHaveProperty('simulated');
+  });
+
+  it('marks a checkout as simulated when it was fabricated locally', async () => {
+    const repositories = createInMemoryRepositories();
+    const res = await request(buildApp(repositories, stubCheckout(true)))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.checkout.simulated).toBe(true);
   });
 
   it('accepts a non-uuid string invoiceId and round-trips it (201)', async () => {
@@ -115,7 +171,7 @@ describe('payments routes', () => {
     const created = await request(app)
       .post('/api/v1/payments')
       .set('Authorization', auth)
-      .send({ invoiceId: 'inv-abc-123', externalInvoiceId: 'ext-1', reference: 'ref-0001', organizationId: 'org-1' });
+      .send({ ...body, invoiceId: 'inv-abc-123' });
 
     expect(created.status).toBe(201);
     expect(created.body.payment.invoiceId).toBe('inv-abc-123');

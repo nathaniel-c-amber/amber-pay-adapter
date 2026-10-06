@@ -4,13 +4,31 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../utils/errors.js';
 import { authorizedOrganizationIds } from '../utils/policyResource.js';
 import { env } from '../config/env.js';
+import { GATEWAY_CURRENCIES, STUDENT_ID } from '../services/gateway/amberPayWire.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
 
 const createPaymentBodySchema = z.object({
   invoiceId: z.string().min(1),
-  externalInvoiceId: z.string().min(1),
-  // Opaque reference only (no amount / no PII).
-  reference: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  /*
+    The customer paying, as the organization's own opaque identifier (`STU0026`).
+
+    Validated with the SAME pattern the adaptor will later interpolate into a
+    query against the organization's accounting data, and at this boundary
+    rather than downstream — so a value that could never be matched is refused
+    where the operator can still see which field was wrong.
+
+    This replaces `externalInvoiceId`, which named an accounting invoice
+    reference but held a gateway order id. A checkout needs to know WHO is
+    paying, because that is what the gateway echoes back.
+  */
+  studentId: z.string().regex(STUDENT_ID),
+  /*
+    MINOR UNITS, in an integer — 25000 is 250.00. Not a float: a figure that
+    cannot be represented exactly would round, and a signature computed over a
+    rounded figure is rejected (or, worse, accepted for a different sum).
+  */
+  amountMinorUnits: z.number().int().positive(),
+  currency: z.enum(GATEWAY_CURRENCIES),
   /*
     Must be THIS deployment's organization. The field is kept, rather than the
     server quietly ignoring it, so a caller that believes it is writing to a
@@ -37,10 +55,15 @@ export interface PaymentsController {
 }
 
 /**
- * Payment endpoints. Responses carry operational status and reference hashes
- * only — never amounts (FR-2.3 / FR-5.2). Business logic (gateway call +
- * entity assembly + persistence) lives in `PaymentService`; this controller
- * only validates and dispatches (S1).
+ * Payment endpoints.
+ *
+ * The response carries the checkout parameters the browser needs to reach the
+ * gateway, plus the Payment entity — which has no amount field and never will
+ * (FR-2.3, enforced by `privacy.test.ts`). The figure goes out to the browser
+ * once, in the checkout, and is not attached to anything we keep.
+ *
+ * Business logic lives in `PaymentService`; this controller only validates and
+ * dispatches.
  */
 export function createPaymentsController(deps: PaymentsControllerDeps): PaymentsController {
   return {
@@ -50,27 +73,34 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
         throw new ValidationError('Invalid payment payload');
       }
 
-      const { payment, link } = await deps.service.createPayment({
+      const { payment, session } = await deps.service.createPayment({
         invoiceId: parsed.data.invoiceId,
-        externalInvoiceId: parsed.data.externalInvoiceId,
-        reference: parsed.data.reference,
+        studentId: parsed.data.studentId,
+        amountMinorUnits: parsed.data.amountMinorUnits,
+        currency: parsed.data.currency,
         organizationId: parsed.data.organizationId,
       });
 
       res.status(201).json({
         payment,
         /*
-          An explicit field-by-field projection, not an omit-rest idiom, so a
-          new service field cannot be published by accident. `simulated` is
-          added only when the link was fabricated locally — it rides on the
-          real configured host, so without it a developer cannot tell a test
-          link from a genuine one.
+          A CHECKOUT, not a link.
+
+          The gateway issues no URL a customer can visit: it expects a signed POST
+          and answers with the payment form. So what goes back is a destination
+          plus the parameters for it, and the BROWSER posts to the gateway
+          directly — which is the point. It is why card details never reach this
+          origin, and it is also why the CSP has to name the gateway in
+          `form-action`.
+
+          Explicitly field-by-field rather than spreading the session, so a new
+          service field cannot be published by accident.
         */
-        link: {
-          linkUrl: link.linkUrl,
-          reference: link.reference,
-          expiresAt: link.expiresAt,
-          ...(link.simulated === true ? { simulated: true } : {}),
+        checkout: {
+          checkoutUrl: session.checkoutUrl,
+          params: session.params,
+          transactionId: session.transactionId,
+          ...(session.simulated === true ? { simulated: true } : {}),
         },
       });
     }),

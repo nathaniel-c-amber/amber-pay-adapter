@@ -149,6 +149,17 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+    environment:
+      # Rendered into the CSP's `form-action` by envsubst at container start.
+      #
+      # It is here and NOT in the api service because the browser is what reads
+      # it: the API never posts a form, it only calls the gateway server-to-server.
+      # The default is deliberately the STAGING gateway — an unset value would
+      # render `form-action 'self' ` with nothing after it, which silently
+      # breaks every checkout with a CSP error nobody connects to a payment
+      # integration. Same value the API validates at boot, so a typo fails the
+      # deployment loudly rather than at the first customer's card.
+      AMBER_PAY_CHECKOUT_ORIGIN: ${AMBER_PAY_CHECKOUT_ORIGIN:-https://staging-payment.myamberpay.com}
     healthcheck:
       # 127.0.0.1, NOT localhost: nginx listens on IPv4 only (0.0.0.0:80) while
       # `localhost` resolves to ::1 inside this Alpine image, so the check was

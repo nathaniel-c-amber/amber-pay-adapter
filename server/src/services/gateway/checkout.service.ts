@@ -59,11 +59,11 @@ export interface CheckoutIntentStore {
     expectedSealed: Buffer;
   }): Promise<void>;
 
-  /** Find an unsettled intent by the id the gateway echoed. */
-  findByTransactionId(
+/** Find an intent by the id the gateway echoed, so a callback can be attributed. */
+findByTransactionId(
     organizationId: string,
     transactionId: string,
-  ): Promise<{ studentId: string; currency: GatewayCurrency } | undefined>;
+  ): Promise<{ studentId: string } | undefined>;
 }
 
 /** How many times to regenerate an id the store says is already taken. */

@@ -19,6 +19,7 @@ import { getRepositories } from './repositories/index.js';
 import type { AuthRouteDeps, SettingsRouteDeps, UsersRouteDeps } from './routes/index.js';
 import type { Repositories } from './types/repository.js';
 import type { AmberPayGateway } from './types/gateway.js';
+import type { CheckoutService } from './services/gateway/checkout.service.js';
 
 export interface CreateAppDeps {
   /** Optional auth service overrides (used by tests to inject seams). */
@@ -31,6 +32,16 @@ export interface CreateAppDeps {
   repositories?: Repositories;
   /** Optional gateway override (tests inject a stub). */
   gateway?: AmberPayGateway;
+  /**
+   * Optional checkout override (tests inject a stub).
+   *
+   * Separate from `gateway`, which stays for the WEBHOOK route — that one
+   * verifies signatures and parses callbacks, and has nothing to do with
+   * creating a payment. Conflating them would mean a test that stubs the
+   * callback parser also has to stub checkout, and could not vary one without
+   * the other.
+   */
+  checkout?: CheckoutService;
 }
 
 export function createApp(deps: CreateAppDeps = {}): express.Express {
@@ -56,7 +67,10 @@ export function createApp(deps: CreateAppDeps = {}): express.Express {
   // Auth + data routes rely on a parsed JSON body, so they are mounted AFTER
   // the JSON body parser.
   app.use('/api/v1', createAuthRouter(deps.auth));
-  app.use('/api/v1', createPaymentRouter({ payments: repositories.payments, gateway: deps.gateway }));
+  app.use('/api/v1', createPaymentRouter({
+    payments: repositories.payments,
+    ...(deps.checkout ? { checkout: deps.checkout } : {}),
+  }));
   app.use('/api/v1', createReportRouter({ reconciliation: repositories.reconciliation }));
   app.use(
     '/api/v1',

@@ -33,7 +33,15 @@ function envBoolean(defaultValue: boolean) {
 const blankAsAbsent = (value: unknown): unknown =>
   typeof value === 'string' && value.trim() === '' ? undefined : value;
 
-const envSchema = z.object({
+/**
+ * The configuration schema, exported so it can be exercised directly.
+ *
+ * `env` is the PARSED result of parsing `process.env` at import time, so a test
+ * can only assert about whatever the test environment happens to contain. The
+ * rules — particularly the ones whose failure modes are a crash rather than a
+ * message — are only reachable by handing the schema a value.
+ */
+export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
   PORT: z.coerce.number().int().positive().default(3300),
   LOG_LEVEL: z
@@ -116,6 +124,56 @@ const envSchema = z.object({
 
   // Amber Pay
   AMBER_PAY_BASE_URL: z.string().url().default('https://api.amberpay.example.com'),
+  /*
+    The merchant account the gateway issues per project, per environment.
+
+    Required to create a checkout at all: it is in every signature request and in
+    every checkout POST, and the gateway issues a different one for DEV and PROD
+    — so a deployment that quietly reused one would produce signatures the other
+    environment refuses, with no message saying which value was wrong.
+  */
+  AMBER_PAY_CLIENT_ID: z.string().min(1),
+  /*
+    THE ORIGIN THE BROWSER IS ALLOWED TO POST A CARD FORM TO.
+
+    A separate value from `AMBER_PAY_BASE_URL` because it is used by a DIFFERENT
+    consumer: the API calls the base URL server-to-server, while the CONTENT
+    SECURITY POLICY on the SPA document must permit a form post to the gateway's
+    origin. Keeping them apart means changing where we call from never silently
+    widens what the browser may submit a form to.
+
+    It is validated as a bare origin — scheme and host, no path — because that is
+    exactly what `form-action` takes, and a path here would produce a directive
+    that looks configured and matches nothing. A wrong value fails at BOOT
+    rather than silently breaking checkout: the symptom would otherwise be a form
+    that refuses to submit with a CSP error no operator is likely to connect to
+    a payment integration.
+  */
+  AMBER_PAY_CHECKOUT_ORIGIN: z
+    .string()
+    .url()
+    /*
+      `try`/`catch` INSIDE the refine, which is not decoration. A zod refinement
+      runs even when the check before it has already failed, so `.url()` refusing
+      `not-a-url` does not stop this from running — and `new URL()` on that value
+      THROWS. The result was an unhandled exception while parsing configuration:
+      a typo in a variable produced a stack trace instead of a message naming the
+      variable, which is the opposite of what a fail-fast check is for.
+    */
+    .refine(
+      (value) => {
+        try {
+          return new URL(value).pathname === '/';
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          'AMBER_PAY_CHECKOUT_ORIGIN must be an origin (scheme and host, no path)',
+      },
+    )
+    .default('https://staging-payment.myamberpay.com'),
   // Required: webhook signature verification must never silently fall back to
   // an empty secret. Fails fast when webhooks land.
   AMBER_PAY_WEBHOOK_SECRET: z.string().min(1),

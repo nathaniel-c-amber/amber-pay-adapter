@@ -29,18 +29,27 @@ import type {
   DeploymentSettingsPatch,
 } from '../models/deploymentSettings.js';
 import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
+import { DuplicateTransactionIdError } from '../services/gateway/checkout.service.js';
+import type { CheckoutIntentStore } from '../services/gateway/checkout.service.js';
 
 /**
  * Postgres-backed repository implementations. Exercised at runtime when a
  * database is configured. All queries are parameterized.
  */
 
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    (err as { code?: unknown }).code === '23505'
-  );
+/**
+ * Is this a unique violation?
+ *
+ * `constraint` narrows it to ONE named index. That matters for the checkout
+ * intent store: its retry can only tell "someone already has this id" from
+ * every other fault by the constraint name, and matching on the SQLSTATE alone
+ * would classify an unrelated collision as an id clash and send the caller round
+ * the retry loop for nothing.
+ */
+function isUniqueViolation(err: unknown, constraint?: string): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  if ((err as { code?: unknown }).code !== '23505') return false;
+  return constraint === undefined || (err as { constraint?: unknown }).constraint === constraint;
 }
 
 function toIso(value: Date | string): string {
@@ -448,10 +457,11 @@ interface FailureRow {
   detail: string;
   since: Date;
   acknowledged_at: Date | null;
+  acknowledged_by: string | null;
 }
 
 const FAILURE_COLUMNS =
-  'id, organization_id, severity, channel, title, detail, since, acknowledged_at';
+  'id, organization_id, severity, channel, title, detail, since, acknowledged_at, acknowledged_by';
 
 function toFailure(row: FailureRow): Failure {
   const failure: Failure = {
@@ -465,6 +475,9 @@ function toFailure(row: FailureRow): Failure {
   };
   if (row.acknowledged_at) {
     failure.acknowledgedAt = toIso(row.acknowledged_at);
+  }
+  if (row.acknowledged_by) {
+    failure.acknowledgedBy = row.acknowledged_by;
   }
   return failure;
 }
@@ -504,22 +517,55 @@ export class PostgresFailureRepository implements FailureRepository {
     id: string,
     acknowledgedAt: string,
     organizationIds: string[] | null,
+    acknowledgedBy?: string,
   ): Promise<Failure | undefined> {
+    const actor = acknowledgedBy ?? null;
     const result =
       organizationIds === null
         ? await this.pool.query<FailureRow>(
-            `UPDATE failures SET acknowledged_at = $2 WHERE id = $1
+            `UPDATE failures SET acknowledged_at = $2, acknowledged_by = $3 WHERE id = $1
              RETURNING ${FAILURE_COLUMNS}`,
-            [id, acknowledgedAt],
+            [id, acknowledgedAt, actor],
           )
         : await this.pool.query<FailureRow>(
-            `UPDATE failures SET acknowledged_at = $2
-             WHERE id = $1 AND organization_id = ANY($3)
+            `UPDATE failures SET acknowledged_at = $2, acknowledged_by = $3
+             WHERE id = $1 AND organization_id = ANY($4)
              RETURNING ${FAILURE_COLUMNS}`,
-            [id, acknowledgedAt, organizationIds],
+            [id, acknowledgedAt, actor, organizationIds],
           );
     const row = result.rows[0];
     return row ? toFailure(row) : undefined;
+  }
+
+  /**
+   * One statement for the whole batch: `WHERE id = ANY($1)` matches the set in
+   * the index, and `RETURNING` gives back exactly the rows that changed. The
+   * organization predicate is applied in the SAME statement rather than being
+   * fetched first and filtered in application code, so a row the caller may not
+   * see is never read, let alone acknowledged.
+   */
+  async acknowledgeMany(
+    ids: string[],
+    acknowledgedAt: string,
+    organizationIds: string[] | null,
+    acknowledgedBy?: string,
+  ): Promise<Failure[]> {
+    const actor = acknowledgedBy ?? null;
+    const result =
+      organizationIds === null
+        ? await this.pool.query<FailureRow>(
+            `UPDATE failures SET acknowledged_at = $2, acknowledged_by = $3
+             WHERE id = ANY($1)
+             RETURNING ${FAILURE_COLUMNS}`,
+            [ids, acknowledgedAt, actor],
+          )
+        : await this.pool.query<FailureRow>(
+            `UPDATE failures SET acknowledged_at = $2, acknowledged_by = $3
+             WHERE id = ANY($1) AND organization_id = ANY($4)
+             RETURNING ${FAILURE_COLUMNS}`,
+            [ids, acknowledgedAt, actor, organizationIds],
+          );
+    return result.rows.map(toFailure);
   }
 }
 
@@ -711,6 +757,62 @@ function toPayment(row: PaymentRow): Payment {
     status: row.status as Payment['status'],
     processedAt: toIso(row.processed_at),
   };
+}
+
+/**
+ * Persistence for a checkout intent — the record written BEFORE the gateway is
+ * asked for anything.
+ *
+ * The unique-violation translation is the whole reason this is a class rather
+ * than an inline query: the retry that guarantees a fresh transaction id can
+ * only distinguish "someone already has this id" from every other fault if the
+ * driver error is classified here, at the only place that knows what the
+ * constraint is called. Matching on the constraint NAME rather than the SQLSTATE
+ * alone means an unrelated unique violation is not silently reported as a
+ * collision, which would send the caller round the retry loop for nothing.
+ */
+export class PostgresCheckoutIntentStore implements CheckoutIntentStore {
+  constructor(private readonly pool: Pool) {}
+
+  async create(input: {
+    organizationId: string;
+    transactionId: string;
+    studentId: string;
+    expectedSealed: Buffer;
+  }): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO checkout_intents (organization_id, transaction_id, student_id, expected_sealed)
+         VALUES ($1, $2, $3, $4)`,
+        [input.organizationId, input.transactionId, input.studentId, input.expectedSealed],
+      );
+    } catch (err) {
+      if (isUniqueViolation(err, 'checkout_intents_unique')) {
+        throw new DuplicateTransactionIdError(input.transactionId);
+      }
+      throw err;
+    }
+  }
+
+  async findByTransactionId(
+    organizationId: string,
+    transactionId: string,
+  ): Promise<{ studentId: string } | undefined> {
+    const result = await this.pool.query<{ student_id: string }>(
+      `SELECT student_id FROM checkout_intents
+        WHERE organization_id = $1 AND transaction_id = $2`,
+      [organizationId, transactionId],
+    );
+    const row = result.rows[0];
+    /*
+      ONLY THE STUDENT COMES BACK, and deliberately: attributing a callback needs
+      to know WHO it was for, not what was expected. The expected charge lives
+      inside the sealed column (see migration 007) and is read by a separate,
+      explicit call when a cross-check actually runs — so a routine lookup never
+      unseals a figure, and never has to invent a currency it did not read.
+    */
+    return row === undefined ? undefined : { studentId: row.student_id };
+  }
 }
 
 export class PostgresPaymentRepository implements PaymentRepository {
