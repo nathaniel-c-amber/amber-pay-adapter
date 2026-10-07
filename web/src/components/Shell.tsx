@@ -34,8 +34,10 @@ import type { ReconciliationReport } from "@/services/client";
 import type { ApiIdentity, ApiServiceStatus, ApiStageFlowSummary } from "@/types/api";
 import { CheckoutHandoffPage } from "@/pages/CheckoutHandoffPage";
 import { PaymentReturnPage } from "@/pages/PaymentReturnPage";
+import { createCheckout } from "@/services/client";
 import {
   clearPendingCheckout,
+  setPendingCheckout,
   takePendingCheckout,
 } from "@/services/checkoutSession";
 import { mapFailure, mapMetrics } from "@/services/map.service";
@@ -1138,6 +1140,9 @@ export default function Shell() {
             events={data.events}
             recon={recon}
             mode={mode}
+            creating={creatingCheckout}
+            createError={checkoutError}
+            onCreateCheckout={(input) => void startCheckout(input)}
           />
         );
       case "synchronization":
@@ -1216,6 +1221,49 @@ export default function Shell() {
       />
     );
   }
+
+  /*
+    TAKING A PAYMENT.
+
+    The request is made HERE, in the shell, rather than in the page — because the
+    signed parameters must survive the navigation to `#/checkout`. They are held
+    in `checkoutSession` (module scope, consumed on read) and the browser then goes
+    to the provider. Keeping the request in the page would mean handing signed
+    values to a component that unmounts on navigate, which is exactly how a
+    signature ends up in history.state or the URL.
+  */
+  const [creatingCheckout, setCreatingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  const startCheckout = useCallback(
+    async (input: { studentId: string; amount: string; currency: "USD" | "JMD" }) => {
+      if (!token) return;
+      setCreatingCheckout(true);
+      setCheckoutError(null);
+      try {
+        const { checkout } = await createCheckout(token, {
+          // An invoice reference is not something an operator types here: the
+          // accounting invoice is found by matching the customer, which is what
+          // the matching rule is configured for. This id is the local handle.
+          invoiceId: input.studentId,
+          studentId: input.studentId,
+          amount: input.amount,
+          currency: input.currency,
+        });
+        setPendingCheckout(checkout);
+        navigate("checkout");
+      } catch (err) {
+        setCheckoutError(
+          err instanceof Error && err.message
+            ? err.message
+            : "The payment could not be prepared.",
+        );
+      } finally {
+        setCreatingCheckout(false);
+      }
+    },
+    [token],
+  );
 
   /*
     THE PAYMENT SURFACES A CUSTOMER USES.

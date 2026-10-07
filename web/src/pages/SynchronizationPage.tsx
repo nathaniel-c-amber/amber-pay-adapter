@@ -1,15 +1,24 @@
 /* Synchronization — the product's timing requirement, made visible.
  *
  * Two paths are shown: the payment push (completed events must reach the
- * accounting adaptor within 5 seconds) and the scheduled pull (15-minute
- * cadence). The manual "Run sync now" action is permission-gated and only
- * rendered for scopes that can write.
+ * accounting adaptor within 5 seconds) and the scheduled pull.
  *
- * NOTE (flagged, not silently resolved): the backend exposes no
- * manual-sync endpoint — /api/v1 has auth, dashboard, failures, payments,
- * reports, and webhooks routes only. The action therefore re-reads
- * monitoring data and says so plainly rather than reporting a success it
- * cannot verify. See the run summary for this gap. */
+ * ★ THE "15-MINUTE CADENCE" CLAIM WAS REMOVED HERE BECAUSE NOTHING RUNS IT.
+ *
+ * The lead used to say scheduled pulls run every fifteen minutes, and the
+ * `ConfigPage` had already been corrected for making the same claim: there is
+ * no scheduler in the service at all, nothing reads `syncInterval`, and
+ * `pullSyncStatus` is never called outside the adaptors' own definitions. Two
+ * pages describing one non-existent behaviour is worse than one — an operator
+ * waits fifteen minutes for a pull that never comes and concludes the ledger is
+ * stale, when in fact nothing was ever scheduled.
+ *
+ * The push path, by contrast, IS real and IS measured: a completed payment is
+ * pushed to the accounting system inside the same request that receives it, and
+ * was measured at 1994 ms against the 5000 ms budget on 2026-10-06.
+ *
+ * The manual "Run sync now" action is permission-gated and says plainly that it
+ * re-reads monitoring data, because there is no manual-sync endpoint to call. */
 
 import { useState } from "react";
 import type { Connector, LifecycleEvent } from "@/types/domain";
@@ -34,10 +43,7 @@ export function SynchronizationPage({
   const [requested, setRequested] = useState(false);
 
   const push = connectors.find((c) => c.id === "push");
-  const pull = connectors.find((c) => c.id === "pull");
   const pushHealth = push ? HEALTH_OF[push.status] : "unknown";
-  const pullHealth = pull ? HEALTH_OF[pull.status] : "unknown";
-  const pullDelayed = pullHealth === "degraded" || pullHealth === "failed";
 
   const syncEvents = events.filter(
     (e) => e.type === "sync-change" || e.channel.toLowerCase().includes("pull"),
@@ -52,7 +58,7 @@ export function SynchronizationPage({
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
       <PageHeader
         title="Synchronization"
-        lead="Completed payment events must reach the active accounting adaptor within 5 seconds, and scheduled pulls run on a 15-minute cadence. Both paths are measured here."
+        lead="A completed payment is pushed to the active accounting system inside the same request that receives it, and must reach it within 5 seconds. That path is measured here. No scheduled pull runs on this deployment."
       />
 
       <section className="grid grid-cols-2 gap-3 max-sm:grid-cols-1" aria-label="Synchronisation readouts">
@@ -81,21 +87,30 @@ export function SynchronizationPage({
         <div className="rounded-panel border border-rule-enamel bg-midnight-2 px-5 py-4 shadow-panel">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-lg font-semibold text-ink-1">Scheduled pull</span>
-            <HealthBadge health={pullHealth} />
+            {/* Not "unknown" — there is nothing to be uncertain ABOUT. Nothing
+                is scheduled, so the honest badge is the inert one rather than a
+                warning that implies a system exists and is having trouble. */}
+            <HealthBadge health="unknown" />
           </div>
-          <div className="mono mt-2 mb-3 text-2xl font-semibold text-ink-1">{pullDelayed ? "delayed" : "on schedule"}</div>
+          <div className="mono mt-2 mb-3 text-2xl font-semibold text-ink-3">not scheduled</div>
           <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-2 max-sm:gap-x-4">
             <div className="flex flex-col gap-0.5">
               <dt className="text-micro uppercase tracking-label text-ink-3">Interval</dt>
-              <dd className="mono m-0 text-md text-ink-1">{pull ? pull.reading : "—"}</dd>
+              {/* Say there is none rather than printing a configured value that
+                  nothing would act on. A stored number with no scheduler behind
+                  it reads as a live setting, and an operator watching it tick
+                  nothing down is worse off than being told plainly. */}
+              <dd className="mono m-0 text-md text-ink-3">none</dd>
             </div>
             <div className="flex flex-col gap-0.5">
               <dt className="text-micro uppercase tracking-label text-ink-3">Last run</dt>
-              <dd className="mono m-0 text-md text-ink-1">{pull ? pull.note.replace(/^last run /i, "") : "—"}</dd>
+              <dd className="mono m-0 text-md text-ink-3">never</dd>
             </div>
             <div className="flex flex-col gap-0.5">
               <dt className="text-micro uppercase tracking-label text-ink-3">Impact</dt>
-              <dd className="m-0 text-md text-ink-1">{HEALTH_IMPACT[pullHealth]}</dd>
+              <dd className="m-0 text-md text-ink-2">
+                None. Payments are pushed, not pulled.
+              </dd>
             </div>
           </dl>
         </div>

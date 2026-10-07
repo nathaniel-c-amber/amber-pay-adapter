@@ -34,7 +34,10 @@ function stubCheckout(): CheckoutService {
 const input = {
   invoiceId: 'inv-1',
   studentId: 'STU0026',
-  amountMinorUnits: 25000,
+  // MAJOR units, as a decimal STRING — the gateway's own format. See
+  // `DECIMAL_AMOUNT`: a number here would be "250.00" -> 250 and the decimals
+  // would be dropped on the way out.
+  amount: '250.00',
   currency: 'JMD' as const,
   organizationId: 'org-1',
 };
@@ -66,9 +69,9 @@ describe('PaymentService', () => {
 
     // The figure goes out to the browser inside the checkout, once. Not on the
     // entity, not in any event, not in a log line.
-    expect(session.params.Amount).toBe(25000);
+    expect(session.params.Amount).toBe('250.00');
     expect(Object.keys(payment).map((k) => k.toLowerCase())).not.toContain('amount');
-    expect(JSON.stringify(payment)).not.toContain('25000');
+    expect(JSON.stringify(payment)).not.toContain('250.00');
   });
 
   it('refuses a customer identifier it could not match on', async () => {
@@ -95,18 +98,15 @@ describe('PaymentService', () => {
     );
   });
 
-  it('refuses a fractional or non-positive figure before it reaches a signature', async () => {
+  it('refuses a malformed amount before it reaches a signature', async () => {
     const repositories = createInMemoryRepositories();
     const service = new PaymentService(repositories.payments, stubCheckout());
 
-    // A rounded figure produces a signature the gateway rejects — or, worse,
-    // accepts for a different sum.
-    await expect(service.createPayment({ ...input, amountMinorUnits: 10.5 })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    await expect(service.createPayment({ ...input, amountMinorUnits: 0 })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    for (const bad of ['', '250.000', '-5.00', 'abc', '250,00']) {
+      await expect(
+        service.createPayment({ ...input, amount: bad }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
   });
 
   it('findById returns undefined for a payment outside the caller orgs (C1)', async () => {

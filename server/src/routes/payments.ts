@@ -7,6 +7,7 @@ import { PaymentService } from '../services/payments/payment.service.js';
 import { CheckoutService } from '../services/gateway/checkout.service.js';
 import { PostgresCheckoutIntentStore } from '../repositories/postgres.js';
 import { getPool } from '../db/pool.js';
+import { env } from '../config/env.js';
 import type { PaymentRepository } from '../types/repository.js';
 
 export interface PaymentRouteDeps {
@@ -31,14 +32,33 @@ export function createPaymentRouter(deps: PaymentRouteDeps = {}): express.Router
   const controller = createPaymentsController({ service });
   const router = express.Router();
 
+  /*
+    ★ THE ORGANIZATION PBAC EVALUATES AGAINST, WHICH IS NOT ALWAYS IN THE BODY.
+
+    `organizationId` on this request is optional — the server knows it, and the
+    console has no way to read it (no endpoint it can reach carries the id). But
+    `organizationIdOf(req)` reads the body and falls back to the query string,
+    returning `''` when neither is present, and an empty scope matches no policy
+    attribute. So omitting the field produced a 403 on a request that was
+    perfectly authorized — every `POST /payments` failed the moment the body got
+    smaller.
+
+    The fallback is `env.ORGANIZATION_ID`, which is the SAME value the controller
+    will use, so authorization and the write cannot disagree about which
+    organization this touches. A SUPPLIED foreign value is still evaluated as
+    that organization, which is what turns "you wrote to somewhere else" into a
+    refusal rather than a silent redirection.
+  */
+  const paymentScope = (req: express.Request) => ({
+    scope: 'payments',
+    organizationId: organizationIdOf(req) || env.ORGANIZATION_ID,
+  });
+
   // POST /api/v1/payments — requires PBAC 'write' on scope 'payments'.
   router.post(
     '/payments',
     requireAuth,
-    requirePolicy('write', (req) => ({
-      scope: 'payments',
-      organizationId: organizationIdOf(req),
-    })),
+    requirePolicy('write', paymentScope),
     controller.createPayment,
   );
 

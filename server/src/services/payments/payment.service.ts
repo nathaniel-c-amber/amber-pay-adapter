@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { ValidationError } from '../../utils/errors.js';
-import { GATEWAY_CURRENCIES, STUDENT_ID } from '../gateway/amberPayWire.js';
+import { DECIMAL_AMOUNT, GATEWAY_CURRENCIES, STUDENT_ID } from '../gateway/amberPayWire.js';
 import { CheckoutService } from '../gateway/checkout.service.js';
 import { getPool } from '../../db/pool.js';
 import { PostgresCheckoutIntentStore } from '../../repositories/postgres.js';
@@ -24,8 +24,14 @@ export interface CreatePaymentInput {
    * keeping the name would have kept the lie.
    */
   studentId: string;
-  /** MINOR UNITS — 25000 is 250.00, which is the gateway's own convention. */
-  amountMinorUnits: number;
+  /**
+   * What to charge, in MAJOR units as the gateway wants it — "250.00".
+   *
+   * A STRING, and not a number because the figure is signed, stored and shown
+   * without ever passing through arithmetic: `Number("250.00")` is `250`, and a
+   * numeric field would quietly drop the decimals on the way to the customer.
+   */
+  amount: string;
   currency: GatewayCurrency;
 }
 
@@ -69,11 +75,18 @@ export class PaymentService {
     if (!(GATEWAY_CURRENCIES as readonly string[]).includes(input.currency)) {
       throw new ValidationError(`currency must be one of ${GATEWAY_CURRENCIES.join(', ')}`);
     }
+    if (!DECIMAL_AMOUNT.test(input.amount)) {
+      // Caught HERE as well as at the route, because a figure that is not a
+      // decimal would otherwise be signed and shown before anyone noticed.
+      throw new ValidationError(
+        'amount must be a decimal figure in major units with at most two decimal places, such as 250.00',
+      );
+    }
 
     const session = await this.checkout.create({
       organizationId: input.organizationId,
       studentId: input.studentId,
-      amountMinorUnits: input.amountMinorUnits,
+      amount: input.amount,
       currency: input.currency,
       clientId: env.AMBER_PAY_CLIENT_ID,
     });

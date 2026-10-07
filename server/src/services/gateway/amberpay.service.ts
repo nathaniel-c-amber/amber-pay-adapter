@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { ValidationError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
-import { AdaptorConnectionError, adaptorErrorForStatus } from '../adaptors/errors.js';
+import { adaptorErrorForStatus } from '../adaptors/errors.js';
+import { httpTransport } from '../adaptors/httpTransport.js';
 import { MATCH_VALUE, OPAQUE_REFERENCE } from '../adaptors/quickbooksWire.js';
 import { createDevGatewayTransport } from './devTransport.js';
 import type { AdaptorResponse, HttpMethod } from '../../types/adaptor.js';
@@ -153,28 +154,54 @@ const PAYMENT_STATUS_OF_STATUS: Record<WirePaymentStatus, PaymentStatus> = {
  * WHY it could not reach the gateway instead of implying a call that never
  * happened.
  */
-async function throwingTransport(_method: HttpMethod, _url: string): Promise<AdaptorResponse> {
-  throw new AdaptorConnectionError('Amber Pay API calls are stubbed pending credentials');
+/**
+ * ★ THE REAL TRANSPORT. It was missing entirely until a live call found it.
+ *
+ * This function used to have two outcomes: the dev fabricator, or a transport
+ * that THREW. There was no third option, so a deployment with the dev transport
+ * off — which is every real one — could not reach the gateway at all, and said
+ * so with "stubbed pending credentials", a message that had been true when it
+ * was written and stopped being true the moment credentials arrived.
+ *
+ * No unit test found it because every gateway test injects its own transport,
+ * and every one of those was a fake. The defect was only visible by turning the
+ * dev transport off and asking for a real signature.
+ *
+ * It REUSES `httpTransport` rather than adding a second fetch client. That seam
+ * already exists, already encodes the timeout and the JSON/form encoding rules,
+ * and already converts a network failure into an `AdaptorConnectionError` —
+ * duplicating it would mean two places to keep a timeout honest. The gateway's
+ * bodies are JSON, and `httpTransport` JSON-encodes anything that is not
+ * form-encoded, so nothing else is needed here.
+ */
+function realGatewayTransport(): GatewayTransport {
+  const base = env.AMBER_PAY_BASE_URL.replace(/\/+$/, '');
+  return (method, path, body, headers) =>
+    httpTransport(method, `${base}${path}`, body, {
+      'Content-Type': 'application/json',
+      ...(headers ?? {}),
+    });
 }
 
 /**
  * The transport a gateway uses when a caller injects none.
  *
- * Stated once, here, rather than inside the constructor: the two gates are the
- * whole security surface of this file, and a test should be able to assert the
- * choice directly instead of inferring it from a thrown error.
+ * Stated once, here, rather than inside the constructor: the choice between the
+ * real client and the fabricator is the whole security surface of this file, and
+ * a test should be able to assert it directly instead of inferring it from a
+ * thrown error.
  */
 export function defaultGatewayTransport(): GatewayTransport {
   if (env.NODE_ENV !== 'production' && env.AMBER_PAY_DEV_TRANSPORT) {
-    // Loud on purpose. A fabricated payment link is exactly the kind of thing
+    // Loud on purpose. A fabricated payment response is exactly the kind of thing
     // that must never be discovered by surprise in a log nobody reads.
     logger.warn(
       { baseUrl: env.AMBER_PAY_BASE_URL },
-      'Amber Pay DEV transport active — payment links are fabricated locally, not issued by a gateway',
+      'Amber Pay DEV transport active — gateway responses are fabricated locally, not issued by a gateway',
     );
     return createDevGatewayTransport(env.AMBER_PAY_BASE_URL);
   }
-  return throwingTransport;
+  return realGatewayTransport();
 }
 
 export class AmberPayGatewayImpl implements AmberPayGateway {

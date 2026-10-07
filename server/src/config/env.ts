@@ -134,6 +134,27 @@ export const envSchema = z.object({
   */
   AMBER_PAY_CLIENT_ID: z.string().min(1),
   /*
+    THE BEARER TOKEN FOR OUTBOUND CALLS TO THE GATEWAY.
+
+    Authenticated as `Authorization: Bearer …` on every request WE make to them —
+    `generatesignature` first, and `transactionstatus` and `refund` when those
+    land. It is NOT sent to the customer's browser: the checkout form is posted
+    directly to the gateway by the browser, and a bearer token there would put a
+    live credential in the page, in the DOM, and in every screenshot and support
+    call since. The signature is what proves the checkout; the token proves
+    us.
+
+    Required rather than defaulted. A missing token is not a degraded mode, it is
+    a request the gateway will refuse, and a default that silently omitted the
+    header would turn that into a confusing 401 from a call whose shape is
+    otherwise correct.
+
+    It is the same value the gateway's own documentation calls the Secret Key,
+    which it says is generated in the back end and never revealed — so it
+    arrives out of band and must not be defaulted to anything guessable.
+  */
+  AMBER_PAY_API_TOKEN: z.string().min(1),
+  /*
     THE ORIGIN THE BROWSER IS ALLOWED TO POST A CARD FORM TO.
 
     A separate value from `AMBER_PAY_BASE_URL` because it is used by a DIFFERENT

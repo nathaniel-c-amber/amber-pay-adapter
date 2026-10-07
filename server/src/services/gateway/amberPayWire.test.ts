@@ -93,58 +93,80 @@ describe('the customer identifier', () => {
 });
 
 describe('the sealed expected charge', () => {
-  it('round-trips an exact minor-unit figure and its currency', () => {
-    // 25000 minor units is 250.00 — the gateway's own convention.
-    expect(openExpectedCharge(sealExpectedCharge(25000, 'JMD'))).toEqual({
-      amountMinorUnits: 25000,
+  it('round-trips a decimal figure verbatim', () => {
+    // Verified against the live gateway: "250.00" is displayed as JMD 250.00.
+    expect(openExpectedCharge(sealExpectedCharge('250.00', 'JMD'))).toEqual({
+      amount: '250.00',
       currency: 'JMD',
     });
   });
 
-  it('round-trips a figure a float could not represent exactly', () => {
-    const awkward = 1000000007;
-    expect(openExpectedCharge(sealExpectedCharge(awkward, 'USD')).amountMinorUnits).toBe(awkward);
+  it('never reformats the figure on the way through', () => {
+    /*
+      ★ The string survives as a string. What is signed is what is stored is
+      what the customer is shown — and a JS number would quietly end that:
+      `Number("250.00")` is `250`, so a numeric field would drop the decimals
+      between the record and the receipt.
+    */
+    expect(openExpectedCharge(sealExpectedCharge('250.00', 'JMD')).amount).toBe('250.00');
+    expect(openExpectedCharge(sealExpectedCharge('0.05', 'JMD')).amount).toBe('0.05');
+    expect(openExpectedCharge(sealExpectedCharge('1000000.99', 'USD')).amount).toBe('1000000.99');
   });
 
   it('keeps the figure and its currency together, so they cannot drift apart', () => {
-    /*
-      The reason these are sealed as ONE value rather than two columns. A figure
-      and its unit are a single fact; stored apart they can diverge, and the only
-      symptom is a cross-check comparing the wrong things.
-    */
-    const sealed = sealExpectedCharge(25000, 'JMD');
+    const sealed = sealExpectedCharge('250.00', 'JMD');
     expect(openExpectedCharge(sealed).currency).toBe('JMD');
   });
 
-  it('refuses zero, a negative, and a fractional figure', () => {
-    // A fractional minor unit is meaningless here, and accepting one would mean
-    // rounding somewhere — the exact thing this path must never do.
-    expect(() => sealExpectedCharge(0, 'JMD')).toThrow(ValidationError);
-    expect(() => sealExpectedCharge(-1, 'JMD')).toThrow(ValidationError);
-    expect(() => sealExpectedCharge(10.5, 'JMD')).toThrow(ValidationError);
-    expect(() => sealExpectedCharge(Number.NaN, 'JMD')).toThrow(ValidationError);
+  it.each([
+    '250.000',
+    '0250.00',
+    '250,00',
+    '-250.00',
+    '250.00 ',
+    '2.5e2',
+    'abc',
+    '',
+  ])('refuses %p, which is not a decimal figure the gateway accepts', (amount) => {
+    /*
+      These are the shapes that are genuinely AMBIGUOUS rather than merely
+      untidy: a third decimal place implies precision the currency does not
+      have, a leading zero and a comma are two spellings of one separator, a
+      trailing space survives a copy-paste, and scientific notation is a number
+      wearing a different hat.
+
+      Whole numbers and a single decimal place ARE accepted — `250` and `250.0`
+      are ordinary figures an operator types, and the gateway displays them as
+      250.00. Refusing them would be pedantry that pushes people to work out the
+      house style rather than to enter the right amount. What matters is that
+      the string is passed through untouched: nothing here is ever reformatted,
+      so there is no case where what we store and what we charge can disagree.
+    */
+    expect(() => sealExpectedCharge(amount, 'JMD')).toThrow(ValidationError);
+  });
+
+  it('accepts the shapes a real invoice amount arrives in', () => {
+    // Including the forms this test previously refused: `250` is 250.00 and
+    // `1500.5` is 1500.50, and both are figures a person types without thinking.
+    for (const amount of ['0.01', '9.99', '250.00', '250', '250.0', '1500', '1500.5', '1000000.99']) {
+      expect(() => sealExpectedCharge(amount, 'JMD')).not.toThrow();
+    }
   });
 
   it('never stores the figure in the clear', () => {
-    const sealed = sealExpectedCharge(25000, 'JMD');
-    // Structural check, not a security proof: it catches a future refactor to a
-    // plain column, which is the realistic regression.
-    expect(sealed.includes('25000')).toBe(false);
+    const sealed = sealExpectedCharge('250.00', 'JMD');
+    expect(sealed.includes('250.00')).toBe(false);
   });
 
   it('refuses an unsealed or corrupt value rather than returning something plausible', () => {
-    // A cross-check that cannot run is not a passing cross-check.
     expect(() => openExpectedCharge(Buffer.from('not-a-number'))).toThrow();
-    // A truncated envelope has no valid auth tag, so it cannot be opened.
     expect(() =>
-      openExpectedCharge(sealExpectedCharge(25000, 'JMD').subarray(0, 12)),
+      openExpectedCharge(sealExpectedCharge('250.00', 'JMD').subarray(0, 12)),
     ).toThrow();
   });
 
   it('refuses a sealed charge naming a currency the gateway does not document', () => {
-    // Built by hand to bypass the sealer, which is the only way to get here — so
-    // the reader must still refuse it rather than pass it downstream.
-    const forged = sealSecret(JSON.stringify({ amountMinorUnits: 25000, currency: 'EUR' }));
+    const forged = sealSecret(JSON.stringify({ amount: '250.00', currency: 'EUR' }));
     expect(() => openExpectedCharge(forged)).toThrow(/unsupported currency/);
   });
 });

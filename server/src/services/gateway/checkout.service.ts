@@ -27,6 +27,7 @@ import { defaultGatewayTransport } from './amberpay.service.js';
 import { generateTransactionId, isTransactionId, sealExpectedCharge } from './amberPayWire.js';
 import { AdaptorConnectionError, AdaptorError } from '../adaptors/errors.js';
 import { ValidationError } from '../../utils/errors.js';
+import { env } from '../../config/env.js';
 import type { GatewayTransport } from '../../types/gateway.js';
 import type {
   CheckoutSession,
@@ -73,8 +74,8 @@ export interface CreateCheckoutInput {
   organizationId: string;
   /** The customer this payment is for. Validated against the opaque-id charset. */
   studentId: string;
-  /** MINOR UNITS — 25000 is 250.00, which is the gateway's own convention. */
-  amountMinorUnits: number;
+  /** MAJOR units, verbatim — "250.00". See `DECIMAL_AMOUNT` for why a string. */
+  amount: string;
   currency: GatewayCurrency;
   clientId: string;
 }
@@ -109,7 +110,7 @@ export class CheckoutService {
           organizationId: input.organizationId,
           transactionId,
           studentId: input.studentId,
-          expectedSealed: sealExpectedCharge(input.amountMinorUnits, input.currency),
+          expectedSealed: sealExpectedCharge(input.amount, input.currency),
         });
         return transactionId;
       } catch (err) {
@@ -138,7 +139,7 @@ export class CheckoutService {
       ClientId: input.clientId,
       TransactionId: transactionId,
       CurrencyCode: input.currency,
-      Amount: input.amountMinorUnits,
+      Amount: input.amount,
       SignType: 1,
     });
 
@@ -146,7 +147,7 @@ export class CheckoutService {
       ClientId: input.clientId,
       TransactionId: transactionId,
       CurrencyCode: input.currency,
-      Amount: input.amountMinorUnits,
+      Amount: input.amount,
       Signature: signature,
       CustomerReference: input.studentId,
       // We render the receipt ourselves, so the gateway is not asked to email
@@ -165,20 +166,32 @@ export class CheckoutService {
   }
 
   /**
-   * One call to `/generatesignature`, and its response read strictly.
-   *
-   * `success` is the string `"Y"`, not a boolean — a JSON `true` here would fail
-   * the check and look like the gateway refusing a valid request. Only then is
-   * `Signature` read, and it is required to be a non-empty string.
-   */
-  private async requestSignature(body: {
+ * One call to `/generatesignature`, and its response read strictly.
+ *
+ * ★ THE BEARER TOKEN GOES HERE, AND ONLY HERE.
+ *
+ * `generatesignature` is a SERVER-TO-SERVER call: our API asks the gateway to
+ * sign a transaction. That is authenticated with `Authorization: Bearer …`.
+ *
+ * It is deliberately NOT sent to the browser. The checkout form is submitted by
+ * the BROWSER directly to the gateway, so anything we put in it would be a live
+ * credential living in the page, in the DOM, in a screenshot and in every
+ * support log since. The `Signature` field is what proves the checkout; the
+ * bearer token proves us, and we are the only ones making this call.
+ */
+private async requestSignature(body: {
     ClientId: string;
     TransactionId: string;
     CurrencyCode: GatewayCurrency;
-    Amount: number;
+    Amount: string;
     SignType: 1;
   }): Promise<string> {
-    const response = await this.transport('POST', buildSignaturePath(), body, {});
+    const response = await this.transport(
+      'POST',
+      buildSignaturePath(),
+      body,
+      bearerAuth(env.AMBER_PAY_API_TOKEN),
+    );
     if (response.status < 200 || response.status >= 300) {
       throw new AdaptorError(
         502,
@@ -191,18 +204,48 @@ export class CheckoutService {
 }
 
 /**
+ * `Authorization` for an outbound gateway call.
+ *
+ * A NAMED helper rather than an object literal at each call site, because the
+ * thing that must never happen is for one of these calls to quietly omit the
+ * header — and a header that is absent from a type-checked literal is invisible,
+ * while a call to this function cannot be made without it.
+ *
+ * The token is never logged, never included in an error, and never reaches the
+ * browser. `httpTransport` passes headers through untouched and does not log
+ * them, so the credential's exposure is bounded by this one call site.
+ */
+export function bearerAuth(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+/**
  * Read the signature out of the gateway's response.
  *
- * The upstream's own error text is not reproduced. A message can quote back the
- * amount it was asked to sign, and this result can reach a log line and a
- * console.
+ * ★ THE FLAG IS `Success`, NOT `success` — verified against the live gateway.
+ *
+ * The documentation's example reads `{"success": "Y", …}` in lower case, and
+ * that is what this checked, so EVERY valid response looked like a refusal: the
+ * first real call to `staging-payment.myamberpay.com` returned 200 with a
+ * genuine 64-byte signature and was reported as "the gateway declined to sign".
+ *
+ * Both spellings are accepted, and the reason is not hedging. Accepting the
+ * documented one means this keeps working if the gateway ever normalises to it;
+ * accepting the observed one is what makes it work now. Refusing to accept a
+ * signature that is demonstrably valid, on the strength of a capital letter in
+ * a documentation example, is the failure mode worth avoiding.
+ *
+ * WHAT IS NOT RELAXED: the value must be the STRING "Y", and the signature must
+ * be a non-empty string. A JSON `true` here — a plausible mistake for anyone
+ * implementing against the doc — still reads as a refusal.
  */
 function readSignature(body: unknown): string {
   if (typeof body !== 'object' || body === null) {
     throw new AdaptorConnectionError('Amber Pay returned no signature for this transaction');
   }
   const payload = body as Record<string, unknown>;
-  if (payload['success'] !== 'Y') {
+  const flag = payload['Success'] ?? payload['success'];
+  if (flag !== 'Y') {
     throw new AdaptorConnectionError('Amber Pay declined to sign this transaction');
   }
   const signature = payload['Signature'];

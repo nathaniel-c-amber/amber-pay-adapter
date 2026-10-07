@@ -113,7 +113,8 @@ export interface GenerateSignatureRequest {
   ClientId: string;
   TransactionId: string;
   CurrencyCode: GatewayCurrency;
-  Amount: number;
+  /** MAJOR units, verbatim — "250.00", never 25000. See `DECIMAL_AMOUNT`. */
+  Amount: string;
   SignType: 1;
 }
 
@@ -122,7 +123,8 @@ export interface StandardCheckoutParams {
   ClientId: string;
   TransactionId: string;
   CurrencyCode: GatewayCurrency;
-  Amount: number;
+  /** MAJOR units, verbatim — "250.00". */
+  Amount: string;
   Signature: string;
   /** The customer, echoed back on the callback. Our own field, per the gateway. */
   CustomerReference: string;
@@ -152,13 +154,37 @@ export interface CheckoutSession {
 /* --- the expected figure, sealed ------------------------------------------ */
 
 /**
- * What a checkout expects to be charged, in one sealed value.
+ * A DECIMAL AMOUNT, as the gateway wants it: MAJOR units, up to two decimal
+ * places.
  *
- * `amountMinorUnits` follows the gateway's own convention — 25000 is 250.00 — so
- * no float ever touches a figure on this path.
+ * ★ CORRECTED AGAINST THE LIVE GATEWAY, and the earlier assumption was wrong in
+ * a way that would have charged somebody 100× too much.
+ *
+ * This was modelled as MINOR units — an integer, with `25000` meaning `250.00`.
+ * Asking the gateway what it actually displays settles it:
+ *
+ *     Amount: "250.00"  ->  Total Amount: JMD 250.00
+ *     Amount: "25000"   ->  Total Amount: JMD 25000.00
+ *     Amount: "99.99"   ->  Total Amount: JMD 99.99
+ *
+ * So the figure is major units, formatted with at most two decimals, and is
+ * passed through VERBATIM. The gateway appends `.00` to an integer, so the
+ * formatting we send is for us, not for it — but sending a formatted string
+ * keeps what we recorded and what we signed identical, which is the property
+ * that makes the anti-fraud cross-check meaningful.
+ *
+ * IT IS A STRING, NOT A NUMBER, and that is not fussiness. A JS number cannot
+ * represent every two-decimal value exactly, and `Number("250.00")` is `250` —
+ * so a numeric field would quietly drop the decimals on the way through, and a
+ * signature computed over one figure while the customer is shown another is
+ * exactly the failure the signature exists to prevent.
  */
+export const DECIMAL_AMOUNT = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/;
+
+/** The amount a checkout expects to be charged, in one sealed value. */
 export interface ExpectedCharge {
-  amountMinorUnits: number;
+  /** MAJOR units, verbatim — e.g. "250.00". Never coerced to a number. */
+  amount: string;
   currency: GatewayCurrency;
 }
 
@@ -166,23 +192,25 @@ export interface ExpectedCharge {
  * Seal the expected charge.
  *
  * THE AMOUNT AND THE CURRENCY ARE SEALED TOGETHER, which is not tidiness. Two
- * separate columns would let them drift — a figure of 25000 read against a
- * currency that no longer matches it is a cross-check that silently compares
- * the wrong things, and the only symptom would be a mismatch nobody can explain.
- * A figure and its unit are one fact, so they are stored as one.
+ * separate columns would let them drift — a figure read against a currency that
+ * no longer matches it is a cross-check that silently compares the wrong things,
+ * and the only symptom would be a mismatch nobody can explain. A figure and its
+ * unit are one fact, so they are stored as one.
  *
  * It also satisfies the schema's own rule (`db/migrations.test.ts` forbids a
  * currency column outright) without weakening it or renaming around it.
  *
- * Exact INTEGER arithmetic only. A float cannot represent every minor-unit
- * value, and rounding a figure that a signature is computed over produces a
- * signature the gateway rejects — or, worse, accepts for a different sum.
+ * THE AMOUNT IS VALIDATED AS A STRING AND STORED AS ONE. There is no arithmetic
+ * here at all, deliberately: no rounding, no unit conversion, no float. What is
+ * signed is exactly what is stored is exactly what the customer is shown.
  */
-export function sealExpectedCharge(amountMinorUnits: number, currency: GatewayCurrency): Buffer {
-  if (!Number.isInteger(amountMinorUnits) || amountMinorUnits <= 0) {
-    throw new ValidationError('Amount must be a whole number of minor units greater than zero');
+export function sealExpectedCharge(amount: string, currency: GatewayCurrency): Buffer {
+  if (!DECIMAL_AMOUNT.test(amount)) {
+    throw new ValidationError(
+      'Amount must be a decimal figure in major units with at most two decimal places, such as 250.00',
+    );
   }
-  return sealSecret(JSON.stringify({ amountMinorUnits, currency }));
+  return sealSecret(JSON.stringify({ amount, currency }));
 }
 
 /**
@@ -201,12 +229,12 @@ export function openExpectedCharge(sealed: Buffer): ExpectedCharge {
   } catch {
     throw new ValidationError('The stored charge could not be read');
   }
-  const { amountMinorUnits, currency } = (parsed ?? {}) as Partial<ExpectedCharge>;
-  if (!Number.isInteger(amountMinorUnits) || (amountMinorUnits as number) <= 0) {
+  const { amount, currency } = (parsed ?? {}) as Partial<ExpectedCharge>;
+  if (typeof amount !== 'string' || !DECIMAL_AMOUNT.test(amount)) {
     throw new ValidationError('The stored charge is not a valid figure');
   }
   if (currency !== 'USD' && currency !== 'JMD') {
     throw new ValidationError('The stored charge names an unsupported currency');
   }
-  return { amountMinorUnits: amountMinorUnits as number, currency };
+  return { amount, currency };
 }

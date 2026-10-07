@@ -117,7 +117,8 @@ export async function createCheckout(
   body: {
     invoiceId: string;
     studentId: string;
-    amountMinorUnits: number;
+    /** MAJOR units as a decimal string — "250.00", never a number. */
+    amount: string;
     currency: ApiGatewayCurrency;
   },
 ): Promise<{ checkout: ApiCheckoutSession }> {

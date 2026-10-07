@@ -58,7 +58,7 @@ function harness(options: {
 const input = {
   organizationId: 'default',
   studentId: 'STU0026',
-  amountMinorUnits: 25000,
+  amount: '250.00',
   currency: 'JMD' as const,
   clientId: 'quick_book_stage',
 };
@@ -124,7 +124,7 @@ describe('creating a checkout', () => {
       ClientId: 'quick_book_stage',
       TransactionId: 'ABCDEFGH1234',
       CurrencyCode: 'JMD',
-      Amount: 25000,
+      Amount: '250.00',
       Signature: 'c2ln',
       CustomerReference: 'STU0026',
     });
@@ -133,13 +133,60 @@ describe('creating a checkout', () => {
     expect(session.params.CustomerInvoice).toBe('N');
   });
 
-  it('carries the customer as CustomerReference, which is what comes back', async () => {
+  it('carries the figure through VERBATIM, as the gateway displays it', async () => {
     const { intents, transport } = harness();
     const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
+
+    /*
+      ★ Verified live: the gateway shows exactly what it is sent. "250.00" becomes
+      JMD 250.00; "25000" becomes JMD 25000.00 — a hundredfold overcharge that
+      would look entirely correct in every test written against the wrong
+      assumption, which is how it got that far.
+    */
+    const session = await service.create({ ...input, amount: '250.00' });
+    // Passed through VERBATIM. No coercion, no rounding, no reformatting: the
+    // string that goes out is the string the operator typed, because that is the
+    // string the signature is computed over and the one the customer is charged.
+    expect(session.params.Amount).toBe('250.00');
+  });
+});
+
+describe('the bearer token', () => {
+  /*
+    ★ OUTBOUND CALLS ARE AUTHENTICATED; THE BROWSER IS NOT TOLD ABOUT IT.
+
+    `generatesignature` is a server-to-server call, so it carries
+    `Authorization: Bearer …`. The checkout form is posted by the CUSTOMER's own
+    browser straight to the gateway, so the token must never appear in it — a
+    credential in the DOM is in every screenshot and support log since.
+
+    Both halves are asserted, because either alone is a real defect: a call with
+    no header is refused, and a token in the form is a leaked credential.
+  */
+  it('authorizes the signature request with a bearer token', async () => {
+    const { intents, transport } = harness();
+    const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
+
+    await service.create(input);
+
+    const call = transport.mock.calls.find((c) => String(c[1]).includes('generatesignature'));
+    expect(call).toBeDefined();
+    const headers = call?.[3] as Record<string, string> | undefined;
+    expect(headers?.['Authorization']).toBe('Bearer test-amber-api-token');
+  });
+
+  it('never puts the token in the parameters handed to the browser', async () => {
+    const { intents, transport } = harness();
+    const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
+
     const session = await service.create(input);
-    // The callback's StudentID is what attributes a payment, so the checkout
-    // must send the same value under the parameter the gateway echoes.
-    expect(session.params.CustomerReference).toBe('STU0026');
+
+    // The Signature proves the checkout; the token proves us. Shipping the token
+    // would put a live credential in the page.
+    const serialised = JSON.stringify(session.params);
+    expect(serialised).not.toContain('test-amber-api-token');
+    expect(serialised.toLowerCase()).not.toContain('bearer');
+    expect(Object.keys(session.params)).not.toContain('Authorization');
   });
 });
 
@@ -194,13 +241,47 @@ describe('reading the signature', () => {
     await expect(service.create(input)).rejects.toThrow(/declined to sign/);
   });
 
+  /*
+    ★ THE SPELLING THE GATEWAY ACTUALLY USES.
+    *
+    The documentation's example is `{"success": "Y"}` in LOWER case, and this
+    suite asserted against it — so the check passed and the first real call to
+    `staging-payment.myamberpay.com` came back 200 with a genuine signature that
+    was reported as a refusal. A fake written to match the documentation agreed
+    with the documentation and told us nothing about the thing we actually talk
+    to.
+    *
+    Both spellings are accepted: the observed one so it works now, the documented
+    one so it keeps working if the gateway ever normalises.
+  */
+  it('accepts Success:"Y" — the spelling the live gateway actually uses', async () => {
+    const { intents, transport } = harness({
+      signature: {
+        status: 200,
+        body: { Success: 'Y', Signature: 'bGl2ZS1zaWduYXR1cmU=' },
+      },
+    });
+    const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
+    const session = await service.create(input);
+    expect(session.params.Signature).toBe('bGl2ZS1zaWduYXR1cmU=');
+  });
+
+  it('accepts the documented lower-case spelling too, in case it is normalised', async () => {
+    const { intents, transport } = harness({
+      signature: { status: 200, body: { success: 'Y', Signature: 'ZG9j' } },
+    });
+    const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
+    expect((await service.create(input)).params.Signature).toBe('ZG9j');
+  });
+
   it('refuses a JSON boolean where the gateway sends the string "Y"', async () => {
     /*
-      `success` is the STRING "Y". A boolean `true` here is a plausible mistake
-      — and it fails the check, so a valid request would look refused.
+      The VALUE is still required to be the string "Y", in either spelling. A
+      JSON `true` is a plausible mistake for anyone implementing against the
+      documentation, and it must not read as a valid signature.
     */
     const { intents, transport } = harness({
-      signature: { status: 200, body: { success: true, Signature: 'c2ln' } },
+      signature: { status: 200, body: { Success: true, Signature: 'c2ln' } },
     });
     const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
     await expect(service.create(input)).rejects.toThrow(/declined to sign/);
@@ -218,7 +299,7 @@ describe('reading the signature', () => {
     const { intents, transport } = harness({
       signature: {
         status: 200,
-        body: { success: 'N', ErrorMessage: 'Amount 25000 is not permitted for this ClientId' },
+        body: { Success: 'N', ErrorMessage: 'Amount 250.00 is not permitted for this ClientId' },
       },
     });
     const service = new CheckoutService(intents, transport, () => 'ABCDEFGH1234');
@@ -235,10 +316,10 @@ describe('what is stored', () => {
     await service.create(input);
 
     expect(openExpectedCharge(stored[0]!.expectedSealed)).toEqual({
-      amountMinorUnits: 25000,
+      amount: '250.00',
       currency: 'JMD',
     });
-    expect(stored[0]!.expectedSealed.includes('25000')).toBe(false);
+    expect(stored[0]!.expectedSealed.includes('250.00')).toBe(false);
   });
 
   it('stores the customer in the clear, because the callback is resolved through it', async () => {

@@ -9,6 +9,8 @@ process.env.AMBER_PAY_WEBHOOK_SECRET = 'test-webhook-secret-placeholder';
 // into every signature request, so a checkout cannot be created without it —
 // which is exactly why the schema requires it rather than defaulting.
 process.env.AMBER_PAY_CLIENT_ID = 'test-amber-client-id';
+// Bearer token for OUTBOUND gateway calls. Never sent to the browser.
+process.env.AMBER_PAY_API_TOKEN = 'test-amber-api-token';
 process.env.QUICKBOOKS_CLIENT_ID = 'test-qb-client-id';
 process.env.QUICKBOOKS_CLIENT_SECRET = 'test-qb-client-secret';
 // A bearer token (or refresh token) is what authorizes a call; client id/secret

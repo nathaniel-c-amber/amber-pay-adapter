@@ -60,9 +60,8 @@ function stubCheckout(simulated = false): CheckoutService {
 const body = {
   invoiceId: 'inv-1',
   studentId: 'STU0026',
-  amountMinorUnits: 25000,
+  amount: '250.00',
   currency: 'JMD' as const,
-  organizationId: 'org-1',
 };
 
 function token(policy: PolicyAttribute[]): string {
@@ -109,6 +108,52 @@ describe('payments routes', () => {
     expect(res.body.checkout.transactionId).toBe('ABCDEFGH1234');
   });
 
+  /*
+    ★ THE ORGANIZATION IS OPTIONAL AND THAT MUST NOT COST THE CALLER ACCESS.
+
+    `organizationId` is absent from this body — the console cannot read it, and
+    the server already knows it. It used to be enough to break authorization:
+    `organizationIdOf(req)` reads the body, falls back to the query string, and
+    returns `''` when neither is present — an empty scope matching no policy
+    attribute, so a perfectly authorized writer got 403 on every request.
+
+    The regression is invisible to a test that always sends the field, which is
+    why the fixture above omits it rather than carrying it "just in case".
+  */
+  it('authorizes a writer even though the body names no organization', async () => {
+    const repositories = createInMemoryRepositories();
+    const res = await request(buildApp(repositories))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send(body);
+
+    expect(body).not.toHaveProperty('organizationId');
+    expect(res.status).toBe(201);
+  });
+
+  it('still refuses a body naming another organization', async () => {
+    const repositories = createInMemoryRepositories();
+    const res = await request(buildApp(repositories))
+      .post('/api/v1/payments')
+      .set('Authorization', `Bearer ${token(writePolicy)}`)
+      .send({ ...body, organizationId: 'org-elsewhere' });
+
+    /*
+      403, NOT 400 — and the distinction is the point.
+
+      The request names a foreign organization, so `paymentScope` resolves to it
+      and the caller's policy grants nothing there. Authorization refuses BEFORE
+      the controller parses anything, which means the request never reaches the
+      body validation at all. A 400 would have been the schema's answer if the
+      controller had run first; that PBAC gets there first is the stronger
+      property — a write aimed at another tenant is stopped by the tenant rule,
+      not by a field check that could be reordered later.
+
+      Either way it is refused, which is what matters.
+    */
+    expect(res.status).toBe(403);
+  });
+
   it('returns a destination and parameters, not a link', async () => {
     const repositories = createInMemoryRepositories();
     const res = await request(buildApp(repositories))
@@ -137,8 +182,8 @@ describe('payments routes', () => {
       .send(body);
 
     expect(res.status).toBe(201);
-    expect(res.body.checkout.params.Amount).toBe(25000);
-    expect(JSON.stringify(res.body.payment)).not.toContain('25000');
+expect(res.body.checkout.params.Amount).toBe('250.00');
+expect(JSON.stringify(res.body.payment)).not.toContain('250.00');
   });
 
   it('omits the simulated flag for a genuine gateway checkout', async () => {

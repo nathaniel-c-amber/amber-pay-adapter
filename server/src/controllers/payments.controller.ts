@@ -4,7 +4,7 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../utils/errors.js';
 import { authorizedOrganizationIds } from '../utils/policyResource.js';
 import { env } from '../config/env.js';
-import { GATEWAY_CURRENCIES, STUDENT_ID } from '../services/gateway/amberPayWire.js';
+import { GATEWAY_CURRENCIES, DECIMAL_AMOUNT, STUDENT_ID } from '../services/gateway/amberPayWire.js';
 import { OPAQUE_REFERENCE } from '../services/adaptors/quickbooksWire.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
 
@@ -24,11 +24,13 @@ const createPaymentBodySchema = z.object({
   */
   studentId: z.string().regex(STUDENT_ID),
   /*
-    MINOR UNITS, in an integer — 25000 is 250.00. Not a float: a figure that
-    cannot be represented exactly would round, and a signature computed over a
-    rounded figure is rejected (or, worse, accepted for a different sum).
+    A DECIMAL FIGURE IN MAJOR UNITS — "250.00", not 25000.
+    Validated against the live gateway, which displays exactly what it is sent:
+    "250.00" shows JMD 250.00, and "25000" shows JMD 25000.00. A string, not a
+    number, so nothing rounds or reformats it on the way through — the figure
+    that is signed, stored and shown is the same figure.
   */
-  amountMinorUnits: z.number().int().positive(),
+  amount: z.string().regex(DECIMAL_AMOUNT),
   currency: z.enum(GATEWAY_CURRENCIES),
   /*
     OPTIONAL, and validated when supplied.
@@ -94,7 +96,7 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
       const { payment, session } = await deps.service.createPayment({
         invoiceId: parsed.data.invoiceId,
         studentId: parsed.data.studentId,
-        amountMinorUnits: parsed.data.amountMinorUnits,
+        amount: parsed.data.amount,
         currency: parsed.data.currency,
         organizationId: parsed.data.organizationId ?? env.ORGANIZATION_ID,
       });

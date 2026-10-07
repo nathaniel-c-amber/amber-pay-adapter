@@ -8,21 +8,33 @@
 import { useState } from "react";
 import type { LifecycleEvent } from "@/types/domain";
 import type { ReconciliationReport } from "@/services/client";
-import { BTN_PRIMARY, Card, EmptyState, Kpi, PageHeader, SearchBox } from "@/components/ui";
+import { BTN_PRIMARY, Card, EmptyState, INPUT, Kpi, PageHeader, SearchBox } from "@/components/ui";
 import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { IconCard, IconRefresh } from "@/components/icons";
 import { formatDateTime } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
+import type { ApiGatewayCurrency } from "@/types/api";
 
 export function PaymentsPage({
   events,
   recon,
   mode,
+  onCreateCheckout,
+  creating,
+  createError,
 }: {
   events: LifecycleEvent[];
   recon: ReconciliationReport;
   mode: "demo" | "live";
+  /** Hands the customer over to the provider. Owns the request and the navigation. */
+  onCreateCheckout: (input: {
+    studentId: string;
+    amount: string;
+    currency: ApiGatewayCurrency;
+  }) => void;
+  creating: boolean;
+  createError: string | null;
 }) {
   const [query, setQuery] = useState("");
   const summary = recon.reconciliation;
@@ -54,7 +66,7 @@ export function PaymentsPage({
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
       <PageHeader
         title="Payments"
-        lead="Payment processing status as it flows from Amber Pay toward the accounting adaptor. References and statuses only — no amounts and no customer data."
+        lead="Payment processing as it flows from Amber Pay toward the accounting system: the customer pays on the provider's own page, and this console records what came back. References and statuses only — no amounts and no customer data."
         actions={
           <SearchBox
             value={query}
@@ -100,17 +112,99 @@ export function PaymentsPage({
         />
       </section>
 
-      <Card title="Create a payment" className="pm-create">
+      {/*
+        ★ THE CREATE ACTION NOW DOES SOMETHING, AND IT CREATES A CHECKOUT RATHER
+        THAN A LINK.
+
+        The button this replaces was wired to nothing — a control that looked
+        operative and reported nothing either way. That is the same dead-control
+        class this repository has been removing elsewhere, and it was worst here:
+        an operator would press it, see nothing change, and conclude payments
+        were broken.
+
+        There is no "link" to create. The gateway issues no URL a customer
+        visits: it expects a signed POST and answers with the payment form. So
+        this asks the API for the parameters and hands the customer over — the
+        signed values are held in memory by `checkoutSession`, never in the URL,
+        because a checkout page reachable by address is a payment page anybody
+        can point somebody at with a live signature in it.
+
+        The figure is typed here as a plain decimal (`250.00`) and is only ever
+        passed to the gateway verbatim. It is not stored by the console and does
+        not appear anywhere else on this page — FR-2.3, and the reason this
+        surface has no amount column.
+      */}
+      <Card title="Take a payment" className="pm-create">
         <Can ability={ABILITY.paymentsWrite}>
-          <div className="mb-3 flex gap-3">
-            <button type="button" className={BTN_PRIMARY}>
-              <IconCard /> Create payment link
-            </button>
-          </div>
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = event.currentTarget;
+              const data = new FormData(form);
+              onCreateCheckout({
+                studentId: String(data.get('studentId') ?? ''),
+                amount: String(data.get('amount') ?? ''),
+                currency: String(data.get('currency') ?? 'JMD') as "USD" | "JMD",
+              });
+            }}
+          >
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[220px] flex-1 flex-col gap-1">
+                <span className="mono text-micro uppercase tracking-label text-ink-3">
+                  Student ID
+                </span>
+                <input
+                  name="studentId"
+                  className={INPUT}
+                  placeholder="STU0026"
+                  autoComplete="off"
+                  required
+                />
+              </label>
+              <label className="flex w-[160px] flex-col gap-1">
+                <span className="mono text-micro uppercase tracking-label text-ink-3">
+                  Amount
+                </span>
+                <input
+                  name="amount"
+                  className={INPUT}
+                  placeholder="250.00"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  required
+                />
+              </label>
+              <label className="flex w-[120px] flex-col gap-1">
+                <span className="mono text-micro uppercase tracking-label text-ink-3">
+                  Currency
+                </span>
+                <select name="currency" className={INPUT} defaultValue="JMD">
+                  <option value="JMD">JMD</option>
+                  <option value="USD">USD</option>
+                </select>
+              </label>
+              <button type="submit" className={BTN_PRIMARY} disabled={creating}>
+                <IconCard /> {creating ? "Preparing…" : "Take payment"}
+              </button>
+            </div>
+
+            <p className="m-0 text-xs leading-prose text-ink-3">
+              The customer is handed straight to the payment provider&apos;s own page to enter
+              card details. This console never sees or stores them, and the payment is only
+              recorded once the provider calls back.
+            </p>
+
+            {createError && (
+              <p className="m-0 text-sm text-text-suspended" role="alert">
+                {createError}
+              </p>
+            )}
+          </form>
         </Can>
         <Cannot ability={ABILITY.paymentsWrite}>
           <p className="m-0 mono text-xs text-ink-3">
-            Creating a payment requires write access on the payments scope.
+            Taking a payment requires write access on the payments scope.
           </p>
         </Cannot>
       </Card>

@@ -2,7 +2,18 @@
  *
  * The reconciliation report exposes counts and timestamps only (matched,
  * unmatched, anomalies). There is no monetary value on this surface, by
- * design. */
+ * design.
+ *
+ * ★ WHAT "MATCHED" NOW MEANS IS NARROWER THAN THE LABEL SUGGESTS, and the empty
+ * state says so rather than waiting to be discovered.
+ *
+ * These counters come from a scheduled job that does not run on this
+ * deployment. What DOES happen, on every completed payment, is the check this
+ * page is really about: the callback is correlated against the checkout intent
+ * recorded before the customer was redirected, so a payment can be attributed
+ * and an unexpected one refused. That is a per-payment reconciliation and it is
+ * not what these counts measure — a green zero here would otherwise read as
+ * "everything agreed" when it means "nothing has been counted yet". */
 
 import type { ReconciliationReport } from "@/services/client";
 import type { LifecycleEvent } from "@/types/domain";
@@ -52,7 +63,7 @@ export function ReconciliationPage({
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
       <PageHeader
         title="Reconciliation"
-        lead="How well the payment records and the accounting records agree. Counts and timestamps only — the console never carries ledger amounts."
+        lead="A scheduled comparison of payment records against accounting records. Counts and timestamps only — the console never carries ledger amounts."
         actions={
           <span className="mono text-sm text-ink-2">
             {summary ? `status ${summary.status}` : "no run recorded"} · {mode === "demo" ? "synthetic" : "live"}
@@ -63,7 +74,7 @@ export function ReconciliationPage({
       {!summary ? (
         <EmptyState
           title="No reconciliation run recorded"
-          lead="Once a reconciliation job runs, its matched, unmatched, and anomaly counts will appear here. Until then there is nothing to report."
+          lead="No scheduled comparison has run on this deployment, so there are no counts to report. Every completed payment is still checked individually against the checkout recorded before the customer was redirected — that happens per payment, not as a batch here."
         />
       ) : (
         <>
