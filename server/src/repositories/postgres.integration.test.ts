@@ -1,6 +1,11 @@
 import { Pool } from 'pg';
 import { runMigrations } from '../db/migrator.js';
-import { createPostgresRepositories } from './postgres.js';
+import { PostgresCheckoutIntentStore, createPostgresRepositories } from './postgres.js';
+import {
+  generateStatusToken,
+  sealExpectedCharge,
+  statusTokenExpiry,
+} from '../services/gateway/amberPayWire.js';
 import type { Repositories } from '../types/repository.js';
 
 /**
@@ -188,5 +193,108 @@ runTests('Postgres repositories integration', () => {
     await expect(dedup.claim('wh-ok', '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
     await dedup.markProcessed('wh-ok', '2026-01-01T00:00:02.000Z');
     await expect(dedup.claim('wh-ok', '2026-01-01T00:00:03.000Z')).resolves.toBe(false);
+  });
+
+  it('recordOutcome settles a payment ONCE — a repeated callback cannot move it', async () => {
+    /*
+      ★ THE IDEMPOTENCY IS A DATABASE PROPERTY, SO IT IS TESTED AGAINST ONE.
+
+      "`WHERE settled_at IS NULL` makes the write idempotent in the same
+      direction the rest of the flow is: a repeated callback cannot move a
+      settled payment backwards" (`repositories/postgres.ts`).
+
+      It cannot be asserted with a stub: a stub store would agree with whatever
+      the test told it to do, and the guard lives in the WHERE clause. So this
+      settles a payment as `collected`, then delivers a SECOND, contradictory
+      callback for the same id — exactly what the browser's arrival at the
+      callback url can produce, since that arrival re-triggers processing on
+      purpose — and reads the row back through the customer-facing read.
+
+      The verdict the customer sees is what is asserted, because that is the
+      value a second callback would corrupt: a page saying "declined" about a
+      payment that cleared is the harm, not a stale column.
+    */
+    const intents = new PostgresCheckoutIntentStore(pool);
+    const statusToken = generateStatusToken();
+    const transactionId = 'TXSETTLE01';
+
+    await intents.create({
+      organizationId: 'org-outcome',
+      transactionId,
+      studentId: 'STU030',
+      expectedSealed: sealExpectedCharge('250.00', 'JMD'),
+      statusToken,
+      statusTokenExpiresAt: statusTokenExpiry(),
+    });
+
+    // Before any callback: no verdict, and the row still reads.
+    await expect(intents.findByStatusToken(statusToken)).resolves.toMatchObject({
+      transactionId,
+      outcome: null,
+    });
+
+    await intents.recordOutcome({
+      organizationId: 'org-outcome',
+      transactionId,
+      outcome: 'collected',
+      failureReason: null,
+    });
+    // A repeat that CONTRADICTS the first. Only the first may stick.
+    await intents.recordOutcome({
+      organizationId: 'org-outcome',
+      transactionId,
+      outcome: 'failed',
+      failureReason: 'Invalid transaction',
+    });
+
+    const settled = await intents.findByStatusToken(statusToken);
+    expect(settled).toMatchObject({
+      transactionId,
+      outcome: 'collected',
+      // The second callback's decline text is not written either — there is no
+      // partial overwrite of a settled row.
+      failureReason: null,
+    });
+
+    // Another organization's callback cannot settle this one either.
+    await intents.recordOutcome({
+      organizationId: 'org-not-this-one',
+      transactionId,
+      outcome: 'failed',
+      failureReason: 'Invalid transaction',
+    });
+    await expect(intents.findByStatusToken(statusToken)).resolves.toMatchObject({
+      outcome: 'collected',
+    });
+  });
+
+  it('findByStatusToken reports an EXPIRED token as no row, not as a payment', async () => {
+    /*
+      "an expired token is indistinguishable from one that never existed — which
+      is the point, and is why it is not a filter applied after the row is read."
+
+      The customer-facing read's contract: an expired token answers `unknown` with
+      nulls, which is a waiting state, rather than naming a payment that is no
+      longer reachable through that link.
+    */
+    const intents = new PostgresCheckoutIntentStore(pool);
+    const statusToken = generateStatusToken();
+
+    await intents.create({
+      organizationId: 'org-outcome',
+      transactionId: 'TXEXPIRED1',
+      studentId: 'STU031',
+      expectedSealed: sealExpectedCharge('99.99', 'JMD'),
+      statusToken,
+      // Already in the past, which is the only way to produce one in a test.
+      statusTokenExpiresAt: new Date(Date.now() - 1000),
+    });
+
+    await expect(intents.findByStatusToken(statusToken)).resolves.toBeUndefined();
+    // The row itself is untouched — expiry filters the READ, it does not settle
+    // or delete anything, so refreshing a status page can never move a payment.
+    await expect(
+      intents.findByTransactionId('org-outcome', 'TXEXPIRED1'),
+    ).resolves.toMatchObject({ studentId: 'STU031' });
   });
 });

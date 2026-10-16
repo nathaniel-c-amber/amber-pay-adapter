@@ -203,8 +203,8 @@ export const envSchema = z.object({
     still stubbed, so POST /payments cannot succeed without this).
 
     TWO gates, not one. `NODE_ENV !== 'production'` alone is not enough: the
-    `tunnel` compose profile publishes this stack on a public ngrok URL, and a
-    non-production NODE_ENV is the normal setting for that profile. An endpoint
+    `tunnel` compose profile publishes this stack on a public Cloudflare URL, and
+    a non-production NODE_ENV is the normal setting for that profile. An endpoint
     that mints payment links would then be on the open internet. Requiring an
     explicit opt-in means a deployment is only ever exposed because somebody
     wrote `AMBER_PAY_DEV_TRANSPORT=true` in its own .env.
@@ -250,7 +250,7 @@ export const envSchema = z.object({
   ),
 
   // Number of reverse proxies in front of this process (nginx in the compose
-  // stack, plus ngrok when the tunnel profile is active).
+  // stack; the tunnel profile adds no application-level hop).
   //
   // Load-bearing for rate limiting: with the default `false`, Express reports
   // the PROXY's address as `req.ip`, so every client shares one bucket and

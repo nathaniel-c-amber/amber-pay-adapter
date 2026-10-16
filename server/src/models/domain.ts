@@ -170,6 +170,17 @@ export interface Failure {
   detail: string;
   since: string; // ISO 8601
   acknowledgedAt?: string; // ISO 8601 — present once acknowledged
+  /**
+   * The email of the operator who acknowledged this finding (FR-5.3).
+   *
+   * ABSENT for any finding acknowledged before attributed acknowledgement
+   * existed, and the console must render that as an unnamed acknowledgement
+   * rather than an empty cell. It is the server-written actor from the access
+   * token, never a value supplied by the client — an acknowledgement is an
+   * assertion about who acted, so the client is not a trustworthy source for
+   * it.
+   */
+  acknowledgedBy?: string;
 }
 
 // --- Stage flow (payment -> accounting) ---

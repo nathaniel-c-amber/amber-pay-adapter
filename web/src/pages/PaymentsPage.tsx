@@ -5,15 +5,26 @@
  * field anywhere on this surface (FR-2.3 / FR-5.2), and the create action is
  * gated on write access to the payments scope. */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { LifecycleEvent } from "@/types/domain";
 import type { ReconciliationReport } from "@/services/client";
-import { BTN_PRIMARY, Card, EmptyState, INPUT, Kpi, PageHeader, SearchBox } from "@/components/ui";
+import { BTN, BTN_PRIMARY, Card, EmptyState, INPUT, Kpi, PageHeader, SearchBox } from "@/components/ui";
 import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
+import { FilterChips, toggleInSet } from "@/components/FilterChips";
 import { IconCard, IconRefresh } from "@/components/icons";
 import { formatDateTime } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
+import {
+  NO_FILTERS,
+  PAYMENT_OUTCOMES,
+  UNSETTLED_OUTCOMES,
+  WINDOW_PRESETS,
+  filterEvents,
+  isUnfiltered,
+  outcomeCounts,
+} from "@/utils/eventFilters";
+import type { EventFilters, PaymentOutcomeId, WindowPreset } from "@/utils/eventFilters";
 import type { ApiGatewayCurrency } from "@/types/api";
 
 export function PaymentsPage({
@@ -37,6 +48,7 @@ export function PaymentsPage({
   createError: string | null;
 }) {
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<EventFilters>(NO_FILTERS);
   const summary = recon.reconciliation;
 
   // Payment-side lifecycle phases only; the accounting side lives under
@@ -50,17 +62,40 @@ export function PaymentsPage({
       e.type === "payment-failed",
   );
 
+  // Outcome and window narrow the payment list; search narrows that further.
+  const windowed = filterEvents(paymentEvents, filters);
   const filtered = query
-    ? paymentEvents.filter(
+    ? windowed.filter(
         (e) =>
           e.detail.toLowerCase().includes(query.toLowerCase()) ||
           e.ref.toLowerCase().includes(query.toLowerCase()),
       )
-    : paymentEvents;
+    : windowed;
 
-  const declined = events.filter(
-    (e) => e.type === "payment-declined" || e.type === "payment-failed",
-  ).length;
+  const counts = outcomeCounts(paymentEvents);
+  const active = !isUnfiltered(filters);
+
+  /*
+    The "Declined / failed" figure and the chip that reproduces it read from ONE
+    source: `UNSETTLED_OUTCOMES`. Counting it here with its own expression is how
+    the number and the filter start disagreeing, and then clicking the figure
+    lands on a list of a different size than the figure promised.
+  */
+  const declined = useMemo(
+    () => filterEvents(paymentEvents, { ...NO_FILTERS, outcomes: new Set(UNSETTLED_OUTCOMES) }).length,
+    [paymentEvents],
+  );
+
+  const focusUnsettled = () => {
+    const outcomes = new Set<string>(UNSETTLED_OUTCOMES);
+    // Toggle: pressing the figure again returns to the unfiltered list, so it
+    // behaves like the chips beside it rather than trapping the operator in a
+    // filtered view they cannot leave from where they clicked.
+    const alreadyOnlyUnsettled =
+      filters.outcomes.size === outcomes.size &&
+      [...outcomes].every((id) => filters.outcomes.has(id));
+    setFilters((prev) => ({ ...prev, outcomes: alreadyOnlyUnsettled ? new Set() : outcomes }));
+  };
 
   return (
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
@@ -88,9 +123,12 @@ export function PaymentsPage({
         <Kpi
           label="Declined / failed"
           value={declined}
-          note={declined > 0 ? "see event log" : "none in window"}
+          note={declined > 0 ? "click to filter" : "none in window"}
           tone={declined > 0 ? "warn" : "good"}
           icon={<IconCard />}
+          onClick={focusUnsettled}
+          pressed={filters.outcomes.size === UNSETTLED_OUTCOMES.length &&
+            UNSETTLED_OUTCOMES.every((id) => filters.outcomes.has(id))}
         />
         <Kpi
           label="Reconciliation"
@@ -211,16 +249,73 @@ export function PaymentsPage({
 
       <Card
         title="Payment lifecycle"
-        meta={<span className="mono">{filtered.length} events · {mode === "demo" ? "synthetic" : "live"}</span>}
+        meta={<span className="mono">{filtered.length}{active ? ` of ${paymentEvents.length}` : ""} events · {mode === "demo" ? "synthetic" : "live"}</span>}
         className="pm-events"
       >
+        {/*
+          Outcome and window, in that order: which state a payment reached is the
+          question, and when it happened is the qualification. Counts come from
+          the unfiltered payment list so a chip keeps showing how much is behind
+          it rather than collapsing to its own selection.
+        */}
+        <div className="mb-3 flex flex-col gap-2">
+          <FilterChips<PaymentOutcomeId>
+            label="Filter by payment outcome"
+            options={PAYMENT_OUTCOMES.map((outcome) => ({
+              id: outcome.id,
+              label: outcome.label,
+              count: counts[outcome.id] ?? 0,
+            }))}
+            selected={filters.outcomes as ReadonlySet<PaymentOutcomeId>}
+            onToggle={(id) =>
+              setFilters((prev) => ({ ...prev, outcomes: toggleInSet(prev.outcomes, id) }))
+            }
+          />
+          <FilterChips<WindowPreset>
+            label="Filter by time window"
+            options={WINDOW_PRESETS.map((preset) => ({ id: preset.id, label: preset.label }))}
+            selected={
+              filters.window.kind === "preset" ? new Set([filters.window.preset]) : new Set()
+            }
+            onToggle={(id) =>
+              setFilters((prev) => ({ ...prev, window: { kind: "preset", preset: id } }))
+            }
+            trailing={
+              active ? (
+                <button
+                  type="button"
+                  className="cursor-pointer border-0 bg-transparent p-0 text-sm font-semibold text-ink-3 underline underline-offset-[0.18em] hover:text-ink-1"
+                  onClick={() => setFilters(NO_FILTERS)}
+                >
+                  Clear filters
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
+
         {filtered.length === 0 ? (
           <EmptyState
-            title={paymentEvents.length === 0 ? "No payment events" : "No events match this search"}
+            title={
+              paymentEvents.length === 0
+                ? "No payment events"
+                : active
+                  ? "No events match these filters"
+                  : "No events match this search"
+            }
             lead={
               paymentEvents.length === 0
                 ? "Payment lifecycle events will appear here as payments are initiated and collected."
-                : "Try a different reference or detail term."
+                : active
+                  ? `The filters are narrowing ${paymentEvents.length} payment events to none. The window holds the newest events only, so a short time range can legitimately come back empty.`
+                  : "Try a different reference or detail term."
+            }
+            action={
+              active ? (
+                <button type="button" className={BTN} onClick={() => setFilters(NO_FILTERS)}>
+                  Clear filters
+                </button>
+              ) : undefined
             }
           />
         ) : (

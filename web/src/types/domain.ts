@@ -49,6 +49,15 @@ export interface Failure {
   detail: string;
   /** ISO 8601 instant. The view formats it; nothing here is pre-formatted. */
   since: string;
+  /** ISO 8601 instant, present once the finding has been acknowledged. */
+  acknowledgedAt?: string;
+  /**
+   * Who acknowledged it, from the server. Deliberately OPTIONAL rather than an
+   * empty string: a finding acknowledged before attribution existed has a real
+   * acknowledgement and an unknown actor, and collapsing that to `""` would
+   * make it indistinguishable from one nobody has touched.
+   */
+  acknowledgedBy?: string;
 }
 
 export interface PolicyScope {
@@ -146,12 +155,17 @@ export const FAILURES: Failure[] = [
   },
 ];
 
-export const POLICIES: PolicyScope[] = [
-  { id: "op-monitor", label: "Ops Monitor", attributes: "sc:ams|org:acme|act:read|act:ack", readOnly: false },
-  { id: "audit", label: "Audit", attributes: "sc:ams|org:acme|act:read", readOnly: true },
-];
+/*
+  `POLICIES` and `DEFAULT_POLICY` were DELETED here.
 
-export const DEFAULT_POLICY: PolicyScope = POLICIES[0];
+  They had no importers anywhere in `web/` (the live and demo policy sources are
+  `services/client.ts` and `utils/fixtures.ts`), so they were dead — and not
+  harmlessly so: they carried a second invented organization (`org:acme`) and a
+  `sc:`/`org:`/`act:` attribute dialect that `parseAttributes` still tolerates
+  but nothing emits. A dead fixture asserting a product shape the product does
+  not have is worse than no fixture, because the next reader cannot tell it is
+  not load-bearing.
+*/
 
 export const STATUS_LABEL: Record<LineStatus, string> = {
   open: "Open",

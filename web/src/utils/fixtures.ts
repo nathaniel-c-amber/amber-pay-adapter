@@ -35,7 +35,29 @@ import type { MappedMetrics } from "@/services/map.service";
  */
 export const DEMO_ENABLED: boolean = import.meta.env.DEV;
 
-/** Demo policies spanning the PBAC range, so navigation gating is observable. */export const DEMO_POLICIES: PolicyScope[] = [
+/**
+ * Demo policies spanning the PBAC range, so navigation gating is observable.
+ *
+ * THE DEMO MIRRORS THE LIVE MODEL, it does not invent a richer one. Two rules,
+ * both learned the hard way from live:
+ *
+ *   1. ONE organization. `default` is the server's own `ORGANIZATION_ID`
+ *      default. The demo used to invent a second tenant (`acme`) beside the
+ *      `*` wildcard, which made the console describe a multi-tenant product
+ *      that does not exist — and made the demo the one place the "all
+ *      organizations" wording appeared. Super admin keeps `*` because that is
+ *      exactly what `db/seed.ts` issues.
+ *   2. MECHANICAL labels, the way `policyScopesOf` derives them: `Super Admin`
+ *      for the wildcard pair, otherwise the scope name. The demo used to hand
+ *      out friendly names ("Ops Monitor", "Audit · read-only") that the live
+ *      console never produces, so a reviewer saw one product in demo and a
+ *      different one in production. Distinct scopes keep the three legible,
+ *      which is what the friendly names were doing — without the fiction.
+ *
+ * `can()` never reads the organization, so rule 1 changes gating not at all;
+ * it changes what the demo claims about itself.
+ */
+export const DEMO_POLICIES: PolicyScope[] = [
   {
     id: "super-admin",
     label: "Super Admin",
@@ -44,14 +66,14 @@ export const DEMO_ENABLED: boolean = import.meta.env.DEV;
   },
   {
     id: "ops-monitor",
-    label: "Ops Monitor",
-    attributes: "scope:dashboard|organizationId:acme|actions:read,ack",
+    label: "dashboard",
+    attributes: "scope:dashboard|organizationId:default|actions:read,ack",
     readOnly: false,
   },
   {
-    id: "audit",
-    label: "Audit · read-only",
-    attributes: "scope:dashboard|organizationId:acme|actions:read",
+    id: "reports-auditor",
+    label: "reports",
+    attributes: "scope:reports|organizationId:default|actions:read",
     readOnly: true,
   },
 ];
@@ -211,11 +233,19 @@ export interface DemoUser {
 }
 
 export const DEMO_USERS: DemoUser[] = [
+  /*
+    `organizationId` is `default` on every account except the unrestricted one,
+    the same organization `DEMO_POLICIES` grants against. These three rows used
+    to say `acme` — a second tenant that exists nowhere else, so the directory
+    table told the reader the deployment served two organizations while the
+    policy list beside it said one. `*` is kept on the reviewer because that is
+    the grant a super admin actually holds (see `db/seed.ts`).
+  */
   {
     id: "u-8012",
     email: "ops-team@amber.demo",
     scope: "dashboard",
-    organizationId: "acme",
+    organizationId: "default",
     actions: "read, ack",
     status: "active",
     invitedFor: "Amber Pay Ledger",
@@ -225,7 +255,7 @@ export const DEMO_USERS: DemoUser[] = [
     id: "u-8033",
     email: "accounting@amber.demo",
     scope: "payments",
-    organizationId: "acme",
+    organizationId: "default",
     actions: "read, write",
     status: "active",
     invitedFor: "Payment operations",
@@ -235,7 +265,7 @@ export const DEMO_USERS: DemoUser[] = [
     id: "u-8061",
     email: "compliance@amber.demo",
     scope: "dashboard",
-    organizationId: "acme",
+    organizationId: "default",
     actions: "read",
     status: "active",
     invitedFor: "Audit trail",

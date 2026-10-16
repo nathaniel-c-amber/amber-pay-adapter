@@ -20,10 +20,13 @@
  * No amounts, no currency, no customer PII, no ledger values (FR-2.3 / FR-5.2).
  * Stages, counts, ages, and durations only. */
 
+import { useMemo } from "react";
 import type { ApiServiceStatus } from "@/types/api";
 import type { MappedMetrics } from "@/services/map.service";
 import type { EventType, Failure } from "@/types/domain";
 import type { FlowHealth, FlowComparison } from "@/utils/flow";
+import { groupFindings } from "@/utils/findings";
+import type { FindingGroup } from "@/utils/findings";
 import {
   FLOW_HEALTH_LABEL,
   STAGE_LABEL,
@@ -132,7 +135,8 @@ export function OverviewPage({
    * Acknowledge look broken here while the chrome silently changed.
    */
   findings: Failure[];
-  onAck: (id: string) => void;
+  /** Acknowledges one incident: every occurrence belonging to it. */
+  onAck: (ids: string[]) => void;
   ackError: string | null;
   /** A ticking clock owned by the shell, so ages and uptime stay live. */
   now: Date;
@@ -145,8 +149,16 @@ export function OverviewPage({
   const staleSec = secondsAgo(generatedAt);
   const isStale = staleSec > STALE_MS / 1000;
 
-  const attention: Failure[] = [...findings].sort(
-    (a, b) => (a.severity === "critical" ? 0 : 1) - (b.severity === "critical" ? 0 : 1),
+  /*
+    GROUPED, like the Findings page. This preview used to take the three most
+    severe FINDINGS, which meant a single broken integration could fill all three
+    slots with the same fault — the overview would read "three problems" while
+    showing one problem three times, and hide two real ones entirely. Grouping
+    first makes the top three three genuinely different things.
+  */
+  const attention: FindingGroup[] = useMemo(
+    () => groupFindings(findings).filter((group) => group.open),
+    [findings],
   );
 
   // The verdict, the badge, and the action all derive from the same value, so
@@ -296,10 +308,10 @@ export function OverviewPage({
             />
           ) : (
             <div className="flex flex-col gap-3">
-              {attention.slice(0, 3).map((f) => (
+              {attention.slice(0, 3).map((group) => (
                 <FindingCard
-                  key={f.id}
-                  finding={f}
+                  key={group.key}
+                  group={group}
                   onAck={onAck}
                   onOpen={(id) => navigate("findings", id)}
                 />

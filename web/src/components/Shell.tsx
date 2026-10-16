@@ -20,7 +20,6 @@ import type { Failure, PolicyScope } from "@/types/domain";
 import { getToken, clearToken } from "@/services/auth.service";
 import {
   acknowledgeFailures,
-  acknowledgeFailure,
   checkHealth,
   completeTour,
   getCurrentUser,
@@ -31,7 +30,12 @@ import {
   UnauthorizedError,
 } from "@/services/client";
 import type { ReconciliationReport } from "@/services/client";
-import type { ApiIdentity, ApiServiceStatus, ApiStageFlowSummary } from "@/types/api";
+import type {
+  ApiIdentity,
+  ApiServiceStatus,
+  ApiStageFlowSummary,
+  ApiCheckoutSession,
+} from "@/types/api";
 import { CheckoutHandoffPage } from "@/pages/CheckoutHandoffPage";
 import { PaymentReturnPage } from "@/pages/PaymentReturnPage";
 import { createCheckout } from "@/services/client";
@@ -43,11 +47,12 @@ import {
 import { mapFailure, mapMetrics } from "@/services/map.service";
 import type { MappedMetrics } from "@/services/map.service";
 import { compareFlows } from "@/utils/flow";
+import { groupFindings } from "@/utils/findings";
 import type { FlowComparison } from "@/utils/flow";
 import { formatDateTimeSeconds } from "@/utils/datetime";
 import { accessFor, isBroadest } from "@/utils/permissions";
 import type { PageId } from "@/utils/permissions";
-import { navigate, useRoute, hashQueryParam } from "@/router";
+import { navigate, useRoute } from "@/router";
 import type { RouteName } from "@/router";
 import { TOUR_STEPS } from "@/tour/steps";
 import { TourLayer } from "@/tour/TourLayer";
@@ -290,6 +295,56 @@ const NO_DATA: MappedMetrics = {
 };
 
 const NO_RECON: ReconciliationReport = { reconciliation: null, generatedAt: "" };
+
+/**
+ * The checkout handoff, rendered from the ONE-SHOT session in `checkoutSession`.
+ *
+ * ★ WHY THIS IS ITS OWN COMPONENT.
+ *
+ * The session is consumed on read, which is what stops a back-button navigation
+ * from replaying a signed payment page. But the shell re-renders constantly (a
+ * clock tick, a poll), and reading the module state inline on every render would
+ * consume it on the FIRST re-render and leave the customer looking at "Nothing to
+ * pay" moments after the page appeared. So the read happens once, in a lazy
+ * `useState` initializer, and the value is held for the lifetime of this mount.
+ *
+ * The `key` the caller sets on this component makes a RETRY work: a fresh
+ * checkout is a new transaction id and a new single-use signature, and remounting
+ * is what lets this component consume it — `navigate("checkout")` from the retry
+ * is a no-op, because we never left the route.
+ */
+function CheckoutRoute({
+  onCancelled,
+  onRetry,
+  retrying,
+  errorText,
+}: {
+  onCancelled: () => void;
+  onRetry: () => void;
+  retrying: boolean;
+  errorText: string | null;
+}) {
+  const [checkout] = useState<ApiCheckoutSession | null>(() => takePendingCheckout());
+  if (!checkout) {
+    return (
+      <Card title="Nothing to pay">
+        <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
+          This payment link has already been used, or the page was opened directly. Start again
+          from the message or link that brought you here.
+        </p>
+      </Card>
+    );
+  }
+  return (
+    <CheckoutHandoffPage
+      checkout={checkout}
+      onCancelled={onCancelled}
+      onRetry={onRetry}
+      retrying={retrying}
+      errorText={errorText}
+    />
+  );
+}
 
 export default function Shell() {
   const route = useRoute();
@@ -782,22 +837,36 @@ export default function Shell() {
     [data.failures, identity],
   );
 
-  const ackFinding = useCallback(
-    async (id: string) => {
+  /*
+    Acknowledge ONE INCIDENT — every occurrence of it, which is one or more ids.
+
+    It goes through the batch endpoint even for a single occurrence, so there is
+    exactly one acknowledgement code path in the console. Two paths meant two
+    places for the attribution, the busy flag, and the sign-out-on-401 handling
+    to drift apart, and the single-id one is the one that would have rotted.
+
+    The confirmation names the INCIDENT rather than an id, because that is what
+    the operator acted on: an id alone means nothing to someone reading the
+    announcement who never saw the card.
+  */
+  const ackIncident = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
       setAckError(null);
-      // Name the finding in the confirmation: "F-2074 acknowledged" alone
-      // means nothing to a screen-reader user who never saw the card id.
-      const label = data.failures.find((f) => f.id === id);
-      const confirmation = `${label ? label.title : id} acknowledged.`;
+      const title = data.failures.find((f) => f.id === ids[0])?.title;
+      const confirmation =
+        ids.length === 1
+          ? `${title ?? ids[0]} acknowledged.`
+          : `${title ?? "Incident"} acknowledged (${ids.length} occurrences).`;
       if (!token || mode !== "live") {
-        mergeAcknowledged(stampLocally([id]));
+        mergeAcknowledged(stampLocally(ids));
         setAckNotice(confirmation);
         return;
       }
       setAckBusy(true);
       try {
-        const acknowledged = await acknowledgeFailure(token, id);
-        mergeAcknowledged([acknowledged]);
+        const result = await acknowledgeFailures(token, ids);
+        mergeAcknowledged(result.failures.map(mapFailure));
         setAckNotice(confirmation);
       } catch (e) {
         if (e instanceof UnauthorizedError) {
@@ -1079,7 +1148,7 @@ export default function Shell() {
           <OverviewPage
             data={data}
             findings={activeFailures}
-            onAck={ackFinding}
+            onAck={ackIncident}
             ackError={ackError}
             now={now}
             comparison={comparison}
@@ -1116,16 +1185,25 @@ export default function Shell() {
                up in the open set would make "View incident" on the
                Acknowledged tab land on a not-found page. */
             finding={data.failures.find((f) => f.id === route.param)}
+            /* The whole INCIDENT, not just the occurrence the route names. The
+               page is about one problem; handing it a single row is what made it
+               show one timestamp for an incident reported sixteen times. */
+            group={
+              groupFindings(data.failures).find((g) =>
+                g.members.some((member) => member.id === route.param),
+              )
+            }
             connectors={data.connectors}
             events={data.events}
-            onAck={ackFinding}
+            onAck={(ids: string[]) => ackIncident(ids)}
+            ackBusy={ackBusy}
             ackError={ackError}
           />
         ) : (
           <FindingsPage
             findings={data.failures}
             connectors={data.connectors}
-            onAck={ackFinding}
+            onAck={ackIncident}
             onAckAll={ackAllFindings}
             ackBusy={ackBusy}
             ackError={ackError}
@@ -1133,7 +1211,14 @@ export default function Shell() {
           />
         );
       case "events":
-        return <EventsPage events={data.events} mode={mode} stage={route.param} />;
+        return (
+          <EventsPage
+            events={data.events}
+            connectors={data.connectors}
+            mode={mode}
+            stage={route.param}
+          />
+        );
       case "payments":
         return (
           <PaymentsPage
@@ -1234,10 +1319,29 @@ export default function Shell() {
   */
   const [creatingCheckout, setCreatingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  /*
+    Bumped every time a checkout is minted, so the handoff subtree REMOUNTS and
+    consumes the new one-shot session. A retry mints a FRESH checkout (a new
+    transaction id and a new single-use signature), and without the remount the
+    page would keep rendering the first, already-burned session.
+  */
+  const [checkoutEpoch, setCheckoutEpoch] = useState(0);
+  /*
+    The last request, kept so a retry can mint a fresh checkout for the SAME
+    customer and amount instead of replaying a spent signature. Held in a ref,
+    not state: it is read only inside the retry handler and must not itself cause
+    a render.
+  */
+  const lastCheckoutInput = useRef<{
+    studentId: string;
+    amount: string;
+    currency: "USD" | "JMD";
+  } | null>(null);
 
   const startCheckout = useCallback(
     async (input: { studentId: string; amount: string; currency: "USD" | "JMD" }) => {
       if (!token) return;
+      lastCheckoutInput.current = input;
       setCreatingCheckout(true);
       setCheckoutError(null);
       try {
@@ -1251,6 +1355,7 @@ export default function Shell() {
           currency: input.currency,
         });
         setPendingCheckout(checkout);
+        setCheckoutEpoch((n) => n + 1);
         navigate("checkout");
       } catch (err) {
         setCheckoutError(
@@ -1287,33 +1392,35 @@ export default function Shell() {
     // component. A reload lands here with nothing to render, and the customer
     // is told so rather than shown a blank page or an empty form that would
     // post nowhere.
-    const pending = takePendingCheckout();
-    if (!pending) {
-      return (
-        <Card title="Nothing to pay">
-          <p className="m-0 max-w-[62ch] text-sm leading-prose text-ink-2">
-            This payment link has already been used, or the page was opened directly. Start again
-            from the message or link that brought you here.
-          </p>
-        </Card>
-      );
-    }
+    //
+    // `key={checkoutEpoch}` is what makes a RETRY work: a retry mints a fresh
+    // checkout, stores it in the module state, and bumps the epoch so this
+    // subtree remounts and consumes the new session.
     return (
-      <CheckoutHandoffPage
-        checkout={pending}
+      <CheckoutRoute
+        key={checkoutEpoch}
         onCancelled={() => {
           clearPendingCheckout();
           navigate("payment-return");
         }}
+        onRetry={() => {
+          const input = lastCheckoutInput.current;
+          if (input) void startCheckout(input);
+        }}
+        retrying={creatingCheckout}
+        errorText={checkoutError}
       />
     );
   }
 
   if (route.name === "payment-return") {
     return (
+      /* The page reads its own `?token=` from the hash and fetches the public,
+         session-free status itself. This shell keeps only what it alone knows —
+         whether there is a session — so the one button that leads to the console
+         can say the right thing for whoever is looking at it. */
       <PaymentReturnPage
-        token={token}
-        transactionId={hashQueryParam("transactionId")}
+        signedIn={Boolean(token)}
         onGoToConsole={() => navigate(token ? "overview" : "signin")}
       />
     );

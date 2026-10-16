@@ -72,3 +72,34 @@ RULES:
 - Bars/states must carry shape or a word as well as colour — status is never colour-only.
 - Runtime-composed class names must go through a typed lookup `Record`, not `${interpolation}`.
 <!-- STYLING:END -->
+
+## Tests — Vitest, pure logic only
+
+`npm run test` (watch: `npm run test:watch`). Configured in the `test` block of `vite.config.ts`,
+which imports `defineConfig` from `vitest/config` rather than `vite` so the block is type-checked.
+ONE config file means the `@` → `src` alias cannot drift between the bundler and the runner.
+
+**SCOPE IS PURE LOGIC, `.ts` ONLY — `include: ["src/**/*.test.ts"]`.** That is a decision, not a
+limit. Covered: `utils/permissions.ts` (the client authorization gate), `utils/flow.ts`,
+`utils/settingsRules.ts`, `utils/datetime.ts`, `utils/passwordRules.ts`.
+
+**Components are deliberately NOT tested.** There is no jsdom or Testing Library here, and the one
+component defect that actually shipped — the permission editor re-seeding a cleared row from its
+baseline, making it impossible to remove a scope from a user — was pure React state that every
+other gate missed: build green, `audit:classes` green, and the 531-test server suite green. It was
+found by clicking the box in a browser. **Adding `.tsx` to `include` without jsdom would produce
+tests that cannot mount anything**; if component tests are wanted later, add jsdom +
+`@testing-library/react` first and revisit the block.
+
+Two things to know before writing a test here:
+- **`TZ` is pinned to UTC** in the `test.env` block. `datetime.ts` formats in the OPERATOR's zone
+  (correct for a console), so without pinning, a fixed instant rendered as "9:58 AM" on one machine
+  and "2:58 PM" on another and the suite measured the machine rather than the format.
+- **Tests are typechecked and excluded from the bundle.** `tsconfig.json` has `include: ["src"]` and
+  `noEmit: true`, so `npm run typecheck` covers test files; Vite only walks the entry graph, so
+  nothing test-shaped reaches `dist` (verified: bundle hash unchanged, 0 test files in `dist`).
+
+**Where it runs: manually, before you call a change done.** There is no CI in this repo, so a test
+that nobody runs is decoration that manufactures confidence. The pre-flight for a frontend change is
+`npm run test` → `npm run typecheck` → `npm run build` → `npm run audit:classes`.
+

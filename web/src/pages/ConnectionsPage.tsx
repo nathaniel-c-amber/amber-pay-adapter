@@ -7,8 +7,10 @@
 import type { Connector, Failure, LifecycleEvent } from "@/types/domain";
 import { HEALTH_OF, HEALTH_IMPACT, healthCounts } from "@/utils/vocabulary";
 import { formatDateTime } from "@/utils/datetime";
+import { adaptorRefsForGroup, groupFindings } from "@/utils/findings";
 import { BTN, Card, ConnectionRow, EmptyState, HealthBadge, PageHeader, SeverityBadge } from "@/components/ui";
 import { NetworkMap } from "@/components/NetworkMap";
+import { CollapsibleList } from "@/components/CollapsibleList";
 import { EventStream } from "@/components/Tables";
 import { IconChevronRight, IconPolicy } from "@/components/icons";
 import { navigate } from "@/router";
@@ -118,8 +120,20 @@ export function ConnectionDetailPage({
   }
 
   const health = HEALTH_OF[connector.status];
-  const related = failures.filter((f) => f.channel === connector.label);
-  const relatedEvents = events.filter((e) => e.channel === connector.label);
+  /*
+    A CONNECTOR'S INCIDENTS AND EVENTS, joined on the adaptor id.
+
+    Both lines used to compare `channel` against `connector.label` — "accounting"
+    against "QuickBooks Online" — which never matches, so this page always said
+    the connection had no findings and no events regardless of what had actually
+    happened to it. A connector's `id` and an event's `ref` are both the adaptor
+    id, and `adaptorRefsForGroup` is the same helper the incident page uses, so
+    both directions of the link are decided in one place.
+  */
+  const relatedEvents = events.filter((e) => e.ref === connector.id);
+  const related = groupFindings(failures)
+    .filter((group) => adaptorRefsForGroup(group, events).has(connector.id))
+    .flatMap((group) => group.members);
 
   return (
     <div className="flex flex-col gap-4 animate-[fadeIn_0.2s_ease-out]">
@@ -165,23 +179,32 @@ export function ConnectionDetailPage({
           </dl>
         </Card>
 
-        <Card title="Related findings" meta={`${related.length} open`} className="cd-findings">
-          {related.length === 0 ? (
-            <EmptyState title="No open findings" lead="This connection has no findings recorded against it." />
-          ) : (
-            <ul className="m-0 flex list-none flex-col p-0">
-              {related.map((f) => (
-                <li key={f.id}>
-                  <button type="button" className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_14px] items-center gap-3 rounded-panel border-b border-rule-enamel-soft bg-transparent px-1.5 py-2 text-left transition-colors hover:bg-midnight-3 [&_svg]:text-ink-3" onClick={() => navigate("findings", f.id)}>
-                    <SeverityBadge severity={f.severity} />
-                    <span className="text-md text-ink-1">{f.title}</span>
-                    <span className="mono text-xs text-ink-3">{formatDateTime(f.since)}</span>
-                    <IconChevronRight />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Card title="Related findings" className="cd-findings">
+          <CollapsibleList
+            id="cd-findings"
+            countLabel={`${related.length} open ${related.length === 1 ? "finding" : "findings"}`}
+            summary={
+              related.length === 0
+                ? "Nothing recorded against this connection."
+                : `Latest ${related[0]?.title ?? ""} · ${formatDateTime(related[0]?.since ?? null)}`
+            }
+            items={related}
+            keyOf={(f) => f.id}
+            renderItem={(f) => (
+              <button
+                type="button"
+                className="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_14px] items-center gap-3 rounded-panel border-b border-rule-enamel-soft bg-transparent px-1.5 py-2 text-left transition-colors hover:bg-midnight-3 [&_svg]:text-ink-3"
+                onClick={() => navigate("findings", f.id)}
+              >
+                <SeverityBadge severity={f.severity} />
+                <span className="text-md text-ink-1">{f.title}</span>
+                <span className="mono text-xs text-ink-3">{formatDateTime(f.since)}</span>
+                <IconChevronRight />
+              </button>
+            )}
+            empty={<EmptyState title="No open findings" lead="This connection has no findings recorded against it." />}
+            overflowHref={{ label: "Open the event log", onClick: () => navigate("events") }}
+          />
         </Card>
       </div>
 
@@ -201,12 +224,40 @@ export function ConnectionDetailPage({
         />
       </Card>
 
-      <Card title="Events on this path" meta={`${relatedEvents.length} recent`} className="cd-events">
-        {relatedEvents.length === 0 ? (
-          <EmptyState title="No recent events" lead="No operational events have been recorded for this path recently." />
-        ) : (
-          <EventStream events={relatedEvents} />
-        )}
+      <Card title="Events on this path" className="cd-events">
+        <CollapsibleList
+          id="cd-events"
+          countLabel={`${relatedEvents.length} recent ${relatedEvents.length === 1 ? "event" : "events"}`}
+          summary={
+            relatedEvents.length === 0
+              ? "Nothing recorded on this path."
+              : `Latest ${relatedEvents[0]?.detail ?? ""} · ${formatDateTime(relatedEvents[0]?.at ?? null)}`
+          }
+          items={relatedEvents}
+          keyOf={(e) => e.id}
+          renderItem={(e) => (
+            /*
+              One row, not one `EventStream` per event.
+
+              `EventStream` is a table — it builds a header, a column model and a
+              sorter per instance. Rendering it per row would have produced five
+              stacked tables each with its own header row, which is neither a list
+              nor a table. The row below carries the same fields the table does.
+            */
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-rule-enamel-soft py-2">
+              <span className="mono text-xs text-ink-3 whitespace-nowrap">
+                {formatDateTime(e.at)}
+              </span>
+              <span className="mono text-xs text-ink-1">{e.type}</span>
+              <span className="mono text-xs text-ink-3">{e.ref}</span>
+              <span className="min-w-0 flex-1 text-sm text-ink-2 wrap-anywhere">
+                {e.detail}
+              </span>
+            </div>
+          )}
+          empty={<EmptyState title="No recent events" lead="No operational events have been recorded for this path recently." />}
+          overflowHref={{ label: "Open the event log", onClick: () => navigate("events") }}
+        />
       </Card>
     </div>
   );

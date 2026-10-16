@@ -24,7 +24,14 @@ import {
   buildSignaturePath,
 } from './gatewayEndpoints.js';
 import { defaultGatewayTransport } from './amberpay.service.js';
-import { generateTransactionId, isTransactionId, sealExpectedCharge } from './amberPayWire.js';
+import {
+  generateStatusToken,
+  generateTransactionId,
+  isStatusToken,
+  isTransactionId,
+  sealExpectedCharge,
+  statusTokenExpiry,
+} from './amberPayWire.js';
 import { AdaptorConnectionError, AdaptorError } from '../adaptors/errors.js';
 import { ValidationError } from '../../utils/errors.js';
 import { env } from '../../config/env.js';
@@ -58,13 +65,30 @@ export interface CheckoutIntentStore {
     studentId: string;
     /** The expected figure AND its currency, sealed together. */
     expectedSealed: Buffer;
+    /**
+     * The customer's handle on this payment, and when it stops resolving.
+     *
+     * Minted here rather than by the caller so the token and the intent are
+     * written in ONE insert: a token that exists without its row resolves to
+     * nothing, and a row without its token is a payment no customer can ever be
+     * shown the outcome of.
+     */
+    statusToken: string;
+    statusTokenExpiresAt: Date;
   }): Promise<void>;
 
-/** Find an intent by the id the gateway echoed, so a callback can be attributed. */
+/**
+ * Find an intent by the id the gateway echoed, so a callback can be attributed.
+ *
+ * Returns the status token alongside the student because the webhook route is
+ * the callback route AND the redirect route, and it needs both halves in one
+ * read: who this was for, and where to send the browser. Two calls would mean
+ * two chances for the row to be missing in between.
+ */
 findByTransactionId(
     organizationId: string,
     transactionId: string,
-  ): Promise<{ studentId: string } | undefined>;
+  ): Promise<{ studentId: string; statusToken: string | null } | undefined>;
 }
 
 /** How many times to regenerate an id the store says is already taken. */
@@ -85,6 +109,12 @@ export class CheckoutService {
     private readonly intents: CheckoutIntentStore,
     private readonly transport: GatewayTransport = defaultGatewayTransport(),
     private readonly newId: () => string = generateTransactionId,
+    /*
+      The token generator is a seam for the same reason `newId` is: a token that
+      could not be generated would have to be caught somewhere, and the only
+      place that can prove it works is here, where the token is minted.
+    */
+    private readonly newStatusToken: () => string = generateStatusToken,
   ) {}
 
   /**
@@ -95,7 +125,9 @@ export class CheckoutService {
    * missing encryption key must surface immediately — retrying those would hide
    * a real fault behind three identical failures.
    */
-  private async persistWithFreshId(input: CreateCheckoutInput): Promise<string> {
+  private async persistWithFreshId(
+    input: CreateCheckoutInput,
+  ): Promise<{ transactionId: string; statusToken: string }> {
     for (let attempt = 1; attempt <= ID_COLLISION_RETRIES; attempt += 1) {
       const transactionId = this.newId();
       if (!isTransactionId(transactionId)) {
@@ -105,14 +137,23 @@ export class CheckoutService {
           'The configured transaction id generator did not produce a valid identifier',
         );
       }
+      // Minted INSIDE the loop, so a retry that follows a collision mints a fresh
+      // token with the fresh transaction id: one checkout, one pair. A token
+      // reused across two intents would resolve two customers to one page.
+      const statusToken = this.newStatusToken();
+      if (!isStatusToken(statusToken)) {
+        throw new ValidationError('The configured status token generator did not produce a valid token');
+      }
       try {
         await this.intents.create({
           organizationId: input.organizationId,
           transactionId,
           studentId: input.studentId,
           expectedSealed: sealExpectedCharge(input.amount, input.currency),
+          statusToken,
+          statusTokenExpiresAt: statusTokenExpiry(),
         });
-        return transactionId;
+        return { transactionId, statusToken };
       } catch (err) {
         if (!(err instanceof DuplicateTransactionIdError) || attempt === ID_COLLISION_RETRIES) {
           throw err;
@@ -133,7 +174,7 @@ export class CheckoutService {
    * codebase has already been bitten by.
    */
   async create(input: CreateCheckoutInput): Promise<CheckoutSession> {
-    const transactionId = await this.persistWithFreshId(input);
+    const { transactionId, statusToken } = await this.persistWithFreshId(input);
 
     const signature = await this.requestSignature({
       ClientId: input.clientId,
@@ -162,6 +203,14 @@ export class CheckoutService {
       checkoutUrl: buildCheckoutUrl(),
       params,
       transactionId,
+      /*
+        Returned to the console so it can keep the token against this payment and
+        navigate to the status page itself. It is NOT in `params`: the browser
+        posts those to the GATEWAY, and a credential this deployment mints has no
+        business being handed to a third party's form — which is the same rule
+        that keeps the bearer token out of it (see `requestSignature`).
+      */
+      statusToken,
     };
   }
 
@@ -266,6 +315,23 @@ export class DuplicateTransactionIdError extends Error {
   constructor(transactionId: string) {
     super(`A checkout with transaction id ${transactionId} already exists`);
     this.name = 'DuplicateTransactionIdError';
+  }
+}
+
+/**
+ * A status token this deployment has already issued.
+ *
+ * A DISTINCT TYPE for the same reason `DuplicateTransactionIdError` is one: the
+ * two collisions have opposite repairs. A duplicate id is redrawn; a duplicate
+ * token has to be redrawn ON THE SAME ROW as its id, so reporting it as an id
+ * clash would send the retry round the wrong loop and hand one customer a page
+ * describing another customer's payment. At 256 bits it should never happen —
+ * which is exactly why the wrong behaviour on it would go unnoticed.
+ */
+export class DuplicateStatusTokenError extends Error {
+  constructor() {
+    super('A checkout has already issued this status token');
+    this.name = 'DuplicateStatusTokenError';
   }
 }
 

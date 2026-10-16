@@ -1,7 +1,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { TooManyRequestsError, toHttpError } from '../utils/errors.js';
 import { requireAuth, requirePolicyAnyAction } from '../middleware/auth.middleware.js';
+import { rateLimitHandler } from '../middleware/rateLimitHandler.js';
 import { createSettingsController } from '../controllers/settings.controller.js';
 import { settingsService as defaultSettingsService } from '../services/settings/settings.service.js';
 import {
@@ -32,11 +32,6 @@ const SETTINGS_CALLBACK_RATE_LIMIT_MAX = 20;
 
 /** The scope that governs this deployment's own configuration. */
 const SYSTEM_SCOPE = 'system';
-
-function rateLimitHandler(_req: express.Request, res: express.Response): void {
-  const { status, body } = toHttpError(new TooManyRequestsError());
-  res.status(status).json(body);
-}
 
 export interface SettingsRouteDeps {
   settingsService?: SettingsService;

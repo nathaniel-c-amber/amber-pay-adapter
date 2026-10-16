@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { BTN, cx } from "./ui";
+import { cx } from "./ui";
+import { IconClose } from "./icons";
 
 /* A modal dialog, for the one place the console must interrupt a list.
  *
@@ -26,6 +27,7 @@ const FOCUSABLE =
 
 export function Modal({
   title,
+  eyebrow = "Editing",
   description,
   onClose,
   children,
@@ -33,6 +35,14 @@ export function Modal({
   width = "max-w-[40rem]",
 }: {
   title: string;
+  /**
+   * The small label above the title. It used to be hardcoded to "Editing",
+   * which read as a statement about what the dialog DOES rather than what it
+   * is about — and it was wrong for every non-edit use, including a
+   * confirmation that acknowledges findings. Defaults to "Editing" so an edit
+   * dialog needs no change; anything else should say what it is.
+   */
+  eyebrow?: string;
   description?: ReactNode;
   onClose: () => void;
   children: ReactNode;
@@ -121,7 +131,7 @@ export function Modal({
       >
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <p className={TITLE_CLASS}>Editing</p>
+            <p className={TITLE_CLASS}>{eyebrow}</p>
             <h2
               id="modal-title"
               ref={headingRef}
@@ -134,8 +144,26 @@ export function Modal({
               <div className="m-0 mt-1 text-sm leading-prose text-ink-2">{description}</div>
             )}
           </div>
-          <button type="button" className={BTN} onClick={onClose}>
-            Close
+          {/*
+            An ICON button, not a word.
+
+            "Close" was a full-size pill button sitting beside the title, which
+            gave a dismiss affordance the same visual weight as the dialog's own
+            confirm action and made the two compete. A glyph carries the same
+            meaning at a fraction of the width and leaves the title alone.
+
+            The accessible name is now carried by `aria-label` rather than by
+            text, so the control is still announced — the icon itself is
+            `aria-hidden` in this set, which is exactly why the label is not
+            optional.
+          */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="grid flex-none cursor-pointer place-items-center rounded-chip border border-rule-enamel bg-midnight-3 px-1.5 py-1.5 text-ink-2 transition-colors hover:not-disabled:border-ink-4 hover:text-ink-1"
+          >
+            <IconClose className="size-4" />
           </button>
         </div>
 

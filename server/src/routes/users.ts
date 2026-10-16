@@ -1,18 +1,13 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { TooManyRequestsError, toHttpError } from '../utils/errors.js';
 import { requireAuth, requirePolicyAnyOrganization } from '../middleware/auth.middleware.js';
+import { rateLimitHandler } from '../middleware/rateLimitHandler.js';
 import { createUsersController } from '../controllers/users.controller.js';
 import { usersService as defaultUsersService } from '../services/auth/users.service.js';
 import type { UsersService } from '../services/auth/users.service.js';
 
 const ADMIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_MUTATION_RATE_LIMIT_MAX = 30;
-
-function rateLimitHandler(_req: express.Request, res: express.Response): void {
-  const { status, body } = toHttpError(new TooManyRequestsError());
-  res.status(status).json(body);
-}
 
 export interface UsersRouteDeps {
   usersService?: UsersService;

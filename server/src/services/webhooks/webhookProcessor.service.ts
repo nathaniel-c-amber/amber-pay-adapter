@@ -7,8 +7,10 @@ import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
 import { settingsService } from '../settings/settings.service.js';
+import { getPool } from '../../db/pool.js';
 import { getRepositories } from '../../repositories/index.js';
 import { InMemoryWebhookDedupRepository } from '../../repositories/inMemory.js';
+import { PostgresCheckoutIntentStore } from '../../repositories/postgres.js';
 import type { WebhookDedupRepository } from '../../types/repository.js';
 import type {
   AccountingAdaptor,
@@ -18,6 +20,10 @@ import type {
   PushResult,
 } from '../../types/adaptor.js';
 import type { WebhookEvent } from '../../types/gateway.js';
+import type {
+  CustomerPaymentStatus,
+  PaymentOutcomeStore,
+} from '../payments/paymentStatus.service.js';
 import type { LifecycleEventType } from '../../models/domain.js';
 import type { EventLog } from '../events/eventLog.service.js';
 import type { FailureTracker } from '../events/failureTracker.service.js';
@@ -91,6 +97,19 @@ export interface WebhookProcessorOverrides {
   matchConfig?: CustomerMatchConfig;
   /** Stand in for the settings service. */
   settings?: Pick<SettingsService, 'resolveMatchConfig'>;
+  /**
+   * Where the gateway's verdict is written, so the customer's own status page
+   * can show it.
+   *
+   * ★ IT IS AN OVERRIDE AND NOT A POSITIONAL, and the reason is that this
+   * constructor has already been bitten by the alternative: the singleton once
+   * passed its organization as a literal positional, which silently DEFEATED the
+   * configured-organization default, because an explicit argument beats a default
+   * parameter. An absent store means "this processor does not persist outcomes" —
+   * which is what a unit test wants, and is NEVER true of the singleton, which
+   * is wired with the real one below.
+   */
+  outcomes?: PaymentOutcomeStore;
 }
 
 /**
@@ -185,6 +204,7 @@ export class WebhookProcessor {
   }
 
   private async handleCollected(event: WebhookEvent): Promise<void> {
+    await this.recordOutcome(event, 'collected');
     await this.eventLog.recordEvent({
       type: 'collected',
       channel: 'webhook',
@@ -367,6 +387,13 @@ export class WebhookProcessor {
   private async handleFailure(event: WebhookEvent): Promise<void> {
     const type: LifecycleEventType =
       event.type === 'payment.declined' ? 'payment-declined' : 'payment-failed';
+    // FIRST, before anything else reacts to it. The verdict is the gateway's own
+    // statement about the money; the event, the finding and the push are this
+    // system's reaction to it. A customer redirected to a status page is reading
+    // THAT, so it is recorded before the reaction starts — and if the write
+    // fails, `processWebhook` releases the claim and the delivery stays retryable
+    // rather than settling a payment nobody can see.
+    await this.recordOutcome(event, 'failed');
     await this.eventLog.recordEvent({
       type,
       channel: 'webhook',
@@ -392,6 +419,33 @@ export class WebhookProcessor {
       organizationId: this.organizationId,
     });
   }
+
+  /**
+   * Write the gateway's verdict where the CUSTOMER can read it.
+   *
+   * Absent store means the seam was not wired — a unit test, never the singleton.
+   * Nothing is logged for it: a logger warning on every callback of a test
+   * process is noise, and the singleton's wiring is asserted directly rather than
+   * inferred from a log nobody reads.
+   *
+   * `failureReason` is the gateway's own text, already stripped and capped by the
+   * schema in `amberpay.service.ts`. It is passed straight through rather than
+   * re-cleaned here, because two sanitisation passes would be two places to keep
+   * honest and the one that faces the wire is the one that should do it.
+   */
+  private async recordOutcome(
+    event: WebhookEvent,
+    outcome: Exclude<CustomerPaymentStatus, 'unknown'>,
+  ): Promise<void> {
+    const store = this.overrides.outcomes;
+    if (store === undefined) return;
+    await store.recordOutcome({
+      organizationId: this.organizationId,
+      transactionId: event.id,
+      outcome,
+      failureReason: event.failureReason ?? null,
+    });
+  }
 }
 
 /**
@@ -414,4 +468,12 @@ export const webhookProcessor = new WebhookProcessor(
   5000,
   undefined,
   getRepositories().webhookDedup,
+  undefined,
+  /*
+    The one place the outcome store is wired. Passed through the overrides object
+    rather than as a ninth positional, so it can never quietly outrank a default —
+    and it is explicit that the singleton DOES persist outcomes, because "absent
+    store means skip" is a seam for tests and must never be true in production.
+  */
+  { outcomes: new PostgresCheckoutIntentStore(getPool()) },
 );

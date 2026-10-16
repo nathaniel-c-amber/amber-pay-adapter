@@ -65,6 +65,7 @@ import {
   Users,
   Waypoints,
   Workflow,
+  X,
 } from "lucide-react";
 
 /** Shared icon props: lucide's, minus the ref. */
@@ -174,4 +175,7 @@ export const IconPlus = icon(Plus);
 export const IconEdit = icon(Pencil);
 export const IconGrid = icon(LayoutGrid);
 export const IconCheck = icon(CircleCheck);
+
+/** The dismiss affordance for an overlay. Lucide's `X`, like the rest of the set. */
+export const IconClose = icon(X);
 export const IconVerified = icon(BadgeCheck);

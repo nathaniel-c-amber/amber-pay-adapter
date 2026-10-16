@@ -50,39 +50,87 @@ Services and ports:
 The `api` service runs migrations on startup and waits for `db` to be healthy.
 PostgreSQL data persists in the `db-data` volume.
 
-## Testing across the internet (ngrok)
+## Testing across the internet (Cloudflare Tunnel)
 
-The stack ships an opt-in `ngrok` service that publishes the app on a public
-HTTPS URL. It tunnels the `web` service (nginx), which already proxies `/api`
-to `api`, so a single URL serves both the SPA and the API.
+The stack ships an opt-in `cloudflared` service that publishes the app on a
+public HTTPS URL. It tunnels the `web` service (nginx), which already proxies
+`/api` to `api`, so a single URL serves both the SPA and the API.
+
+Cloudflare Tunnel is also the better choice on a network that inspects TLS
+(Zscaler and similar). The origin leg is a connection to `web` on the compose
+network, so there is no re-signed origin certificate for the container to
+trust, which is the failure that makes `ngrok` unusable on such networks.
 
 ```bash
-# 1. Add your token to .env (https://dashboard.ngrok.com/get-started/your-authtoken)
-#    NGROK_AUTHTOKEN=...
-#    NGROK_DOMAIN=            # optional reserved/static domain
+# 1. Create a tunnel at Zero Trust -> Networks -> Tunnels, choose the Docker
+#    connector, and copy the token it prints. Then add it to .env:
+#    CLOUDFLARE_TUNNEL_TOKEN=...
 
 # 2. Start the stack with the tunnel profile
 docker compose --profile tunnel up --build
 ```
 
-- The public URL is printed in the `ngrok` logs and shown at
-  [http://localhost:4040](http://localhost:4040) (ngrok's local inspector).
-- Without `NGROK_DOMAIN`, ngrok assigns a random ephemeral URL that changes on
-  every restart. Set `NGROK_DOMAIN` to a reserved domain for a stable URL.
+This path requires a hostname on a domain in your Cloudflare account. If the
+account has no zone, use the account-less `quick` profile below instead.
+
+- The public hostname is configured in the dashboard's **Hostname routes** tab
+  (Networks -> Routes; renamed from "Public Hostname" in older docs), not in
+  this repo. Point it at `http://web:80` so one hostname serves both the SPA
+  and the API. A token-managed tunnel has no `config.yml` inside the container,
+  so the route really does have to be created dashboard-side.
+- Because the hostname is stable, `CORS_ORIGINS` and `APP_BASE_URL` are set
+  once rather than re-set on every restart.
 - The tunnel is opt-in: a plain `docker compose up` stays local and never
   exposes the stack.
 
-**Point the app at the public URL.** Once you know the URL, set these in `.env`
-and restart so CORS, invite links, and 2FA links use it:
+**Point the app at the public URL.** Set these in `.env` and restart so CORS,
+invite links, and 2FA links use it:
 
 ```bash
-CORS_ORIGINS=https://<your-subdomain>.ngrok-free.app
-APP_BASE_URL=https://<your-subdomain>.ngrok-free.app
+CORS_ORIGINS=https://<your-hostname>
+APP_BASE_URL=https://<your-hostname>
 ```
 
-> The ngrok free tier shows a browser interstitial on first visit. Send the
-> `ngrok-skip-browser-warning` header (or use a paid plan) to bypass it for
-> automated/API testing.
+> Unlike the ngrok free tier there is no browser interstitial, so no
+> skip-header workaround is needed for automated/API testing.
+
+### Ephemeral tunnels, and running cloudflared on another device
+
+No domain or Cloudflare account is required if you use a Quick Tunnel:
+
+```bash
+docker compose --profile quick up -d cloudflared-quick
+docker compose logs cloudflared-quick        # prints the assigned URL
+```
+
+`TUNNEL_ORIGIN` (default `http://web:80`) selects what the tunnel serves. Set
+it when `cloudflared` runs on a different device from this stack — the `web`
+service publishes 8080 on every host interface and nginx still proxies `/api`
+to `api`, so one URL serves the SPA and the API either way:
+
+```bash
+# From another device on the same network:
+#   cloudflared tunnel --url http://<this-host-LAN-IP>:8080
+# Confirm that address answers before starting cloudflared, so a firewall
+# problem is not mistaken for a tunnel problem:
+curl http://172.20.40.114:8080/
+```
+
+Two things to know before relying on this:
+
+- **The URL changes on every restart**, so `CORS_ORIGINS` and `APP_BASE_URL`
+  have to be re-set each time. That makes Quick Tunnels fine for a demo and a
+  poor fit for anything needing a stable public endpoint.
+- **The control plane is `api.trycloudflare.com`.** On a network that inspects
+  TLS (Zscaler and similar) that host may present a certificate signed by a CA
+  the container does not trust, and tunnel creation fails with `x509:
+  certificate signed by unknown authority`. Notably, the *named* tunnel avoids
+  this because its endpoints (`api.cloudflare.com`, `*.argotunnel.com`) are
+  typically left alone by such proxies. If Quick Tunnels fail this way, either
+  request a bypass for `api.trycloudflare.com` alone or add a domain and use
+  the `tunnel` profile.
+
+Quick Tunnels also carry no uptime guarantee and cap at 200 in-flight requests.
 
 ## Environment / secrets
 
@@ -97,7 +145,7 @@ Optional: `AMBER_PAY_*`, `QUICKBOOKS_*`, `SAGE_*`, `SMTP_*`, `APP_BASE_URL`.
 Runtime mode: `NODE_ENV` (default `production`).
 Logging: `LOG_LEVEL`, `LOG_TO_FILE`, `LOG_DIR`, `LOG_FILE_NAME`,
 `LOG_MAX_SIZE_BYTES`, `LOG_MAX_FILES`.
-For internet testing, `NGROK_AUTHTOKEN` and (optionally) `NGROK_DOMAIN`.
+For internet testing, `CLOUDFLARE_TUNNEL_TOKEN`.
 See `.env.example` for the full list. **Never commit real secrets.**
 
 ### Development mode and the 2FA code
@@ -133,8 +181,8 @@ docker compose up -d api
 
 This needs two gates, not one: it is ignored entirely under `NODE_ENV=production`,
 *and* it requires the explicit opt-in. Keying on `NODE_ENV` alone would be a
-mistake here — the `tunnel` profile publishes this stack on a public ngrok URL,
-and `NODE_ENV=development` is the normal setting for that profile, which would
+mistake here — the `tunnel` profile publishes this stack on a public Cloudflare
+URL, and `NODE_ENV=development` is the normal setting for that profile, which would
 leave a payment-minting endpoint on the open internet. The API logs a warning
 whenever the dev transport is active.
 

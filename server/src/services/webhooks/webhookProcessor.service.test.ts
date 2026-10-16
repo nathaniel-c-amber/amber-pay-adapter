@@ -228,6 +228,96 @@ describe('WebhookProcessor', () => {
     expect(resolver.get).toHaveBeenCalledWith('sage');
   });
 
+  /*
+    ★ THE WRITE THE CUSTOMER'S PAGE IS BUILT ON.
+
+    "Record what the gateway reported ... This is the write the customer-facing
+    page is built on. It is a write, not a read, and it happens on the webhook's
+    own path; the status endpoint itself never calls it."
+
+    So without these the whole status feature reads from a column nothing in this
+    file ever writes, and `PaymentStatusService` would be asserting against
+    fixtures rather than against the pipeline. The idempotency of this write is
+    the store's (`WHERE settled_at IS NULL`), and it is asserted there.
+  */
+  describe('the gateway\'s verdict is recorded where the customer can read it', () => {
+    function withOutcomes() {
+      const outcomes = { recordOutcome: jest.fn().mockResolvedValue(undefined) };
+      const processor = buildProcessor(
+        new EventLog(),
+        new FailureTracker(),
+        { get: jest.fn().mockReturnValue(makeAdaptor()) },
+        5000,
+        undefined,
+        { matchConfig: MATCH, outcomes },
+      );
+      return { outcomes, processor };
+    }
+
+    it('writes a collected verdict under the deployment\'s organization', async () => {
+      const { outcomes, processor } = withOutcomes();
+
+      await processor.processWebhook(collectedEvent);
+
+      expect(outcomes.recordOutcome).toHaveBeenCalledWith({
+        // The organization is the CONFIGURED one, read from the environment — the
+        // same class of bug the singleton once had, where a literal silently
+        // outranked the default and wrote every row where no operator could see
+        // it.
+        organizationId: env.ORGANIZATION_ID,
+        // The gateway's echoed transaction id: the correlation the whole
+        // checkout_intents table exists for.
+        transactionId: 'w1',
+        outcome: 'collected',
+        // A success has nothing to explain.
+        failureReason: null,
+      });
+    });
+
+    it('writes a failure with the gateway\'s OWN words, and still files it', async () => {
+      const { outcomes, processor } = withOutcomes();
+      const declined: WebhookEvent = {
+        id: 'w-fail-1',
+        type: 'payment.failed',
+        reference: null,
+        status: 'failed',
+        failureReason: 'Invalid transaction',
+        at: '2026-01-01T00:00:00.000Z',
+      };
+
+      await processor.processWebhook(declined);
+
+      expect(outcomes.recordOutcome).toHaveBeenCalledWith({
+        organizationId: env.ORGANIZATION_ID,
+        transactionId: 'w-fail-1',
+        outcome: 'failed',
+        // "Passed straight through rather than re-cleaned here, because two
+        // sanitisation passes would be two places to keep honest and the one
+        // that faces the wire is the one that should do it" — the schema in
+        // `amberpay.service.ts` has already stripped and capped it.
+        failureReason: 'Invalid transaction',
+      });
+    });
+
+    it('settles NOTHING for a delivery that is not a verdict about a payment', async () => {
+      const { outcomes, processor } = withOutcomes();
+
+      // `unknown` is an absence of a verdict, so no callback can write it — a
+      // column holding the string 'unknown' would make "we don't know"
+      // indistinguishable from "the gateway said unknown", which is exactly what
+      // the CHECK in migration 009 and this union both exist to prevent.
+      await processor.processWebhook({
+        id: 'w-init-1',
+        type: 'payment.initiated',
+        reference: 'ref-0002',
+        status: 'initiated',
+        at: '2026-01-01T00:00:00.000Z',
+      });
+
+      expect(outcomes.recordOutcome).not.toHaveBeenCalled();
+    });
+  });
+
   it('ignores duplicate webhook ids', async () => {
     const eventLog = new EventLog();
     const failureTracker = new FailureTracker();

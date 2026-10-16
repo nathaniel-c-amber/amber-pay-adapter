@@ -80,7 +80,7 @@ export function mapEvent(e: ApiLifecycleEvent): LifecycleEvent {
 }
 
 export function mapFailure(f: ApiFailure): Failure {
-  return {
+  const failure: Failure = {
     id: f.id,
     severity: f.severity,
     channel: f.channel,
@@ -89,6 +89,25 @@ export function mapFailure(f: ApiFailure): Failure {
     /* ISO instant, as with `at` above — see the note there. */
     since: f.since,
   };
+  /*
+    Acknowledgement is read here, deliberately. This mapper used to drop
+    `acknowledgedAt` entirely, which meant the server's acknowledgement was
+    written but never reached any view: the console tracked its own in-memory
+    set of "acked" ids, that set reset on every page load, and so an
+    acknowledged finding reappeared for every operator including the one who
+    had just acknowledged it. The two fields are now part of the mapped shape
+    and the UI derives its state from them.
+
+    Both are copied only when present, so an unacknowledged finding stays
+    genuinely absent rather than becoming a defined `undefined`.
+  */
+  if (f.acknowledgedAt) {
+    failure.acknowledgedAt = f.acknowledgedAt;
+  }
+  if (f.acknowledgedBy) {
+    failure.acknowledgedBy = f.acknowledgedBy;
+  }
+  return failure;
 }
 
 export function mapPolicy(p: ApiPolicyScope): PolicyScope {

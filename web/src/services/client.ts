@@ -9,7 +9,6 @@ import type {
   ApiDeploymentSettings,
   ApiGatewayCurrency,
   ApiDirectoryUser,
-  ApiFailure,
   ApiIdentity,
   ApiInviteDetail,
   ApiInvoiceMatchMode,
@@ -19,8 +18,6 @@ import type {
   ApiServiceStatus,
   MetricsResponse,
 } from "@/types/api";
-import type { Failure } from "@/types/domain";
-import { mapFailure } from "@/services/map.service";
 
 export const apiBaseUrl: string =
   import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -135,9 +132,10 @@ export async function createCheckout(
 /**
  * GET /payments/by-transaction/:transactionId — a payment by its gateway reference.
  *
- * The lookup the return page uses: a customer coming back from the gateway
- * holds the TRANSACTION reference, not the uuid this application generated and
- * never showed them.
+ * AUTHORIZED, and no longer used by the payment return page: that page is for a
+ * customer, who has no session, and it reads `getPaymentStatus` instead. This
+ * remains the operator's lookup — the console's own surfaces correlate against a
+ * gateway reference they already hold, and the route still exists on the server.
  */
 export async function getPaymentByTransaction(
   token: string,
@@ -148,6 +146,68 @@ export async function getPaymentByTransaction(
     { headers: authHeaders(token) },
   );
   return result.payment;
+}
+
+/* ----------------------------------------------- the customer's own status */
+
+/**
+ * The four things we can tell a customer about their own payment.
+ *
+ * `unknown` is the NORMAL answer for the first few seconds after someone pays:
+ * the checkout intent exists (it was written before the customer was sent to the
+ * gateway) but the gateway's callback has not been processed yet. It is a
+ * pending answer, not a failure, and the UI must not render it as one.
+ */
+export type PaymentStatusState = "collected" | "failed" | "pending" | "unknown";
+
+/**
+ * GET /payments/status/:statusToken
+ *
+ * The shape the status endpoint answers with. NO WRAPPER, unlike most routes
+ * here — the response IS the record.
+ */
+export interface PaymentStatus {
+  status: PaymentStatusState;
+  /** The gateway's own reference, e.g. "E09KUZXK6BZJ". What a customer quotes. */
+  reference: string | null;
+  /** The gateway's own words, captured server-side. Never from the URL. */
+  reason: string | null;
+  /**
+   * MAJOR units as a STRING — "25000", never 25000.00 and never a number.
+   *
+   * A string because a binary float cannot hold a monetary figure exactly, and
+   * the console must not re-parse it to print it: it groups the digits and puts
+   * the currency symbol in front. See `formatAmount` in `@/utils/paymentReturn`.
+   */
+  amount: string | null;
+  currency: string | null;
+}
+
+/**
+ * The lookup a customer returning from the gateway needs — and the ONLY call on
+ * this page.
+ *
+ * ★ PUBLIC AND SESSION-FREE, AND THAT IS THE POINT.
+ *
+ * The `statusToken` is 256 bits of base64url minted when the payment was
+ * created. It carries no customer identity and is not bound to a session, so a
+ * person who has just paid is not made to sign in to somebody else's operator
+ * console to be told whether their money arrived. It is a lookup handle and
+ * nothing more: what it resolves to is the server's record, never a claim the
+ * browser can make about itself.
+ *
+ * No Authorization header is sent, and none is needed — there is nothing here to
+ * authorize, because there is nothing here to see.
+ *
+ * `cache: "no-store"` is load-bearing for the same reason it is on `checkHealth`:
+ * a cached 200 would keep answering "Confirming your payment" long after the
+ * payment settled, and this page's entire job is not to be stale.
+ */
+export async function getPaymentStatus(statusToken: string): Promise<PaymentStatus> {
+  return request<PaymentStatus>(`/payments/status/${encodeURIComponent(statusToken)}`, {
+    method: "GET",
+    cache: "no-store",
+  });
 }
 
 /* ------------------------------------------------------------ liveness */
@@ -196,32 +256,15 @@ export function getMetrics(token: string): Promise<MetricsResponse> {
 }
 
 /**
- * POST /failures/:id/acknowledge — persists one acknowledgement (Bearer token).
+ * POST /failures/acknowledge — acknowledges findings as ONE operator action
+ * (Bearer token).
  *
- * Returns the failure AS THE SERVER STORED IT, carrying `acknowledgedAt` and
- * `acknowledgedBy`. The caller needs both: it merges this row into its snapshot
- * instead of guessing at the values, which is what keeps every operator on the
- * same page showing the same acknowledgement.
- */
-export async function acknowledgeFailure(token: string, id: string): Promise<Failure> {
-  const acknowledged = await request<ApiFailure>(
-    `/failures/${encodeURIComponent(id)}/acknowledge`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  );
-  return mapFailure(acknowledged);
-}
-
-/**
- * POST /failures/acknowledge — acknowledges many findings as ONE operator
- * action (Bearer token).
- *
- * A batch rather than N calls to the single-id endpoint: the queue holds up to
- * 500 findings, and 500 round-trips is a visible hang with 500 independent
- * chances to half-fail. One request is one timestamp and one outcome, which is
- * what clicking "Acknowledge all" actually means.
+ * The console acknowledges an INCIDENT, which may be several occurrences, so this
+ * is the only acknowledgement call the UI makes: one request, one timestamp, one
+ * attribution, whatever the size. `POST /failures/:id/acknowledge` still exists
+ * on the server and is still covered by its tests, but nothing in the console
+ * calls it — a second client path would be a second place for the busy flag and
+ * the sign-out-on-401 handling to drift.
  *
  * Only the ids are sent. The actor is recorded by the server from the access
  * token, so there is deliberately no `acknowledgedBy` field here to fill in —

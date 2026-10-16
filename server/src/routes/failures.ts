@@ -9,8 +9,9 @@ export interface FailuresRouteDeps {
 }
 
 /**
- * Failure routes. `POST /failures/:id/acknowledge` persists an acknowledgement;
- * the handler and its PBAC reasoning live in
+ * Failure routes. `POST /failures/:id/acknowledge` persists one
+ * acknowledgement; `POST /failures/acknowledge` persists a batch as a single
+ * operator action. The handlers and their PBAC reasoning live in
  * `controllers/failures.controller.ts`.
  */
 export function createFailuresRouter(deps: FailuresRouteDeps = {}): express.Router {
@@ -27,6 +28,23 @@ export function createFailuresRouter(deps: FailuresRouteDeps = {}): express.Rout
     requireAuth,
     requirePolicyAnyOrganization('ack', 'dashboard'),
     controller.acknowledgeFailure,
+  );
+
+  /*
+    The batch form of the same gate. Declared after the `/:id` route because it
+    reads better beside the single-id handler it mirrors; the two cannot shadow
+    each other either way, since `/failures/acknowledge` is two path segments
+    and `/failures/:id/acknowledge` is three.
+
+    The body carries the id list and nothing else. Organization and actor are
+    resolved from the token in the controller, so a client cannot acknowledge
+    outside its scope or record an acknowledgement as somebody else.
+  */
+  router.post(
+    '/failures/acknowledge',
+    requireAuth,
+    requirePolicyAnyOrganization('ack', 'dashboard'),
+    controller.acknowledgeFailures,
   );
 
   return router;

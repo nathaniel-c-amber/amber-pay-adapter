@@ -73,6 +73,19 @@ export interface WebhookEvent {
   reference: string | null;
   status: PaymentStatus;
   at: string; // ISO 8601
+  /**
+   * The gateway's own words for a failure, or null.
+   *
+   * ★ THIS IS TEXT, NOT AN INSTRUMENT DETAIL, and that distinction is the whole
+   * reason the wire schema keeps `ErrorMessage` while it still drops `Amount`,
+   * `CurrencyCode` and every card field. A decline reason is about the
+   * transaction and is shown back to the person whose transaction it was; a
+   * card token is about the instrument and identifies the card.
+   *
+   * Null unless the gateway reported a FAILURE — a collected payment carries no
+   * reason, so a stale one cannot outlive a retry and get read as a verdict.
+   */
+  failureReason?: string | null;
   // NOTE: no amount, no PII per privacy constraint.
 }
 

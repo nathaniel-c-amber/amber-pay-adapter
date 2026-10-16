@@ -1,0 +1,27 @@
+-- 008_failure_acknowledged_by.sql
+-- Attributed failure acknowledgement.
+--
+-- Until now `failures.acknowledged_at` recorded only WHEN a finding was
+-- acknowledged, never WHO. Two consequences, both visible to an operator: the
+-- console could not tell one operator from another, and an acknowledgement
+-- made by user A reappeared for user B, because nothing about an
+-- acknowledgement was ever read back into a view.
+--
+-- `acknowledged_by` carries the actor's email because that is the identifier
+-- an operator recognises; `sub` is an opaque id that reads as nothing in a
+-- table. Email is already the identity the access token carries, so this
+-- records no data the platform did not already hold.
+--
+-- NULLABLE, deliberately. Every row acknowledged before this migration was
+-- acknowledged by an actor the database never saw. Backfilling a placeholder
+-- such as 'system' or 'unknown' would assert an attribution that never
+-- happened, and would be indistinguishable in the console from a real one. A
+-- missing actor is therefore a true statement about that row and must be
+-- rendered as one.
+--
+-- `IF NOT EXISTS` keeps the file replayable: the migrator wraps each script in
+-- a transaction and records the filename by name, so a migration that has
+-- already run is skipped — but a database rebuilt from an earlier schema
+-- snapshot may reach this statement with the column present.
+ALTER TABLE failures
+  ADD COLUMN IF NOT EXISTS acknowledged_by text;

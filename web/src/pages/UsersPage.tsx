@@ -495,6 +495,34 @@ export function UsersPage({
                 {busyId === editingRow.id ? "Saving…" : "Save permissions"}
               </button>
             </div>
+
+            {/*
+              WHY SAVE IS OFF, when the reason is the edit itself.
+
+              An empty draft is refused by the SERVER, not by taste:
+              `policyAttributesSchema` is `z.array(...).min(1)` and
+              `users.service.updatePermissions` throws `At least one policy
+              attribute is required` — a deliberate pair, so an account cannot be
+              stranded with no access at all. Now that a row can genuinely be
+              cleared, that state is reachable, so it is STATED rather than left
+              as a dead button: a disabled control with no reason is the thing
+              this console's own rules ("hidden, not disabled", "one line states
+              the reason") are written against.
+            */}
+            {draft.length === 0 && (
+              <p className="m-0 max-w-[70ch] text-sm leading-prose text-ink-2" role="status">
+                Every grant is unticked. This account must keep at least one — an account with no
+                access cannot be recovered from here. Tick a permission to re-enable saving, or{" "}
+                <button
+                  type="button"
+                  className={LINK_BTN}
+                  onClick={() => setDraft(baseline.map((a) => ({ ...a, actions: [...a.actions] })))}
+                >
+                  restore its current permissions
+                </button>
+                .
+              </p>
+            )}
           </div>
         </Card>
       )}

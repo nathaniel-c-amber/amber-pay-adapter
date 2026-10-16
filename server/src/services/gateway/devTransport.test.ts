@@ -120,7 +120,7 @@ describe('the dev transport gate', () => {
 
   /*
     The gate that matters. The `tunnel` compose profile publishes this stack on
-    a public ngrok URL, and a non-production NODE_ENV is the NORMAL setting for
+    a public Cloudflare URL, and a non-production NODE_ENV is the NORMAL setting for
     that profile — so keying on NODE_ENV alone would publish a payment-minting
     endpoint to the internet. This is the test that fails if someone "simplifies"
     the condition to a single check.

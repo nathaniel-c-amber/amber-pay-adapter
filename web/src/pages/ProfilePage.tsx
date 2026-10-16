@@ -163,17 +163,27 @@ export function ProfilePage({
               <IdentityRow
                 label="Organization"
                 /*
-                  THE NAME, not the policy's raw organization id.
+                  THE ONE PLACE THE ORGANIZATION IS NAMED.
 
-                  An id like "default" or "org-1" is what the API filters on and is
-                  the one thing on this page nobody can read out loud in a meeting.
-                  The name is the one a human chose; the id is kept underneath so
+                  A deployment serves exactly one organization, so the
+                  organization is a deployment-wide constant, not a per-policy
+                  variable — which is exactly why it appears HERE and nowhere
+                  else. Every policy scope below names its SCOPE only; repeating
+                  the organization on each of them (the old "payments · All
+                  organizations") asserted a plurality this product does not
+                  have, and a wildcard there is not "all of them", it is "the
+                  one this deployment serves".
+
+                  THE NAME, not the policy's raw organization id. An id like
+                  "default" or "org-1" is what the API filters on and is the one
+                  thing on this page nobody can read out loud in a meeting. The
+                  name is the one a human chose; the id is kept underneath so
                   somebody debugging a permission problem can still see it, and so
                   the row is never blank before setup has been finished.
                 */
                 value={
                   identity?.organizationName ??
-                  (caps.org === "*" ? "all organizations" : caps.org)
+                  (caps.org === "*" ? "not set up yet" : caps.org)
                 }
                 mono={false}
               />
@@ -218,8 +228,10 @@ export function ProfilePage({
 
         <Card title="Policy scopes" className="profile-policies">
           <p className="mb-3 text-sm text-ink-2">
-            Each policy attribute grants <code>actions</code> on a <code>scope</code> within an{" "}
-            <code>organization</code>. Switch the active scope in the top bar to see navigation change.
+            Each policy attribute grants <code>actions</code> on a <code>scope</code>. This
+            deployment serves one organization, so it is named once above rather than on every
+            scope. Navigation follows the broadest scope you hold — chosen for you, not switched
+            by hand.
           </p>
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {policies.map((p) => {
@@ -236,7 +248,7 @@ export function ProfilePage({
                       {isActive && <span className="mono rounded-chip border border-[rgb(57_185_138/0.4)] px-1.5 py-0.5 text-micro uppercase tracking-label text-line-green">active</span>}
                     </div>
                     <div className="mono mt-1 text-xs text-ink-2">
-                      scope:{c.scope} · org:{c.org === "*" ? "*" : c.org} · actions:
+                      scope:{c.scope} · actions:
                       {c.actions.size === 0 ? " (read-only)" : [...c.actions].join(",")}
                     </div>
                   </div>

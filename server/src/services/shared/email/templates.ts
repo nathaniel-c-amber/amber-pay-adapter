@@ -24,6 +24,7 @@
  * - Never over-specify a failure, and never imply an action was taken.
  */
 
+import { joinUrl } from '../../../utils/url.js';
 import { renderMessage } from './engine.js';
 
 export interface RenderedEmail {
@@ -35,10 +36,10 @@ export interface RenderedEmail {
 
 /* ------------------------------------------------------------------- links */
 
-/** Join a base URL and a path without doubling or dropping the separator. */
-function joinUrl(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
-}
+/*
+  `joinUrl` now lives in `utils/url.ts`, beside the other callers. It was
+  private here, and two controllers plus the OAuth service were each writing
+  their own copy of the same trailing-slash rule — see that file for why.
 
 /**
  * The invite link. The console is a hash router (`web/src/router.ts`) and `invite`

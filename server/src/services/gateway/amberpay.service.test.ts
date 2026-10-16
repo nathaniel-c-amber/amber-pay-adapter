@@ -94,6 +94,10 @@ describe('AmberPayGatewayImpl', () => {
       status: 'collected',
       // The gateway's own time, normalized. `15: 58: 15Z` with the spaces.
       at: '2026-09-28T15:58:15.000Z',
+      // Present as an explicit null, never absent: a success with no reason is a
+      // fact the processor can read, and an optional field would make it
+      // indistinguishable from a gateway that has not been asked yet.
+      failureReason: null,
     });
   });
 
@@ -141,7 +145,133 @@ describe('AmberPayGatewayImpl', () => {
       expect(serialised).not.toContain(forbidden);
     }
     // And on the keys, so a rename cannot smuggle one back in.
-    expect(Object.keys(event).sort()).toEqual(['at', 'id', 'reference', 'status', 'type']);
+    //
+    // `failureReason` is the one addition, and it is here deliberately rather
+    // than left to the reader: it is the gateway's OWN TEXT about the
+    // transaction, shown back to the customer whose transaction it was, and it
+    // is null for a Success — so the amount, the currency and every card field
+    // above are still absent from this object and from its serialisation. The
+    // list below is the allow-list, and it is enumerated so a sixth key has to
+    // be added by hand.
+    expect(Object.keys(event).sort()).toEqual([
+      'at',
+      'failureReason',
+      'id',
+      'reference',
+      'status',
+      'type',
+    ]);
+  });
+
+  it('carries the gateway\'s own failure text, and nothing from the wire beside it', () => {
+    const gateway = new AmberPayGatewayImpl();
+
+    // The REAL failed callback (2026-10-16), verbatim: three message keys, two
+    // of them the same value, one of them a misspelling of the other's name.
+    const failed = gateway.parseWebhook({
+      ClientId: 'quick_book_stage',
+      TransactionId: 'E09KUZXK6BZJ',
+      OrderId: '17921677369780E09KUZXK6BZJ',
+      PaymentStatus: 'Failed',
+      Amount: '25000',
+      CurrencyCode: 'JMD',
+      ResponseMsg: 'Invalid transaction',
+      ReponseMsg: 'Invalid transaction',
+      ErrorCode: '',
+      ErrorMessage: 'Invalid transaction',
+      PaddedCardNo: '4012XXXXXXX0071',
+    });
+
+    // `ErrorMessage` is the primary, and the text is what a customer page needs:
+    // "failed" alone is equally true of an expired card and a typo.
+    expect(failed.failureReason).toBe('Invalid transaction');
+    // The figure and the card-adjacent fields beside it are still dropped. The
+    // reason is text; the amount is money and the padded number is an
+    // instrument, and neither may ride along on a new field.
+    expect(JSON.stringify(failed)).not.toContain('25000');
+    expect(JSON.stringify(failed)).not.toContain('4012');
+  });
+
+  it('falls back to the other message keys, because the gateway sends all three and promises none', () => {
+    const gateway = new AmberPayGatewayImpl();
+    const base = {
+      ClientId: 'quick_book_stage',
+      TransactionId: 'E09KUZXK6BZJ',
+      OrderId: '17921677369780E09KUZXK6BZJ',
+      PaymentStatus: 'Failed',
+    };
+
+    // Only the correctly-spelled secondary key.
+    expect(gateway.parseWebhook({ ...base, ResponseMsg: 'Card declined' }).failureReason).toBe(
+      'Card declined',
+    );
+    // ONLY the misspelling — which is a real shape today, and a delivery that
+    // arrived this way used to have nothing at all to say.
+    expect(gateway.parseWebhook({ ...base, ReponseMsg: 'Card declined' }).failureReason).toBe(
+      'Card declined',
+    );
+    // Neither, and no ErrorMessage: a decline with no words attached is a real
+    // state, and it must be `null` rather than the string "undefined".
+    expect(gateway.parseWebhook(base).failureReason).toBeNull();
+  });
+
+  it('reads a message that says it means "no value" as ABSENT, not as the word', () => {
+    const gateway = new AmberPayGatewayImpl();
+    const base = {
+      ClientId: 'quick_book_stage',
+      TransactionId: 'E09KUZXK6BZJ',
+      OrderId: '17921677369780E09KUZXK6BZJ',
+      PaymentStatus: 'Failed',
+    };
+
+    // The observed callback sends `StoreVerifyFlag=null` and `CustomMessage=null`
+    // as the STRING "null". A naive read shows a customer the word "null" as the
+    // reason their payment was declined — which is worse than saying nothing.
+    expect(gateway.parseWebhook({ ...base, ErrorMessage: 'null', ResponseMsg: 'null' }).failureReason)
+      .toBeNull();
+    expect(gateway.parseWebhook({ ...base, ErrorMessage: '   ' }).failureReason).toBeNull();
+    // …and when the misspelled key is the one carrying the value.
+    expect(gateway.parseWebhook({ ...base, ErrorMessage: 'null', ReponseMsg: 'Invalid transaction' })
+      .failureReason).toBe('Invalid transaction');
+  });
+
+  it('never leaves a reason on a payment that succeeded', () => {
+    const gateway = new AmberPayGatewayImpl();
+    const event = gateway.parseWebhook({ ...REAL_CALLBACK, PaymentStatus: 'Success' });
+
+    // A Success that still carried a reason would read as the gateway's verdict
+    // on a payment that actually cleared — so the text is read ONLY on a
+    // failure, whatever the rest of the payload says.
+    expect(event.failureReason).toBeNull();
+  });
+
+  it('strips control characters, collapses whitespace and caps the length', () => {
+    const gateway = new AmberPayGatewayImpl();
+    const hostile =
+      'Invalid transaction\r\n  for  reason  code  E42\\x3c/script>';
+
+    const event = gateway.parseWebhook({
+      ClientId: 'quick_book_stage',
+      TransactionId: 'E09KUZXK6BZJ',
+      OrderId: '17921677369780E09KUZXK6BZJ',
+      PaymentStatus: 'Failed',
+      ErrorMessage: hostile,
+    });
+
+    // Nothing that can end a line or a terminal escape survives: this text is
+    // rendered in a browser tab from a body a third party form-encodes.
+    expect(event.failureReason).toBe('Invalid transaction for reason code E42\\x3c/script>');
+    expect(event.failureReason).not.toMatch(/[\u0000-\u001f\u007f]/);
+
+    // Capped, because this is unbounded third-party text going into a column.
+    const long = gateway.parseWebhook({
+      ClientId: 'quick_book_stage',
+      TransactionId: 'E09KUZXK6BZJ',
+      OrderId: '17921677369780E09KUZXK6BZJ',
+      PaymentStatus: 'Failed',
+      ErrorMessage: 'x'.repeat(5000),
+    });
+    expect(long.failureReason).toHaveLength(200);
   });
 
   it('reads the event time despite the spaces the gateway writes', () => {

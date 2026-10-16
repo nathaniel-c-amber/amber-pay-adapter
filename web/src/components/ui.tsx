@@ -10,8 +10,10 @@ import {
   SEVERITY_LABEL,
 } from "@/utils/vocabulary";
 import type { Health } from "@/utils/vocabulary";
-import { formatDateTime } from "@/utils/datetime";
-import type { Connector, Failure, Severity } from "@/types/domain";
+import { formatDateTime, formatWindow } from "@/utils/datetime";
+import type { Connector, Severity } from "@/types/domain";
+import { groupIds } from "@/utils/findings";
+import type { FindingGroup } from "@/utils/findings";
 
 export const cx = (...names: Array<string | false | null | undefined>): string =>
   names.filter(Boolean).join(" ");
@@ -76,6 +78,13 @@ const BTN_BASE =
   "inline-flex cursor-pointer items-center gap-2 rounded-panel border px-3 py-1.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:text-current";
 export const BTN = `${BTN_BASE} border-rule-enamel bg-midnight-3 text-ink-1 hover:not-disabled:border-ink-4 hover:not-disabled:bg-midnight-2`;
 export const BTN_PRIMARY = `${BTN_BASE} border-primary bg-primary text-on-primary hover:not-disabled:border-primary-hover hover:not-disabled:bg-primary-hover`;
+/*
+   The amber OUTLINE, for an action that deserves emphasis without competing with
+   the primary one. Self-contained for the same reason as the pair above:
+   layering brand utilities on `BTN` would let the compiled sheet pick the border
+   by scale order rather than by intent.
+*/
+export const BTN_OUTLINE = `${BTN_BASE} border-primary bg-transparent text-primary hover:not-disabled:bg-sel-bg`;
 
 /* Secondary text button (the old `.amb-link-btn`). */
 /* Secondary text button (the old `.amb-link-btn`).
@@ -329,6 +338,8 @@ export function Kpi({
   tone,
   icon,
   valueTone,
+  onClick,
+  pressed,
 }: {
   label: string;
   value: ReactNode;
@@ -343,27 +354,57 @@ export function Kpi({
    * red would contradict the words.
    */
   valueTone?: "good" | "bad" | "warn" | "neutral";
+  /**
+   * Makes the card a CONTROL that filters the list it summarises.
+   *
+   * A KPI that reports a figure the operator then has to go and find elsewhere
+   * is a dead end — the Payments page's "Declined / failed" readout used to say
+   * "see event log" and stop there. Passing a handler renders the card as a
+   * real `<button>` rather than a div with a click listener, so it is reachable
+   * by keyboard and announced as a control.
+   */
+  onClick?: () => void;
+  /** Whether this card's filter is currently applied. */
+  pressed?: boolean;
 }) {
   /* valueTone outranks tone: the old sheet ordered `.value-neutral` after the
      `.tone-*` value rules, so it won on equal specificity. Resolving to a
      single class here avoids relying on Tailwind's utility ordering. */
   const valueClass = KPI_VALUE[valueTone ?? tone ?? "neutral"];
-  return (
-    <div
-      className={cx(
-        "relative rounded-panel border border-rule-enamel bg-midnight-2 p-4 shadow-panel",
-        "before:absolute before:inset-y-[0.8rem] before:left-0 before:w-0.5 before:rounded-[1px] before:content-['']",
-        KPI_RAIL[tone ?? "neutral"],
-      )}
-    >
+  const className = cx(
+    "relative w-full rounded-panel border bg-midnight-2 p-4 text-left shadow-panel",
+    "before:absolute before:inset-y-[0.8rem] before:left-0 before:w-0.5 before:rounded-[1px] before:content-['']",
+    KPI_RAIL[tone ?? "neutral"],
+    onClick
+      ? // A pressable card has to LOOK pressable, and has to show when it is
+        // currently narrowing the list — otherwise clicking it changes the table
+        // below with nothing on the page admitting why.
+        cx(
+          "cursor-pointer transition-colors hover:border-ink-4",
+          pressed ? "border-primary" : "border-rule-enamel",
+        )
+      : "border-rule-enamel",
+  );
+
+  const body = (
+    <>
       <div className="flex items-center justify-between">
         <span className={`mono ${LABEL} text-ink-3`}>{label}</span>
         {icon ? <span className="text-ink-3">{icon}</span> : null}
       </div>
       <div className={cx("mono mt-2 text-3xl font-semibold", valueClass)}>{value}</div>
       {note ? <div className="mt-1 text-xs text-ink-2">{note}</div> : null}
-    </div>
+    </>
   );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} aria-pressed={pressed} className={className}>
+        {body}
+      </button>
+    );
+  }
+  return <div className={className}>{body}</div>;
 }
 
 export function Crumb({ text }: { text: string }) {
@@ -432,35 +473,67 @@ export function ConnectionRow({
 
 /** A finding rendered as an incident/task card, not a table row.
  *
+ * A CARD IS AN INCIDENT, NOT A ROW. One upstream check failing is one problem
+ * reported many times; the console receives a finding per occurrence and used to
+ * render a card per occurrence, so twelve identical failures became twelve cards
+ * with twelve Acknowledge buttons for one broken integration. The card now
+ * renders a GROUP and states how many times it has been seen.
+ *
  * Acknowledge is gated on the active policy in place (see `Can`) rather than
  * on a `canAck` boolean threaded down from the shell: the card already knows
- * what it is, so every call site used to have to pass the same answer. */
+ * what it is, so every call site used to have to pass the same answer.
+ *
+ * The whole GROUP is acknowledged by that button — an operator who has read the
+ * incident has read every occurrence of it, and acknowledging them one row at a
+ * time is the tedium this card exists to remove.
+ */
 export function FindingCard({
-  finding,
+  group,
   onAck,
   onOpen,
+  ackBusy = false,
 }: {
-  finding: Failure;
-  onAck: (id: string) => void;
+  group: FindingGroup;
+  onAck: (ids: string[]) => void;
   onOpen?: (id: string) => void;
+  ackBusy?: boolean;
 }) {
+  const { members, occurrences, openCount } = group;
+  // The freshest description of the fault; for a group, detail varies per
+  // occurrence and the newest one is the most current account of what is wrong.
+  const latest = members[0]!;
+
+  /*
+    The occurrence window. A single finding needs no range — "since" alone says
+    everything — and printing "1 occurrence · Oct 6, 16:04" would bury the one
+    fact that matters. The range appears only when there is a span to report.
+  */
+  const spansTime = occurrences > 1 && group.firstSeen !== group.lastSeen;
+
   return (
     <article
       className="flex flex-col gap-2 rounded-panel border border-rule-enamel bg-midnight px-4 py-3 data-[severity=critical]:border-[rgb(248_113_113/0.3)] data-[severity=attention]:border-[rgb(251_191_36/0.26)]"
-      data-severity={finding.severity}
+      data-severity={group.severity}
     >
-      <header className="flex flex-wrap items-center gap-3">
-        <SeverityBadge severity={finding.severity} />
-        <span className="mono text-xs text-ink-2 wrap-anywhere">{finding.id}</span>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <SeverityBadge severity={group.severity} />
+        <span className="mono text-xs text-ink-3 wrap-anywhere">{group.channel}</span>
         <span className="mono ml-auto text-xs text-ink-3 wrap-anywhere">
-          since {formatDateTime(finding.since)}
+          {spansTime
+            ? `${occurrences} occurrences · ${formatWindow(group.firstSeen, group.lastSeen)}`
+            : occurrences > 1
+              ? `${occurrences} occurrences · latest ${formatDateTime(group.lastSeen)}`
+              : `since ${formatDateTime(group.firstSeen)}`}
         </span>
       </header>
       <div>
         {/* h2, not h3: this card sits directly under the page's h1 on the
-            findings surfaces, so h3 skipped a level. */}
-        <h2 className="text-lg text-ink-1 wrap-anywhere">{finding.title}</h2>
-        <div className="mt-1 text-xs text-ink-3 wrap-anywhere">{finding.channel}</div>
+            findings surfaces, so h3 skipped a level. It also LEADS: the title is
+            the problem an operator reads, where the finding's uuid used to sit
+            above it in the loudest mono on the card. The uuid is an internal
+            handle for support and correlation — it is still here, deliberately
+            quiet, rather than deleted. */}
+        <h2 className="text-lg text-ink-1 wrap-anywhere">{group.title}</h2>
         {/*
           `wrap-anywhere`, and it is load-bearing rather than decorative.
 
@@ -474,27 +547,82 @@ export function FindingCard({
           shrink the element's min-content width. `wrap-anywhere` does, which is
           what stops a flex or grid child from being forced wider than its track.
         */}
-        <p className="mt-1.5 max-w-[66ch] text-sm text-ink-2 wrap-anywhere">{finding.detail}</p>
+        <p className="mt-1.5 max-w-[66ch] text-sm text-ink-2 wrap-anywhere">{latest.detail}</p>
+        <p className="mono mt-1 max-w-[66ch] text-xs text-ink-3 wrap-anywhere">{latest.id}</p>
       </div>
+      {/*
+        Who acknowledged this, and when.
+
+        Rendered from the SERVER's record rather than from anything this browser
+        remembers, which is the whole point: acknowledgement is a shared fact
+        about an incident, so two operators looking at the same row see the same
+        name.
+
+        The actor is OPTIONAL on the type, and that is not a hedge — an incident
+        acknowledged before attribution existed genuinely has no recorded actor.
+        Saying "Acknowledged" alone is a true statement about such a row, where
+        a blank would read as "not acknowledged at all", and inventing a name
+        would be a lie. The timestamp still appears, so the acknowledgement
+        itself is never in doubt.
+      */}
+      {group.acknowledgedAt && (
+        <p className="mono text-xs text-ink-3 wrap-anywhere">
+          Acknowledged{findingActor(group)} · {formatDateTime(group.acknowledgedAt)}
+        </p>
+      )}
+      {/*
+        Partly handled: some occurrences acknowledged, others not. Without this
+        the card would claim to be open while showing an acknowledgement, which
+        reads as a contradiction rather than as "new occurrences arrived since
+        you last looked".
+      */}
+      {group.open && group.openCount < occurrences && (
+        <p className="mono text-xs text-state-delayed wrap-anywhere">
+          {occurrences - group.openCount} of {occurrences} occurrences acknowledged · {openCount} open
+        </p>
+      )}
       <footer className="flex flex-wrap items-center gap-2">
         {onOpen && (
-          <button type="button" className={BTN} onClick={() => onOpen(finding.id)}>
+          <button type="button" className={BTN} onClick={() => onOpen(latest.id)}>
             View incident
           </button>
         )}
-        <Can ability={ABILITY.findingAck}>
-          <button
-            type="button"
-            className={BTN_PRIMARY}
-            onClick={() => onAck(finding.id)}
-            title="Acknowledge this finding"
-          >
-            Acknowledge
-          </button>
-        </Can>
+        {/* An acknowledged incident keeps its acknowledgement. Re-acknowledging
+            would overwrite the recorded operator with whoever clicked last, so
+            the action is withheld rather than merely disabled — there is
+            nothing left for it to do. */}
+        {!group.acknowledgedAt && (
+          <Can ability={ABILITY.findingAck}>
+            <button
+              type="button"
+              className={BTN_PRIMARY}
+              disabled={ackBusy}
+              onClick={() => onAck(groupIds(group))}
+              title={
+                occurrences > 1
+                  ? `Acknowledge all ${occurrences} occurrences of this incident`
+                  : "Acknowledge this finding"
+              }
+            >
+              {occurrences > 1 ? `Acknowledge all ${occurrences}` : "Acknowledge"}
+            </button>
+          </Can>
+        )}
       </footer>
     </article>
   );
+}
+
+/**
+ * The " by <operator>" half of an attribution line, or nothing at all.
+ *
+ * Split out because the ABSENCE of an actor is meaningful and must not be
+ * rendered as an empty or whitespace phrase — "Acknowledged · 16:42" says the
+ * acknowledgement happened and nobody is known to have done it, which is
+ * exactly what a pre-attribution row records.
+ */
+function findingActor(group: FindingGroup): string {
+  return group.acknowledgedBy ? ` by ${group.acknowledgedBy}` : "";
 }
 
 export function EmptyState({

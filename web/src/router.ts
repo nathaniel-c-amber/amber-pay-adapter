@@ -69,8 +69,8 @@ function parse(hash: string): Route {
   /*
     ★ THE QUERY STRING IS STRIPPED, AND BEFORE THE SPLIT.
     *
-    `/#/payment-return?transactionId=ABC` used to parse as a route named
-    `payment-return?transactionId=ABC` — the whole string, query included — which
+    `/#/payment-return?token=…` used to parse as a route named
+    `payment-return?token=…` — the whole string, query included — which
     is not in `known`, so it silently normalised to `overview`. A customer
     redirected back from the gateway with their reference in the query landed on
     the console's Overview with nothing wrong showing. The type checker could not
@@ -175,15 +175,18 @@ export function useRoute(): Route {
  *
  * ★ READ FROM THE HASH, NOT FROM `window.location.search`.
  *
- * In `#/payment-return?transactionId=ABC` the query is inside the fragment, so
+ * In `#/payment-return?token=…` the query is inside the fragment, so
  * `window.location.search` is empty and reading it returns nothing. `parse`
  * strips the same query to find the route name, so this reads it from the same
  * place it was taken from — and both now agree by construction rather than by
  * two implementations happening to match.
  *
- * Used by the payment return page to correlate the transaction the gateway
- * echoed. It is a CORRELATION VALUE and never a CLAIM: nothing here is allowed
- * to decide that a payment succeeded.
+ * On the payment return page this carries the STATUS TOKEN: a 256-bit lookup
+ * handle minted when the payment was created. It identifies a record to look up
+ * and nothing else — no customer identity, no session binding, and above all no
+ * claim about the outcome. That page renders what the API returns, so this
+ * function is the ONLY thing that reads this address, and nothing may be named
+ * `status`, `success` or `result` to read beside it.
  */
 export function hashQueryParam(name: string): string | null {
   const query = currentPath().split("?")[1];

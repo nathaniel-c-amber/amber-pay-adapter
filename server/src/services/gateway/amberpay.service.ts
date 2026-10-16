@@ -102,7 +102,83 @@ const webhookSchema = z.object({
    * validating it strictly would reject every real callback.
    */
   TransactionDate: z.string().optional(),
+  /*
+    ★ THE GATEWAY'S OWN WORDS ABOUT THE DECLINE — the only two fields added to
+    this schema, and the reason each earns its place.
+
+    A live failure callback (2026-10-16) carries `ErrorMessage` AND `ResponseMsg`
+    AND a misspelled `ReponseMsg`, all reading `Invalid transaction`. The
+    customer is redirected back to a page that says their payment failed; without
+    this the page can only say "failed", which is the least useful sentence
+    available — it is equally true of an expired card, a declined issuer and a
+    typo in the gateway's own reference.
+
+    This is TEXT THE CUSTOMER'S OWN PAYMENT PRODUCED, coming back to them. It is
+    not a payment instrument detail: it carries no figure, no token and no card
+    number, which is precisely the line `Amount`, `CurrencyCode`, `CardHolderName`,
+    `PaddedCardNo`, `BillingEmail`, `AuthCode`, `CardType` and `CardToken` sit on
+    the other side of. Adding these two does not widen what the route accepts in
+    any other respect — they are `.optional()`, so a callback without them is
+    unchanged, and they are read by `failureReasonFrom` which reduces them to a
+    capped, stripped string or to null.
+
+    ALL THREE KEYS ARE DECLARED, not just the two that are spelled correctly.
+    `ReponseMsg` is a MISSPELED DUPLICATE the gateway sends today, and a delivery
+    carrying only that one has to be able to say why it declined. Each is
+    optional on its own, so nothing here assumes which of them arrives.
+  */
+  ErrorMessage: z.string().optional(),
+  ResponseMsg: z.string().optional(),
+  ReponseMsg: z.string().optional(),
 });
+
+/**
+ * The longest failure text kept. Long enough for a real sentence plus a code,
+ * short enough that nothing becomes a paragraph on a status page.
+ */
+const MAX_FAILURE_REASON = 200;
+
+/**
+ * The gateway's own explanation of a failure, or null when it declined silently.
+ *
+ * `ErrorMessage` is the primary and `ResponseMsg` the fallback, because the
+ * gateway sends both today and there is no evidence either is reliably present —
+ * a delivery with only the misspelled `ReponseMsg` is entirely possible, and
+ * that is why all three are read.
+ *
+ * THREE THINGS ARE DONE TO IT, IN THIS ORDER, AND EACH IS A REAL DEFECT IF
+ * SKIPPED:
+ *   - CONTROL CHARACTERS ARE STRIPPED. The wire is form-encoded by a party we do
+ *     not control, and this text is rendered in a browser tab.
+ *   - WHITESPACE IS COLLAPSED. `Invalid+transaction` arrives with a literal plus
+ *     when a sender mis-encodes it, and `Invalid\ntransaction` from one that does
+ *     not — both would otherwise reach the page looking like the gateway's own
+ *     formatting.
+ *   - IT IS CAPPED. This is third-party text going into a stored column, and an
+ *     unbounded string is an unbounded row.
+ *
+ * The literal strings `null` and `undefined` are treated as ABSENT, not as text:
+ * the observed callback carries `StoreVerifyFlag=null` and `CustomMessage=null`
+ * as the strings "null", so a sender that means "no value" says so in writing and
+ * a naive read would show a customer the word "null" as the reason they were
+ * declined.
+ */
+function failureReasonFrom(wire: z.infer<typeof webhookSchema>): string | null {
+  const candidates = [wire.ErrorMessage, wire.ResponseMsg, wire.ReponseMsg];
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    const cleaned = candidate
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned === '' || cleaned.toLowerCase() === 'null' || cleaned.toLowerCase() === 'undefined') {
+      continue;
+    }
+    return cleaned.slice(0, MAX_FAILURE_REASON);
+  }
+  return null;
+}
 
 /**
  * Read the gateway's event time, tolerating its formatting.
@@ -262,6 +338,10 @@ export class AmberPayGatewayImpl implements AmberPayGateway {
       reference: wire.StudentID ?? null,
       status: PAYMENT_STATUS_OF_STATUS[wire.PaymentStatus],
       at: parseWireDate(wire.TransactionDate) ?? new Date().toISOString(),
+      // Carried only when the gateway actually declined — a success must not
+      // leave a reason behind, because a stale one reads as its verdict.
+      failureReason:
+        wire.PaymentStatus === 'Failed' ? failureReasonFrom(wire) : null,
     };
   }
 

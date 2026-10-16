@@ -29,7 +29,7 @@
  * selects casually.
  */
 
-import { randomInt } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { sealSecret, openSecret } from '../../utils/secrets.js';
 import { ValidationError } from '../../utils/errors.js';
 
@@ -90,6 +90,64 @@ export function isTransactionId(value: string): boolean {
   return [...value].every((character) => ID_ALPHABET.includes(character));
 }
 
+/* --- the status token ------------------------------------------------------ */
+
+/**
+ * How many random bytes a status token carries. 32 bytes = 256 bits.
+ *
+ * This is the one identifier in the system that IS a credential: it is minted
+ * for a browser that has no session and is the only thing that authorises the
+ * unauthenticated status read. 256 bits is past any enumeration concern by a
+ * wide margin, which is what is why it can be stored in the clear and read more
+ * than once (see migration 009 for why it is not single-use).
+ */
+export const STATUS_TOKEN_BYTES = 32;
+
+/** base64url of 32 bytes. Length is derived, not asserted twice. */
+export const STATUS_TOKEN_LENGTH = 43;
+
+/**
+ * The token's exact shape, so a malformed one can be refused with a 400 instead
+ * of being handed to the database as an equality probe against a unique index.
+ *
+ * It is base64url WITHOUT padding: `+` and `/` are the two characters that have
+ * to be percent-encoded to survive a query string, a fragment and a copy-paste,
+ * and a value that needs encoding in a URL is a value that will arrive mangled.
+ */
+export const STATUS_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * How long a minted status token stays readable.
+ *
+ * Deliberately NOT single-use — a customer who refreshes the page they just paid
+ * on must not be shown a dead link, so the token is read repeatedly until this
+ * window closes. 30 days is long enough for a forwarded thread or a re-opened
+ * browser and short enough that a link left in a chat log has stopped working.
+ * See `db/migrations/009_checkout_status_token.sql` for the full argument.
+ */
+export const STATUS_TOKEN_TTL_DAYS = 30;
+
+/** Mint a status token. `randomBytes` is CSPRNG-backed and has no modulo bias. */
+export function generateStatusToken(): string {
+  return randomBytes(STATUS_TOKEN_BYTES).toString('base64url');
+}
+
+/** Is this the shape of a token we minted? Used to refuse a malformed one early. */
+export function isStatusToken(value: string): boolean {
+  return STATUS_TOKEN.test(value);
+}
+
+/**
+ * When a token minted at `from` stops resolving.
+ *
+ * A function rather than a constant applied at the read site so the expiry is
+ * written once, with the rest of the row, and the public read is a plain
+ * equality probe with a comparison the database already has an operator for.
+ */
+export function statusTokenExpiry(from: Date = new Date()): Date {
+  return new Date(from.getTime() + STATUS_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
 /**
  * The customer's identifier, as the gateway echoes it back on the callback.
  *
@@ -147,6 +205,17 @@ export interface CheckoutSession {
   params: StandardCheckoutParams;
   /** Our transaction id, for correlating the callback. */
   transactionId: string;
+  /**
+   * The handle the CUSTOMER holds on this payment — the token the public status
+   * endpoint resolves, and the one the webhook route redirects a browser back
+   * with once the gateway answers.
+   *
+   * It exists because the gateway's redirect and its callback are the same URL:
+   * whoever lands there has no session, and no other value on this session is
+   * something they can carry. It is minted with the intent, stored beside it,
+   * and lives exactly as long as the intent does.
+   */
+  statusToken: string;
   /** True when produced locally rather than by the gateway. Never in production. */
   simulated?: boolean;
 }

@@ -1,13 +1,18 @@
+import express from 'express';
 import request from 'supertest';
 import { createApp } from '../app.js';
+import { createPaymentRouter } from './payments.js';
+import { errorHandler, notFoundHandler } from '../middleware/errorHandler.js';
 import { createInMemoryRepositories } from '../repositories/inMemory.js';
 import { issueAccessToken } from '../utils/tokens.js';
 import { forbiddenKeysIn } from '../test/privacy.js';
 import { CheckoutService } from '../services/gateway/checkout.service.js';
+import { sealExpectedCharge } from '../services/gateway/amberPayWire.js';
 import type { Repositories } from '../types/repository.js';
 import type { CheckoutIntentStore } from '../services/gateway/checkout.service.js';
 import type { AdaptorResponse, HttpMethod } from '../types/adaptor.js';
 import type { PolicyAttribute } from '../types/auth.js';
+import type { CheckoutStatusRow } from '../services/payments/paymentStatus.service.js';
 
 /**
  * A checkout that reaches no gateway and no database.
@@ -275,5 +280,118 @@ expect(JSON.stringify(res.body.payment)).not.toContain('250.00');
       .set('Authorization', `Bearer ${token(writePolicy)}`);
 
     expect(res.status).toBe(404);
+  });
+});
+
+/*
+  ★ THE ONLY ROUTE ON THIS SERVER WITH NO SESSION, AND IT IS NOT AN OMISSION.
+
+  Everything above is an operator acting inside a policy. This one is a customer
+  who has just handed over a card: no session, no uuid, no credentials — because
+  the gateway redirects them here through the webhook url, "the one address they
+  can be given". "The 256-bit token in the path IS the authorisation."
+
+  Which is precisely why these tests exist: the first one would still pass if a
+  `requireAuth` were added to this route by accident, and so would every other
+  test in the repository, while the customer page the gateway redirects to
+  started answering 401 in production. The narrowness is the security property.
+
+  The router is built directly rather than through `createApp`, because
+  `createApp` has no status-store seam: `createPaymentRouter` defaults it to the
+  Postgres store, and a test that let it would open a real pool.
+*/
+describe('GET /payments/status/:token — the public read', () => {
+  const TOKEN = 'kQ3vZx1NpJ7cR2wYbT9mL4dH6fG0sA8uE1iO5nP7qRj';
+
+  let store: { findByStatusToken: jest.Mock<Promise<CheckoutStatusRow | undefined>, [string]> };
+  let app: express.Express;
+
+  beforeEach(() => {
+    store = {
+      findByStatusToken: jest.fn<Promise<CheckoutStatusRow | undefined>, [string]>().mockResolvedValue(
+        undefined,
+      ),
+    };
+    app = express();
+    app.use(
+      '/api/v1',
+      createPaymentRouter({
+        payments: createInMemoryRepositories().payments,
+        checkout: stubCheckout(),
+        statusStore: store,
+      }),
+    );
+    app.use(notFoundHandler);
+    app.use(errorHandler);
+  });
+
+  function collect() {
+    store.findByStatusToken.mockResolvedValue({
+      transactionId: 'E09KUZXK6BZJ',
+      expectedSealed: sealExpectedCharge('250.00', 'JMD'),
+      outcome: 'collected',
+      failureReason: null,
+    });
+  }
+
+  it('answers a caller with NO session, because the token is the authorisation', async () => {
+    collect();
+
+    // No Authorization header at all — and this is the assertion, not the setup.
+    const res = await request(app).get(`/api/v1/payments/status/${TOKEN}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: 'collected',
+      reference: 'E09KUZXK6BZJ',
+      reason: null,
+      amount: '250.00',
+      currency: 'JMD',
+    });
+    // The token in the PATH is the whole of the credential, and it is the token
+    // the store is asked for — nothing else identifies the payment.
+    expect(store.findByStatusToken).toHaveBeenCalledWith(TOKEN);
+  });
+
+  it('still requires a session for every OTHER read on this router', async () => {
+    // The pair to the test above. Without `requireAuth` on this one route the
+    // anonymous read above is a gap; without it on the others, it is a breach.
+    const res = await request(app).get('/api/v1/payments/pay-1');
+
+    expect(res.status).toBe(401);
+  });
+
+  it('answers 400 for a token that is not the shape of one we mint', async () => {
+    /*
+      "A MALFORMED TOKEN IS A 400, THROWN BY THE SERVICE ... a malformed token is
+      a client's bug worth telling it about."  Asserted as a 400 and not a 404
+      because the endpoint deliberately distinguishes the two — and the store
+      must never see it.
+    */
+    const res = await request(app).get('/api/v1/payments/status/not-a-status-token');
+
+    expect(res.status).toBe(400);
+    expect(store.findByStatusToken).not.toHaveBeenCalled();
+  });
+
+  it('answers 200 and `unknown` for a well-formed token that names nothing', async () => {
+    /*
+      ★ NO 404.
+
+      "EVERYTHING ELSE IS A 200 ... a 404 there renders an error page for a
+      payment that went through perfectly well."  This is the case the whole
+      vocabulary exists for: a customer who has just paid, whose callback has not
+      landed yet. It must look like waiting, because it is waiting.
+    */
+    const res = await request(app).get(`/api/v1/payments/status/${TOKEN}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: 'unknown',
+      reference: null,
+      reason: null,
+      amount: null,
+      currency: null,
+    });
   });
 });

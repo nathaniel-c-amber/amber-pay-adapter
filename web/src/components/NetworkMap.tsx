@@ -37,6 +37,20 @@ const GATEWAY = { x: 150, y: AXIS_Y };
 const HUB = { x: 460, y: AXIS_Y };
 const LEDGER = { x: 770, y: AXIS_Y };
 
+/*
+  The two spans of the pipe, and their midpoints.
+
+  The chevrons are placed from these rather than by hand. The single arrow was at
+  `HUB.x + 76` — 48px past the hub, which is the START of the second span rather
+  than its middle — so it read as a mark beside the hub instead of as the
+  direction of travel. Deriving the position from the same numbers the line is
+  drawn from means the two cannot drift apart again, and gives the first span the
+  arrow it never had.
+*/
+const SPAN_ONE = { from: GATEWAY.x + NODE_R + 6, to: HUB.x - NODE_R - 6 };
+const SPAN_TWO = { from: HUB.x + NODE_R + 6, to: LEDGER.x - NODE_R - 6 };
+const midpoint = (span: { from: number; to: number }) => (span.from + span.to) / 2;
+
 /** Termini that are not part of the gateway-to-ledger pipeline. */
 const OFF_PIPELINE = new Set(["audit-trail"]);
 
@@ -50,7 +64,7 @@ const OFF_PIPELINE = new Set(["audit-trail"]);
    `data-state` on the route group. Every part of the route draws from it, so
    state cannot be applied to a line but forgotten on the node. */
 const ROUTE =
-  "group cursor-pointer outline-none transition-opacity duration-[180ms] ease-out [--node-ink:var(--color-ink-4)] data-[dim=true]:opacity-[0.32] data-[state=healthy]:[--node-ink:var(--color-line-green)] data-[state=degraded]:[--node-ink:var(--color-state-delayed)] data-[state=failed]:[--node-ink:var(--color-state-suspended)]";
+  "group cursor-pointer outline-none transition-opacity duration-[180ms] ease-out [--node-ink:var(--color-ink-4)] data-[state=healthy]:[--node-ink:var(--color-line-green)] data-[state=degraded]:[--node-ink:var(--color-state-delayed)] data-[state=failed]:[--node-ink:var(--color-state-suspended)]";
 
 const SPOKE =
   "[stroke:var(--node-ink)] [stroke-width:3] [stroke-linecap:round] [transition:stroke-width_0.18s_ease-out] group-data-[active=true]:[stroke-width:5.5] group-data-[state=degraded]:[stroke-dasharray:7_6] group-data-[state=failed]:[stroke-dasharray:4_5] group-data-[state=failed]:animate-hatch group-data-[state=stopped]:[stroke-dasharray:2_7] group-data-[state=stopped]:[stroke-opacity:0.7] group-data-[state=unknown]:[stroke-dasharray:2_7] group-data-[state=unknown]:[stroke-opacity:0.7]";
@@ -172,39 +186,83 @@ export function NetworkMap({
 
         {/* The pipe, in two spans so the hub sits between them. One group, so the
             state ink is set once and both spans and the node draw from it. */}
-        <g className={ROUTE} data-state={state} data-active={active} data-dim={false} aria-hidden>
-          <line className={SPOKE} x1={GATEWAY.x + NODE_R + 6} y1={AXIS_Y} x2={HUB.x - NODE_R - 6} y2={AXIS_Y} />
-          <line className={SPOKE} x1={HUB.x + NODE_R + 6} y1={AXIS_Y} x2={LEDGER.x - NODE_R - 6} y2={AXIS_Y} />
+        <g className={ROUTE} data-state={state} data-active={active} aria-hidden>
+          <line className={SPOKE} x1={SPAN_ONE.from} y1={AXIS_Y} x2={SPAN_ONE.to} y2={AXIS_Y} />
+          <line className={SPOKE} x1={SPAN_TWO.from} y1={AXIS_Y} x2={SPAN_TWO.to} y2={AXIS_Y} />
         </g>
 
-        {/* Flow direction. A plain chevron rather than an animation: an arrow that
-            keeps pointing the way money goes costs nothing, and one more looping
-            animation is one more thing to suppress under reduced motion. */}
-        <path
-          className="[stroke:var(--color-ink-4)] [stroke-width:2] [fill:none] [stroke-linecap:round] [stroke-linejoin:round]"
-          d={`M ${HUB.x + 76} ${AXIS_Y - 7} l 9 7 l -9 7`}
-          aria-hidden
-        />
+        {/*
+          Flow direction, one chevron per span, each centred on the line it
+          annotates.
+
+          A plain chevron rather than an animation: an arrow that keeps pointing
+          the way money goes costs nothing, and one more looping animation is one
+          more thing to suppress under reduced motion.
+
+          TWO OF THEM, because the pipeline has two segments and a single glyph
+          cannot describe both. The old one sat at the head of the second segment
+          with nothing on the first, so a reader following the line from the
+          gateway got no cue at all until they were most of the way across.
+        */}
+        {[SPAN_ONE, SPAN_TWO].map((span) => (
+          <path
+            key={span.from}
+            className="[stroke:var(--color-ink-4)] [stroke-width:2] [fill:none] [stroke-linecap:round] [stroke-linejoin:round]"
+            d={`M ${midpoint(span) - 4.5} ${AXIS_Y - 7} l 9 7 l -9 7`}
+            aria-hidden
+          />
+        ))}
 
         {/* The gateway carries no state ink: it is the platform the route starts
-            from, not a route. */}
-        <g aria-hidden>
+            from, not a route. That is a COLOUR decision and it stops there —
+            the node is still a control, because an operator pointing at "why is
+            this here?" deserves an answer rather than a dead glyph. */}
+        <g
+          className={cx(ROUTE, "hover:opacity-100")}
+          data-state={state}
+          data-active={active}
+          role="button"
+          tabIndex={0}
+          aria-label="Amber Pay payment gateway — show the whole route"
+          onClick={() => onFocus(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onFocus(null);
+            }
+          }}
+        >
           <circle
             className="[fill:var(--color-midnight-3)] [stroke:var(--color-ink-1)] [stroke-width:2]"
             cx={GATEWAY.x}
             cy={AXIS_Y}
             r={NODE_R}
           />
-          <text className={LABEL_CLASS} x={GATEWAY.x} y={AXIS_Y + NODE_R + 26} textAnchor="middle" dominantBaseline="middle">
+          <circle className={NODE_FOCUS} cx={GATEWAY.x} cy={AXIS_Y} r={NODE_R + 11} />
+          <text className={LABEL_CLASS} x={GATEWAY.x} y={AXIS_Y + NODE_R + 26} textAnchor="middle" dominantBaseline="middle" aria-hidden>
             Amber Pay
           </text>
-          <text className={SUB_CLASS} x={GATEWAY.x} y={AXIS_Y + NODE_R + 44} textAnchor="middle" dominantBaseline="middle">
+          <text className={SUB_CLASS} x={GATEWAY.x} y={AXIS_Y + NODE_R + 44} textAnchor="middle" dominantBaseline="middle" aria-hidden>
             payment gateway
           </text>
         </g>
 
         {/* The hub, for the same reason. */}
-        <g aria-hidden>
+        <g
+          className={cx(ROUTE, "hover:opacity-100")}
+          data-state={state}
+          data-active={active}
+          role="button"
+          tabIndex={0}
+          aria-label="Connection hub, this deployment — show the whole route"
+          onClick={() => onFocus(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onFocus(null);
+            }
+          }}
+        >
           <circle
             className="[fill:none] [stroke:var(--color-rule-enamel)] [stroke-width:1.5]"
             cx={HUB.x}
@@ -217,10 +275,11 @@ export function NetworkMap({
             cy={AXIS_Y}
             r={NODE_R}
           />
-          <text className={LABEL_CLASS} x={HUB.x} y={AXIS_Y + NODE_R + 26} textAnchor="middle" dominantBaseline="middle">
+          <circle className={NODE_FOCUS} cx={HUB.x} cy={AXIS_Y} r={NODE_R + 11} />
+          <text className={LABEL_CLASS} x={HUB.x} y={AXIS_Y + NODE_R + 26} textAnchor="middle" dominantBaseline="middle" aria-hidden>
             Hub
           </text>
-          <text className={SUB_CLASS} x={HUB.x} y={AXIS_Y + NODE_R + 44} textAnchor="middle" dominantBaseline="middle">
+          <text className={SUB_CLASS} x={HUB.x} y={AXIS_Y + NODE_R + 44} textAnchor="middle" dominantBaseline="middle" aria-hidden>
             this deployment
           </text>
         </g>
@@ -231,7 +290,6 @@ export function NetworkMap({
           className={ROUTE}
           data-state={state}
           data-active={active}
-          data-dim={false}
           role="button"
           tabIndex={0}
           aria-pressed={active}

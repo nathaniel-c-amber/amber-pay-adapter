@@ -2,16 +2,16 @@
 # Amber Pay Ledger — full deployment stack
 #
 # Services:
-#   db    — PostgreSQL 16 (persistent volume, healthchecked)
-#   api   — backend server (Node 20, built from server/Dockerfile)
-#   web   — frontend SPA (nginx, built from web/Dockerfile)
-#   ngrok — public tunnel for cross-internet testing (opt-in profile)
+#   db          — PostgreSQL 16 (persistent volume, healthchecked)
+#   api         — backend server (Node 20, built from server/Dockerfile)
+#   web         — frontend SPA (nginx, built from web/Dockerfile)
+#   cloudflared — public tunnel for cross-internet testing (opt-in profile)
 #
 # Secrets are read from a root `.env` file (docker-compose loads it
 # automatically). See `.env.example` / README for the required vars.
 # NEVER commit real secrets.
 #
-# The ngrok tunnel is opt-in so a normal `docker compose up` stays local.
+# The Cloudflare tunnel is opt-in so a normal `docker compose up` stays local.
 # Start it with:
 #   docker compose --profile tunnel up --build
 # It exposes the `web` service, which already proxies /api to `api`, so the
@@ -65,8 +65,12 @@ services:
       INVITE_TTL: ${INVITE_TTL:-48h}
       TWO_FACTOR_TTL: ${TWO_FACTOR_TTL:-5m}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
-      # Reverse proxies in front of the API. Raise to 2 when the ngrok tunnel
-      # profile is active (nginx + ngrok). See server/.env.example.
+      # Reverse proxies in front of the API. nginx is the only hop that
+      # appends to X-Forwarded-For, and it does so whether or not the tunnel
+      # profile is active: cloudflared reaches `web` over the compose network
+      # and does not add an application-level hop. Raise to 2 only if a hop
+      # that appends its own X-Forwarded-For entry is inserted in front of
+      # nginx. See server/.env.example.
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
       # The ONE organization this deployment serves. Every stored row and every
       # generated policy attribute must agree on this value; when they disagree
@@ -89,6 +93,15 @@ services:
       # Amber Pay gateway
       AMBER_PAY_BASE_URL: ${AMBER_PAY_BASE_URL:-https://api.amberpay.example.com}
       AMBER_PAY_WEBHOOK_SECRET: ${AMBER_PAY_WEBHOOK_SECRET:-change-me-webhook-secret}
+      # OAuth client id used for the checkout handoff. Deliberately has NO
+      # default: `config/env.ts` requires it, so an unset value must fail the
+      # deployment loudly at boot rather than surface later as a rejected
+      # request against a real gateway.
+      AMBER_PAY_CLIENT_ID: ${AMBER_PAY_CLIENT_ID}
+      # Bearer token for server-to-server calls against the gateway. Also
+      # required with no default, for the same reason: a missing credential must
+      # fail the deployment at boot, not at the first request that needs it.
+      AMBER_PAY_API_TOKEN: ${AMBER_PAY_API_TOKEN}
       # No real gateway upstream yet, so POST /payments 502s by default. Set
       # true in the root .env to fabricate links locally. The API additionally
       # refuses this in production, so the public `tunnel` profile cannot be
@@ -181,33 +194,62 @@ services:
   #   docker compose --profile tunnel up --build
   #
   # Tunnels the `web` service (nginx), which proxies /api to `api`, so one
-  # public URL serves both the SPA and the API. Set NGROK_AUTHTOKEN in `.env`
-  # (required for reserved domains and higher limits; optional for ephemeral
-  # URLs). Set NGROK_DOMAIN to use a reserved/static domain.
-  ngrok:
-    image: ngrok/ngrok:latest
+  # public URL serves both the SPA and the API.
+  #
+  # Prefer this over ngrok on a network that inspects TLS (Zscaler and
+  # friends): cloudflared dials out to the Cloudflare edge and the origin leg
+  # is a connection to `web` on the compose network, so no self-signed or
+  # re-signed origin certificate has to be trusted by the container.
+  #
+  # Auth is the tunnel token from the Zero Trust dashboard (Networks ->
+  # Tunnels -> create a tunnel -> Docker). It is a secret: set it in `.env`
+  # as CLOUDFLARE_TUNNEL_TOKEN. The public hostname is configured in the
+  # dashboard's Hostname routes tab (Networks -> Routes; renamed from "Public
+  # Hostname" in older docs) as `http://web:80`, not here, so this
+  # service deliberately takes no domain variable.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
     profiles:
       - tunnel
     depends_on:
       - web
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
-      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
-    # Use a reserved/static domain when NGROK_DOMAIN is set; otherwise ngrok
-    # assigns a random ephemeral URL. `$$` escapes the var for the container
-    # shell so compose does not interpolate it.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        if [ -n "$$NGROK_DOMAIN" ]; then
-          exec ngrok http web:80 --log=stdout --domain "$$NGROK_DOMAIN"
-        else
-          exec ngrok http web:80 --log=stdout
-        fi
-    ports:
-      - "4040:4040"
+    # `--no-autoupdate` keeps the pinned image version: an in-container
+    # self-update restarts the process mid-session for no benefit here.
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      - amber
+
+  # Ephemeral, account-less tunnel: no domain and no Cloudflare account needed,
+  # so this is the fallback when the account has no zone to attach a hostname
+  # route to. Opt-in separately from `tunnel`:
+  #
+  #   docker compose --profile quick up -d cloudflared-quick
+  #
+  # TUNNEL_ORIGIN defaults to `http://web:80`, i.e. from inside the compose
+  # network. Point it at the host's LAN address (e.g.
+  # `http://172.20.40.114:8080`) when cloudflared runs on a *different* device
+  # than this stack: `web` publishes 8080 on all host interfaces and nginx
+  # still proxies /api to `api`, so one URL serves the SPA and the API either
+  # way. Verify that address answers before blaming the tunnel:
+  #
+  #   curl http://172.20.40.114:8080/
+  #
+  # Caveats that make this unsuitable beyond ad-hoc testing: the assigned
+  # https://<random>.trycloudflare.com hostname changes on every restart, so
+  # CORS_ORIGINS and APP_BASE_URL must be re-set each time; there is no uptime
+  # guarantee and a 200 in-flight request cap; and the control plane lives at
+  # api.trycloudflare.com, which a TLS-inspecting corporate proxy may sign with
+  # a CA the container does not trust. The `tunnel` profile above avoids all
+  # three, which is why it is the preferred option once a domain is available.
+  cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles:
+      - quick
+    depends_on:
+      - web
+    command: tunnel --no-autoupdate --url ${TUNNEL_ORIGIN:-http://web:80}
     networks:
       - amber
 

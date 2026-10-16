@@ -224,27 +224,40 @@ describe('privacy constraint', () => {
     expect(existsSync(join(serverRoot, 'jest.config.js'))).toBe(true);
     expect(existsSync(join(serverRoot, 'src/services/adaptors/quickbooksWire.ts'))).toBe(true);
     expect(existsSync(join(serverRoot, 'src/services/gateway/amberPayWire.ts'))).toBe(true);
+    expect(existsSync(join(serverRoot, 'src/services/payments/paymentStatus.service.ts'))).toBe(true);
 
     /**
-     * The TWO files permitted to declare a figure, and nothing else.
+     * The interfaces permitted to declare a figure, and nothing else.
      *
      * The list grew from one entry to two, so it is enumerated here rather than
      * globbed — an allow-list that could match a new file automatically is not an
      * allow-list, it is a hole with extra steps. Every addition has to be
      * argued here, in the test, where the next person will read it.
      *
-     *   quickbooksWire.ts  — what the LEDGER says is owed. QuickBooks requires
+     *   QboInvoice, QboPaymentLine, QboPaymentRequest, QboPaymentCreated
+     *                      — what the LEDGER says is owed. QuickBooks requires
      *                        `TotalAmt` to apply a payment to an invoice, so
      *                        there is no way to write one without the figure.
-     *   amberPayWire.ts    — what the CUSTOMER was asked to pay. The gateway
+     *   GenerateSignatureRequest, StandardCheckoutParams, CreateCheckoutInput,
+     *   CreatePaymentInput, ExpectedCharge
+     *                      — what the CUSTOMER was asked to pay. The gateway
      *                        requires `Amount` and `CurrencyCode` to sign a
      *                        transaction at all, and its documentation requires
      *                        storing them so the amount charged can be
-     *                        cross-checked against what was expected.
+     *                        cross-checked against what was expected. The last
+     *                        three are the same fact at the other boundaries it
+     *                        crosses: the request DTOs, and the sealed value.
+     *   CustomerPaymentStatusView
+     *                      — what that figure is shown back AS. The customer
+     *                        typed it, was charged it, and is redirected to a
+     *                        page that has to tell them so; the read is scoped to
+     *                        one payment by a 256-bit token and carries nothing
+     *                        else. `services/payments/paymentStatus.service.ts`
+     *                        argues it in full.
      *
-     * Different questions, different files. What neither may do is leave its
-     * file: no domain type, no event, no failure, no log line, no response body
-     * may carry one — which is what the scan below enforces.
+     * Different questions, different files. What none of them may do is let a
+     * figure OUT: no domain type, no event, no failure, no log line may carry
+     * one — which is what the scan below enforces.
      */
     const ALLOWED = new Set([
       'QboInvoice',
@@ -253,10 +266,24 @@ describe('privacy constraint', () => {
       'QboPaymentCreated',
       'GenerateSignatureRequest',
       'StandardCheckoutParams',
+      'CreateCheckoutInput',
+      'CreatePaymentInput',
+      'ExpectedCharge',
+      'CustomerPaymentStatusView',
     ]);
 
-    /** Spelled the way the accounting API spells them, plus the local casing. */
-    const MONEY_FIELD = /\b(TotalAmt|Balance|UnappliedAmt|Amount)\b\s*[?]?\s*:/;
+    /*
+      ★ CASE-INSENSITIVE NOW, AND THAT IS A FIX, NOT A LOOSENING.
+
+      The pattern used to match `Amount` but not `amount`, so `ExpectedCharge`,
+      `CreateCheckoutInput` and `CreatePaymentInput` — three interfaces that
+      really do hold a figure, and really were invisible to this scan — passed
+      purely on casing. That is the exact decay this block exists to prevent: the
+      control agreed with itself rather than with the code. Making it case-blind
+      caught those three, and they are argued for in the allow-list above, which
+      is a more honest state than being unguarded.
+    */
+    const MONEY_FIELD = /\b(TotalAmt|Balance|UnappliedAmt|Amount)\b\s*[?]?\s*:/i;
 
     function serverSourceFiles(dir: string): string[] {
       return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -303,6 +330,9 @@ describe('privacy constraint', () => {
       const sources = [
         'src/services/adaptors/quickbooksWire.ts',
         'src/services/gateway/amberPayWire.ts',
+        'src/services/gateway/checkout.service.ts',
+        'src/services/payments/payment.service.ts',
+        'src/services/payments/paymentStatus.service.ts',
       ].map((relative) =>
         readFileSync(join(serverRoot, relative), 'utf8')
           .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -326,6 +356,9 @@ describe('privacy constraint', () => {
           ),
         ),
       );
+      // Nothing may be allow-listed that does not actually hold a figure: an
+      // allow-list entry with no figure behind it is a name that could be given
+      // one later with nothing left here to catch it.
       expect(new Set(moneyBearing)).toEqual(ALLOWED);
     });
   });

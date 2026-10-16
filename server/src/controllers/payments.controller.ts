@@ -7,6 +7,7 @@ import { env } from '../config/env.js';
 import { GATEWAY_CURRENCIES, DECIMAL_AMOUNT, STUDENT_ID } from '../services/gateway/amberPayWire.js';
 import { OPAQUE_REFERENCE } from '../services/adaptors/quickbooksWire.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
+import type { PaymentStatusService } from '../services/payments/paymentStatus.service.js';
 
 const createPaymentBodySchema = z.object({
   invoiceId: z.string().min(1),
@@ -58,6 +59,13 @@ const createPaymentBodySchema = z.object({
 
 export interface PaymentsControllerDeps {
   service: PaymentService;
+  /**
+   * The unauthenticated status read. Optional on the DI seam only so an existing
+   * test that injects nothing is not forced to know about it; the route ALWAYS
+   * supplies one, and the handler refuses rather than inventing a result if it
+   * does not.
+   */
+  status?: PaymentStatusService;
 }
 
 export interface PaymentsController {
@@ -72,6 +80,15 @@ export interface PaymentsController {
    * reference rather than our payment's uuid.
    */
   getPaymentByTransaction: RequestHandler;
+  /**
+   * GET /api/v1/payments/status/:token — NO SESSION, by design.
+   *
+   * The customer who has just paid holds no uuid, no operator credentials and no
+   * transaction id, so this is the only read they can make about their own
+   * payment. See `services/payments/paymentStatus.service.ts` for what it may
+   * return and, more importantly, for what it may not.
+   */
+  getPaymentStatus: RequestHandler;
 }
 
 /**
@@ -122,6 +139,19 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
           transactionId: session.transactionId,
           ...(session.simulated === true ? { simulated: true } : {}),
         },
+        /*
+          THE CUSTOMER'S HANDLE ON THIS PAYMENT.
+
+          Inside `checkout`, NOT in `params`. The console is authenticated and
+          needs it to reach the status page on the customer's behalf; the browser
+          posts `params` straight to the GATEWAY, and a credential this deployment
+          mints has no business being posted to a third party's form — the same
+          reason the bearer token is kept out of it.
+
+          Held by the console, and by the gateway's own redirect when it brings
+          the customer back, because that redirect is this same webhook url.
+        */
+        statusToken: session.statusToken,
       });
     }),
 
@@ -156,6 +186,30 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
         throw new NotFoundError('Payment not found');
       }
       res.status(200).json({ payment });
+    }),
+
+    getPaymentStatus: asyncHandler(async (req, res) => {
+      /*
+        A MALFORMED TOKEN IS A 400, THROWN BY THE SERVICE.
+
+        Not here, because the rule — the exact length and alphabet a minted token
+        has — belongs with the code that mints them. This handler adds no
+        validation of its own, so there is one definition of "a token" rather than
+        two that can disagree about where its edges are.
+
+        EVERYTHING ELSE IS A 200. A token of the right shape that names nothing
+        resolves to `status: 'unknown'` rather than a 404, which is not a
+        softening but the correct reading: at 256 bits there is nothing to
+        enumerate, and the one thing this endpoint will genuinely be asked about
+        by a customer who has just paid is a payment whose callback has not
+        landed yet. A 404 there renders an error page for a payment that went
+        through perfectly well.
+      */
+      if (!deps.status) {
+        throw new NotFoundError('Payment status is not available');
+      }
+      const view = await deps.status.lookup(req.params['token'] ?? '');
+      res.status(200).json(view);
     }),
   };
 }

@@ -29,7 +29,7 @@ coverage/
 .DS_Store
 
 # Design tooling state
-.impeccable/
+.impeccable
 .impeccable/review
 .impeccable/mocks
 
@@ -37,8 +37,9 @@ coverage/
 .slim/deepwork/
 
 # Other
-.opencode/
+.opencode
 .slim/
 .github/
 .vscode/
 design/
+dev/

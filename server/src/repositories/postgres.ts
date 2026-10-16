@@ -29,8 +29,14 @@ import type {
   DeploymentSettingsPatch,
 } from '../models/deploymentSettings.js';
 import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
-import { DuplicateTransactionIdError } from '../services/gateway/checkout.service.js';
+import { DuplicateTransactionIdError, DuplicateStatusTokenError } from '../services/gateway/checkout.service.js';
 import type { CheckoutIntentStore } from '../services/gateway/checkout.service.js';
+import type {
+  CheckoutStatusRow,
+  CustomerPaymentStatus,
+  PaymentOutcomeStore,
+  PaymentStatusStore,
+} from '../services/payments/paymentStatus.service.js';
 
 /**
  * Postgres-backed repository implementations. Exercised at runtime when a
@@ -770,8 +776,15 @@ function toPayment(row: PaymentRow): Payment {
  * constraint is called. Matching on the constraint NAME rather than the SQLSTATE
  * alone means an unrelated unique violation is not silently reported as a
  * collision, which would send the caller round the retry loop for nothing.
+ *
+ * It implements THREE contracts, because they are three questions about one row
+ * and they must not be able to disagree: the write (what a checkout needs), the
+ * status read (what a customer needs), and the outcome write (what the webhook
+ * processor needs). One class, one table, one place that knows its columns.
  */
-export class PostgresCheckoutIntentStore implements CheckoutIntentStore {
+export class PostgresCheckoutIntentStore
+  implements CheckoutIntentStore, PaymentStatusStore, PaymentOutcomeStore
+{
   constructor(private readonly pool: Pool) {}
 
   async create(input: {
@@ -779,16 +792,34 @@ export class PostgresCheckoutIntentStore implements CheckoutIntentStore {
     transactionId: string;
     studentId: string;
     expectedSealed: Buffer;
+    statusToken: string;
+    statusTokenExpiresAt: Date;
   }): Promise<void> {
     try {
       await this.pool.query(
-        `INSERT INTO checkout_intents (organization_id, transaction_id, student_id, expected_sealed)
-         VALUES ($1, $2, $3, $4)`,
-        [input.organizationId, input.transactionId, input.studentId, input.expectedSealed],
+        `INSERT INTO checkout_intents
+           (organization_id, transaction_id, student_id, expected_sealed,
+            status_token, status_token_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          input.organizationId,
+          input.transactionId,
+          input.studentId,
+          input.expectedSealed,
+          input.statusToken,
+          input.statusTokenExpiresAt,
+        ],
       );
     } catch (err) {
       if (isUniqueViolation(err, 'checkout_intents_unique')) {
         throw new DuplicateTransactionIdError(input.transactionId);
+      }
+      // A token collision is reported as itself, not as an id collision. At 256
+      // bits it is not a thing that happens; but if it ever did, retrying with a
+      // fresh transaction id would be the wrong repair — the token is what two
+      // checkouts would be sharing, and it has to be the token that is redrawn.
+      if (isUniqueViolation(err, 'checkout_intents_status_token')) {
+        throw new DuplicateStatusTokenError();
       }
       throw err;
     }
@@ -797,22 +828,104 @@ export class PostgresCheckoutIntentStore implements CheckoutIntentStore {
   async findByTransactionId(
     organizationId: string,
     transactionId: string,
-  ): Promise<{ studentId: string } | undefined> {
-    const result = await this.pool.query<{ student_id: string }>(
-      `SELECT student_id FROM checkout_intents
+  ): Promise<{ studentId: string; statusToken: string | null } | undefined> {
+    const result = await this.pool.query<{ student_id: string; status_token: string | null }>(
+      `SELECT student_id, status_token FROM checkout_intents
         WHERE organization_id = $1 AND transaction_id = $2`,
       [organizationId, transactionId],
     );
     const row = result.rows[0];
     /*
-      ONLY THE STUDENT COMES BACK, and deliberately: attributing a callback needs
-      to know WHO it was for, not what was expected. The expected charge lives
-      inside the sealed column (see migration 007) and is read by a separate,
-      explicit call when a cross-check actually runs — so a routine lookup never
-      unseals a figure, and never has to invent a currency it did not read.
+      The EXPECTED CHARGE does not come back, and deliberately: attributing a
+      callback needs to know WHO it was for, not what was expected. The figure
+      lives inside the sealed column (see migration 007) and is read by a separate,
+      explicit call when something actually needs it drawn — so a routine lookup
+      never unseals a figure, and never has to invent a currency it did not read.
+
+      `status_token` DOES come back, because the callback route is also the
+      redirect route: the same delivery needs the customer to attribute the
+      payment AND the handle to send their browser to, and reading them separately
+      would be two chances for the row to be missing in between.
     */
-    return row === undefined ? undefined : { studentId: row.student_id };
+    return row === undefined
+      ? undefined
+      : { studentId: row.student_id, statusToken: row.status_token };
   }
+
+  /**
+   * The public status read. One equality probe on a unique index, and the expiry
+   * is compared HERE rather than in application code so an expired token is
+   * indistinguishable from one that never existed — which is the point, and is
+   * why it is not a filter applied after the row is read.
+   */
+  async findByStatusToken(token: string): Promise<CheckoutStatusRow | undefined> {
+    const result = await this.pool.query<{
+      transaction_id: string;
+      expected_sealed: Buffer;
+      outcome: string | null;
+      failure_reason: string | null;
+    }>(
+      `SELECT transaction_id, expected_sealed, outcome, failure_reason
+         FROM checkout_intents
+        WHERE status_token = $1 AND status_token_expires_at > now()`,
+      [token],
+    );
+    const row = result.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      transactionId: row.transaction_id,
+      expectedSealed: row.expected_sealed,
+      // Narrowed against the persisted vocabulary rather than cast. The column
+      // has a CHECK constraint, but a value this process does not recognise must
+      // not be reported to a customer as a state it never described.
+      outcome: isPersistedOutcome(row.outcome) ? row.outcome : null,
+      failureReason: row.failure_reason,
+    };
+  }
+
+  /**
+   * Record what the gateway decided about a payment, so the customer's own page
+   * can say so.
+   *
+   * Org-scoped on `(organization_id, transaction_id)` and NOT on the token: the
+   * writer is the webhook processor, which knows the transaction id and the
+   * deployment's organization, and matching the callback against the intent by
+   * its own id is exactly the correlation the whole table exists for.
+   *
+   * `WHERE settled_at IS NULL` makes the write idempotent in the same direction
+   * the rest of the flow is: a repeated callback cannot move a settled payment
+   * backwards, and the row count says whether it changed anything.
+   */
+  async recordOutcome(input: {
+    organizationId: string;
+    transactionId: string;
+    outcome: Exclude<CustomerPaymentStatus, 'unknown'>;
+    failureReason: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE checkout_intents
+          SET outcome = $3,
+              failure_reason = $4,
+              settled_at = now()
+        WHERE organization_id = $1 AND transaction_id = $2 AND settled_at IS NULL`,
+      [input.organizationId, input.transactionId, input.outcome, input.failureReason],
+    );
+  }
+}
+
+/**
+ * Is this a value the `outcome` column can legally hold?
+ *
+ * A runtime narrowing, not a cast: the CHECK constraint in migration 009 is the
+ * database's promise, and this is the same promise made by the process that
+ * reads it. An unrecognised value becomes "no verdict yet", which is a state a
+ * customer page can render honestly — whereas passing it through would put a
+ * string on the wire that the SPA has no branch for.
+ */
+function isPersistedOutcome(
+  value: string | null,
+): value is Exclude<CustomerPaymentStatus, 'unknown'> {
+  return value === 'collected' || value === 'failed' || value === 'pending';
 }
 
 export class PostgresPaymentRepository implements PaymentRepository {

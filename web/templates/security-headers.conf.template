@@ -16,7 +16,7 @@
 # reachable over plain HTTP on localhost (docker compose publishes :8080), and
 # that directive rewrites same-origin subresource requests to https://, which
 # would break every asset load locally. HTTPS is enforced by the HSTS header
-# below once the app is reached over TLS (ngrok / a real ingress).
+# below once the app is reached over TLS (Cloudflare Tunnel / a real ingress).
 #
 # There is deliberately no `X-XSS-Protection`. It is deprecated, and current
 # browser guidance is to omit it or send `0`; the CSP below is the real control.
@@ -64,5 +64,5 @@ add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
 
 # Only honoured when the response arrives over TLS, so it is inert on localhost
-# and effective behind the ngrok tunnel or a real ingress.
+# and effective behind the Cloudflare tunnel or a real ingress.
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;

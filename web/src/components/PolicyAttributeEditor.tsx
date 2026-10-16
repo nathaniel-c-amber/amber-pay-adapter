@@ -143,7 +143,17 @@ const SEP = '\u0000';
 const key = (a: { scope: string; organizationId: string }): string => `${a.scope}${SEP}${a.organizationId}`;
 
 const scopeLabel = (scope: string): string => (scope === "*" ? "all scopes" : scope);
-const orgLabel = (org: string): string => (org === "*" ? "all organizations" : org);
+/*
+  "ANY organization", not "all organizations".
+
+  The wording describes the GRANT ("unrestricted"), never the shape of the
+  product. A deployment serves one organization, so an "all organizations"
+  label states a plurality that does not exist — the same correction made to
+  the policy labels in `utils/policyScopes.ts`. This text is only reached when
+  more than one organization is genuinely in play, which in a one-org
+  deployment means a stale grant an operator has to see.
+*/
+const orgLabel = (org: string): string => (org === "*" ? "any organization" : org);
 
 interface Row {
   scope: string;
@@ -222,11 +232,28 @@ export function PolicyAttributeEditor({
       return row;
     };
 
-    // The account's own rows, so an untouched row round-trips unchanged.
+    /*
+      The account's own rows, so an untouched row round-trips unchanged.
+
+      `baselineActions` AND `onAccount` ONLY. This loop must not touch `actions`.
+
+      It used to set `row.actions = [...a.actions]` as well, which made clearing a
+      row IMPOSSIBLE: `setRow` drops a row from `value` once its last action is
+      unticked (the wire schema forbids an attribute with no actions), and on the
+      next render this loop seeded the row straight back from the account — so
+      unticking the final action silently re-ticked the whole row. Because every
+      other row still held grants, `draft` was never empty, Save stayed enabled,
+      and the operator saw a tick spring back with no error anywhere. Verified in
+      the browser against a real account: unticking 3 of 4 stuck, the 4th put all
+      4 back.
+
+      `value` is the DRAFT and is therefore the only authority on what is ticked.
+      The two callers both seed `value` from the account on open, so nothing that
+      should render as granted renders unticked.
+    */
     for (const a of baseline) {
       const row = ensure(a.scope, a.organizationId);
       row.baselineActions = [...a.actions];
-      row.actions = [...a.actions];
       row.onAccount = true;
     }
     // The draft wins over the account, because that is what is being edited.
@@ -243,10 +270,10 @@ export function PolicyAttributeEditor({
     /*
       And the real organizations this deployment serves, crossed with every scope,
       so a grant is never defaulted onto `*`. A super admin's own attributes are
-      `*` / `*`; without this an invite would default to ALL ORGANIZATIONS, which in
-      a one-deployment-per-organization product is the wrong grant by default — and
-      one nobody would notice, because a wildcard resolves to everything and so
-      looks correct on screen.
+      `*` / `*`; without this an invite would default to an unrestricted
+      organization, which in a one-deployment-per-organization product is the
+      wrong grant by default — and one nobody would notice, because a wildcard
+      resolves to everything and so looks correct on screen.
 
       With nothing known, the organizations already in play are used, so an editor
       rendered without a directory still shows a coherent grid.
