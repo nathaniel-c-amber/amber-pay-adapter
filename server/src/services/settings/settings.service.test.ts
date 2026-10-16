@@ -1,6 +1,7 @@
 import { SettingsService } from './settings.service.js';
 import { InMemorySettingsRepository } from '../../repositories/inMemory.js';
 import { env } from '../../config/env.js';
+import type { AppCredentialEnv } from '../adaptors/appCredentials.js';
 
 /*
   The guarantee under test is not "the wizard can save settings" but "a stored
@@ -8,6 +9,12 @@ import { env } from '../../config/env.js';
   also asserts its absence, from the public projection AND from the bytes the
   repository actually holds — the second is what catches a layer that stores
   plaintext and merely hides it at the edge.
+
+  THE AUTHORIZATION CASES PASS THEIR OWN ENVIRONMENT. `setup-env.cjs` fills
+  `QUICKBOOKS_*` for every suite and `env` is parsed once at import, so a test
+  cannot arrange "configured entirely from .env" or "configured entirely from the
+  database" by editing `process.env` — the injected environment is the only way to
+  tell the two halves of the stored-then-environment rule apart.
 */
 
 const WEBHOOK_SECRET = 'whsec_abcdefghijklmnop0123456789';
@@ -17,9 +24,20 @@ const ADAPTOR_CREDENTIALS = {
   accessToken: 'qb-access-token-value',
 };
 
-function harness(): { service: SettingsService; repository: InMemorySettingsRepository } {
+/** A deployment whose QuickBooks pair exists only in `.env`. */
+const ENV_ONLY: AppCredentialEnv = {
+  QUICKBOOKS_CLIENT_ID: 'env-qb-client-id',
+  QUICKBOOKS_CLIENT_SECRET: 'env-qb-client-secret',
+};
+
+/** A deployment whose `.env` names no application credentials at all. */
+const STORE_ONLY: AppCredentialEnv = {};
+
+function harness(
+  environment: AppCredentialEnv = env,
+): { service: SettingsService; repository: InMemorySettingsRepository } {
   const repository = new InMemorySettingsRepository();
-  return { service: new SettingsService(repository), repository };
+  return { service: new SettingsService(repository, environment), repository };
 }
 
 describe('SettingsService — read projection', () => {
@@ -184,5 +202,128 @@ describe('SettingsService — adaptor and verification', () => {
     const done = await service.complete('2026-09-24T11:00:00.000Z');
     expect(done.configured).toBe(true);
     await expect(service.isConfigured()).resolves.toBe(true);
+  });
+});
+
+describe('SettingsService — can the authorization step run', () => {
+  it('offers the button to a deployment configured entirely from the environment', async () => {
+    // Nothing stored at all: the shape of every install that still runs off `.env`,
+    // and the case the stored-only rule got wrong — it was told its credentials
+    // were missing, and the one control that would have fixed it was dead.
+    const { service } = harness(ENV_ONLY);
+    const settings = await service.getSettings();
+
+    expect(settings.adaptor.canAuthorize).toBe(true);
+    expect(settings.adaptor.credentials.configured).toBe(false);
+    // Reading the environment does not put a value in the response: presence only.
+    expect(JSON.stringify(settings)).not.toContain('env-qb-client-secret');
+  });
+
+  it('offers the button to a deployment configured entirely from the wizard', async () => {
+    const { service } = harness(STORE_ONLY);
+    await service.updateAdaptor({ id: 'quickbooks', credentials: ADAPTOR_CREDENTIALS });
+
+    expect((await service.getSettings()).adaptor.canAuthorize).toBe(true);
+  });
+
+  it("does not offer the active adaptor the other system's stored pair", async () => {
+    const { service } = harness(STORE_ONLY);
+    /*
+      Sage's client id and secret, stored without a recorded choice, so nothing in
+      the row says they belong to the adaptor this deployment is actually using.
+      QuickBooks is that adaptor (the environment's choice — the default), and an
+      authorization URL built from Sage's pair is a request the provider refuses for
+      a reason the browser cannot show.
+    */
+    await service.updateAdaptor({
+      credentials: { clientId: 'sage-client-id', clientSecret: 'sage-client-secret' },
+    });
+
+    const settings = await service.getSettings();
+    expect(settings.adaptor.canAuthorize).toBe(false);
+    // Still REPORTED as stored. An operator has to be able to see that a
+    // credential exists, even when it is not this adaptor's to use.
+    expect(settings.adaptor.credentials.configured).toBe(true);
+  });
+
+  it('falls back to the environment when the stored set cannot be opened', async () => {
+    const { service, repository } = harness(ENV_ONLY);
+    // A row sealed under a key this process does not have — what a botched key
+    // rotation leaves behind. `resolveCredentials()` throws on this one.
+    await repository.update({
+      adaptorId: 'quickbooks',
+      adaptorCredentials: Buffer.from('not-a-sealed-envelope'),
+    });
+
+    const settings = await service.getSettings();
+    // The environment can still authorize, so withholding the button would report
+    // a deployment as less configured than it is.
+    expect(settings.adaptor.canAuthorize).toBe(true);
+    // …and the unreadable row is still reported as unreadable, not as absent.
+    expect(settings.adaptor.credentials.unreadable).toBe(true);
+  });
+
+  it('withholds the button on a deployment that cannot keep what comes back', async () => {
+    /*
+      NO `SECRETS_KEY`. The provider would accept the authorization code, and the
+      refresh token it returned would then be refused by `assertStorable()` and
+      discarded — so the operator would be told QuickBooks rejected an
+      authorization it had in fact accepted. `secretsConfigured()` reads the parsed
+      environment, so the state is arranged the way a deployment without a key
+      actually is, and restored immediately after.
+    */
+    const { service } = harness(ENV_ONLY);
+    const key = env.SECRETS_KEY;
+    env.SECRETS_KEY = undefined;
+    try {
+      const settings = await service.getSettings();
+
+      expect(settings.writable).toBe(false);
+      // Both halves of the old rule hold — the environment does carry the pair —
+      // and the button is still withheld, because the flow cannot run to
+      // completion. The flag means "this can be finished", not "this can start".
+      expect(settings.adaptor.canAuthorize).toBe(false);
+    } finally {
+      env.SECRETS_KEY = key;
+    }
+  });
+});
+
+describe('SettingsService — the pair the connect flow is handed', () => {
+  it('prefers the stored pair and the stored base URL', async () => {
+    const { service } = harness(ENV_ONLY);
+    await service.updateAdaptor({
+      id: 'quickbooks',
+      baseUrl: 'https://sandbox-quickbooks.api.intuit.com',
+      credentials: ADAPTOR_CREDENTIALS,
+    });
+
+    await expect(service.resolveAppCredentials()).resolves.toEqual({
+      clientId: ADAPTOR_CREDENTIALS.clientId,
+      clientSecret: ADAPTOR_CREDENTIALS.clientSecret,
+      baseUrl: 'https://sandbox-quickbooks.api.intuit.com',
+    });
+  });
+
+  it('answers from the environment rather than throwing on an unopenable row', async () => {
+    const { service, repository } = harness(ENV_ONLY);
+    await repository.update({
+      adaptorId: 'quickbooks',
+      adaptorCredentials: Buffer.from('not-a-sealed-envelope'),
+    });
+
+    // `resolveCredentials()` would have thrown here and taken the flow down with
+    // it, over a row the environment can replace.
+    await expect(service.resolveAppCredentials()).resolves.toEqual({
+      clientId: ENV_ONLY.QUICKBOOKS_CLIENT_ID,
+      clientSecret: ENV_ONLY.QUICKBOOKS_CLIENT_SECRET,
+      baseUrl: null,
+    });
+  });
+
+  it('answers null when neither source has a pair', async () => {
+    const { service } = harness(STORE_ONLY);
+
+    await expect(service.resolveAppCredentials()).resolves.toBeNull();
   });
 });

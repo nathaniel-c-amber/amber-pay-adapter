@@ -484,7 +484,15 @@ export function OnboardingPage({
 
   const choice = adaptorChoice(adaptorId);
   const reading = verification ? readingForVerification(verification) : null;
-  const savedClientCredentials = Boolean(settings.adaptor.canAuthorize);
+  /*
+    CAN THE CONNECT STEP RUN AT ALL, which is what `canAuthorize` now answers —
+    not "were these credentials saved" (the old reading of this variable, and the
+    old name). The pair may come from the stored settings OR from the
+    deployment's environment, and the deployment must also be able to keep the
+    grant that comes back, so this stays false on a deployment with no secrets
+    key even when the credentials themselves are present.
+  */
+  const canConnect = Boolean(settings.adaptor.canAuthorize);
 
   return (
     <div className="min-h-dvh bg-midnight">
@@ -750,15 +758,17 @@ export function OnboardingPage({
                 {/*
                   THE CONNECT STEP, which replaces a token field.
 
-                  The button is a NAVIGATION and only appears once the application
-                  credentials are SAVED, because the server reads the stored client
-                  secret when it builds the authorization URL — and that secret must
-                  never be sent to a browser to do it. Offering the button first
-                  would produce a 400 whose cause is invisible from this screen.
+                  The button is a NAVIGATION and only appears when the server can
+                  complete the flow: the client id and secret must resolve (from
+                  the stored settings or from the deployment's environment) AND
+                  the deployment must be able to keep the grant that returns.
+                  Offering it earlier would produce a 400 or a 503 whose cause is
+                  invisible from this screen. The secret is read on the server
+                  either way — it is never sent to this browser to build the URL.
                 */}
                 {choice.browserConnect && (
                   <div className="flex flex-col gap-2 border-t border-rule-enamel-soft pt-4">
-                    {savedClientCredentials ? (
+                    {canConnect ? (
                       <>
                         <p className="m-0 text-sm leading-prose text-ink-2">
                           Next, sign in at QuickBooks and approve this application. You are sent to

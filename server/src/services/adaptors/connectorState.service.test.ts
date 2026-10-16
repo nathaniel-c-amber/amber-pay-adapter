@@ -21,7 +21,8 @@ const connected: AdaptorRuntimeState = { status: 'connected', reachable: true, l
 const unauthorized: AdaptorRuntimeState = {
   status: 'disconnected',
   reachable: false,
-  message: 'QuickBooks is configured but not authorized: set QUICKBOOKS_ACCESS_TOKEN',
+  message:
+    'QuickBooks is configured but not authorized: approve the connection in System configuration (Re-authorize with QuickBooks)',
 };
 
 /** Both registered adaptors are stubbed: quickbooks as given, sage disconnected. */
@@ -117,7 +118,7 @@ describe('withAdaptorConnections', () => {
     expect(quickbooks.status).toBe('suspended');
     expect(quickbooks.reading).toBe('No connection');
     // The actionable message reaches the operator, not a bare "unreachable".
-    expect(quickbooks.note).toContain('QUICKBOOKS_ACCESS_TOKEN');
+    expect(quickbooks.note).toContain('System configuration');
   });
 
   it('suspends a connected adaptor whose health probe is failing', async () => {
@@ -150,7 +151,7 @@ describe('withAdaptorConnections', () => {
       reading: 'No connection',
       organizationId: 'org-1',
     });
-    expect(quickbooks.note).toContain('QUICKBOOKS_ACCESS_TOKEN');
+    expect(quickbooks.note).toContain('System configuration');
     // Both adaptors are registered, so both appear.
     expect(rows.map((r) => r.id).sort()).toEqual(['quickbooks', 'sage']);
   });

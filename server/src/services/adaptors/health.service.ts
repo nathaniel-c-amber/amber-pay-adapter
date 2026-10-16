@@ -86,7 +86,8 @@ function shouldAttemptConnect(id: AdaptorId, now: number): boolean {
  *
  * These outcomes are deliberately distinct, because they need different fixes:
  *   - `disconnected` + "not configured"   → add credentials.
- *   - `disconnected` + "not authorized"   → add a token / complete the grant.
+ *   - `disconnected` + "not authorized"   → approve the grant from the console
+ *                                           (the message names the page).
  *   - `connected`    + `reachable: false` → the connection works; the upstream
  *                                           or the token is unhappy.
  *

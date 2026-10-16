@@ -42,10 +42,12 @@ describe('credentialsForAdaptor — stored first, environment second', () => {
   it('falls back to the environment when nothing is stored', async () => {
     const credentials = await credentialsForAdaptor('quickbooks');
 
-    // The transitional half, and it is load-bearing: deleting it before the wizard
-    // can set every field would break every existing install on upgrade.
     expect(credentials.clientId).toBe(env.QUICKBOOKS_CLIENT_ID);
     expect(credentials.clientSecret).toBe(env.QUICKBOOKS_CLIENT_SECRET);
+    // The transitional half, and it is load-bearing: deleting it before the wizard
+    // can set every field would break every existing install on upgrade. The
+    // precondition is that nothing is stored, because a stored grant suppresses
+    // the pasted token instead — see the block at the end of this file.
     expect(credentials.accessToken).toBe(env.QUICKBOOKS_ACCESS_TOKEN);
   });
 
@@ -74,6 +76,9 @@ describe('credentialsForAdaptor — stored first, environment second', () => {
     // unreachable, which is the step that explains WHICH field is missing.
     expect(credentials.clientId).toBe('stored-client-id');
     expect(credentials.clientSecret).toBe(env.QUICKBOOKS_CLIENT_SECRET);
+    // Still a no-stored-GRANT case: a stored client id is not a browser grant, so
+    // the pasted environment token is the whole answer here. Storing a refresh
+    // token is what would suppress it, and nothing above did.
     expect(credentials.accessToken).toBe(env.QUICKBOOKS_ACCESS_TOKEN);
   });
 
@@ -104,6 +109,86 @@ describe('credentialsForAdaptor — stored first, environment second', () => {
     // the unreadable row is reported separately by the settings read, which is where
     // an operator can see and act on it.
     expect(credentials.clientId).toBe(env.QUICKBOOKS_CLIENT_ID);
+  });
+});
+
+/*
+  A COMPLETED GRANT SUPERSEDES A PASTED TOKEN.
+
+  `oauth.ts` returns `accessToken` as-is when there is one, so the merged set
+  decides the grant actually in use — and the browser callback stores a refresh
+  token and deliberately no access token. Without the guard in
+  `credentialsForAdaptor`, an operator who re-authorized would be shown
+  "connected" while the deployment kept authenticating with the token pasted into
+  `.env` before they did, and the deployment would break only once Intuit expired
+  that paste: a green tick over a grant that was never exercised.
+*/
+describe('credentialsForAdaptor — a stored grant outranks a pasted access token', () => {
+  it('drops the environment access token and keeps the stored refresh token', async () => {
+    await settingsService.updateAdaptor({
+      id: 'quickbooks',
+      credentials: { clientId: 'stored-client-id', refreshToken: 'stored-refresh-token' },
+    });
+
+    const credentials = await credentialsForAdaptor('quickbooks');
+
+    // The grant is the one that ROTATES: `oauth.ts` exchanges this refresh token
+    // and `persistRotation` writes the replacement back, which is exactly what a
+    // pasted access token can never do.
+    expect(credentials.accessToken).toBeUndefined();
+    expect(credentials.refreshToken).toBe('stored-refresh-token');
+  });
+
+  it('keeps a stored access token, because that is not the pasted one', async () => {
+    await settingsService.updateAdaptor({
+      id: 'quickbooks',
+      credentials: {
+        clientId: 'stored-client-id',
+        refreshToken: 'stored-refresh-token',
+        accessToken: 'stored-access-token',
+      },
+    });
+
+    const credentials = await credentialsForAdaptor('quickbooks');
+
+    // The guard suppresses the ENVIRONMENT token only. A deployment that stored
+    // its own means what it said, and dropping this would leave `oauth.ts` making
+    // an exchange it did not need to make.
+    expect(credentials.accessToken).toBe('stored-access-token');
+    expect(credentials.refreshToken).toBe('stored-refresh-token');
+  });
+
+  it('lets both environment tokens through when the stored set carries no grant', async () => {
+    await settingsService.updateAdaptor({
+      id: 'quickbooks',
+      credentials: { clientId: 'stored-client-id', clientSecret: 'stored-client-secret' },
+    });
+
+    const credentials = await credentialsForAdaptor('quickbooks');
+
+    // The transitional deployment: an operator's own client id and secret, and
+    // tokens only in `.env`. Suppressing them here is what would break every
+    // existing install on upgrade.
+    expect(credentials.accessToken).toBe(env.QUICKBOOKS_ACCESS_TOKEN);
+    expect(credentials.refreshToken).toBe(env.QUICKBOOKS_REFRESH_TOKEN);
+  });
+
+  it('treats a whitespace-only stored refresh token as no grant at all', async () => {
+    /*
+      `updateAdaptor` trims and refuses blanks, so this state is only reachable
+      through a credential set written whole — which is exactly when it matters:
+      taking `'   '` for a grant would suppress a working pasted token AND leave
+      `oauth.ts` exchanging padding, so the deployment would be left with nothing.
+    */
+    await settingsService.updateAdaptor({ id: 'quickbooks' });
+    await settingsService.storeRotatedCredentials({
+      clientId: 'stored-client-id',
+      refreshToken: '   ',
+    });
+
+    const credentials = await credentialsForAdaptor('quickbooks');
+
+    expect(credentials.accessToken).toBe(env.QUICKBOOKS_ACCESS_TOKEN);
   });
 });
 

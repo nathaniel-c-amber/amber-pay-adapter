@@ -595,6 +595,13 @@ export function ConfigPage({
                 values the console could not show and the operator had not kept a copy
                 of. The app credentials CAN be retyped — they live in the provider's
                 developer console — so this button always has a path behind it.
+
+                TWO REASONS IT IS OFF, WHICH `canAuthorize` ALONE CANNOT TELL APART.
+                The server answers false both for "there is no pair to connect with"
+                and for "this deployment has nowhere to save the result". The second
+                is new, and telling an operator to save a client secret into a
+                deployment that cannot store one sends them to the wrong screen —
+                `writable` is the fact that separates the two.
               */}
               {settings.adaptor.id === 'quickbooks' && (
                 <button
@@ -605,8 +612,9 @@ export function ConfigPage({
                   {...(settings.adaptor.canAuthorize
                     ? {}
                     : {
-                        title:
-                          'Save a client ID and client secret first — the authorization URL is built on the server, so the secret is never sent to this browser.',
+                        title: settings.writable
+                          ? 'Save a client ID and client secret first — the authorization URL is built on the server, so the secret is never sent to this browser.'
+                          : 'This deployment cannot store an authorization, because it has no secrets key configured; an administrator has to configure one before this connection can be kept.',
                       })}
                 >
                   Re-authorize with QuickBooks

@@ -337,9 +337,18 @@ export interface ApiDeploymentSettings {
     baseUrl: string | null;
     credentials: ApiCredentialPresence;
     /**
-     * Whether both the client id and client secret are stored, so a provider
-     * authorization can be started. Presence of named fields, never values — the
-     * browser needs this to avoid offering a button the server will refuse.
+     * Whether this deployment can OBTAIN AND KEEP a provider authorization: the
+     * client id and client secret resolve — from the stored settings or from the
+     * deployment's own environment — and a granted authorization could be saved.
+     *
+     * NOT THE SAME QUESTION AS `credentials.configured`. That asks whether a pair
+     * is stored; this asks whether the server can act on one. So a deployment
+     * configured entirely from its environment answers true with nothing stored,
+     * and false now means either "nothing to connect with" or "nowhere to save the
+     * result" — `writable` is what separates those two.
+     *
+     * Presence of named fields, never values — the browser needs this to avoid
+     * offering a button the server will refuse.
      */
     canAuthorize: boolean;
     /**

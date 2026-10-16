@@ -4,12 +4,19 @@ import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
 /**
  * The connection failures an operator actually meets, each with its own fix:
  * nothing configured, configured but not authorized, and a refused exchange.
+ *
+ * The first two assert WHERE the fix lives, not merely that it failed. Both
+ * messages reach the operator through the console, so a regression that points
+ * one of them at an environment variable instead of a page is the defect this
+ * file was changed to catch.
  */
 describe('resolveAccessToken', () => {
-  it('refuses without client credentials, naming what to set', async () => {
+  it('refuses without client credentials, naming the page that collects them', async () => {
     const transport = jest.fn();
     await expect(resolveAccessToken(transport, {})).rejects.toBeInstanceOf(AdaptorAuthError);
-    await expect(resolveAccessToken(transport, {})).rejects.toThrow(/QUICKBOOKS_CLIENT_ID/);
+    // The operator reads this in the console, so it must point at the console's own
+    // form for these two values rather than at environment variables.
+    await expect(resolveAccessToken(transport, {})).rejects.toThrow(/guided setup/i);
     expect(transport).not.toHaveBeenCalled();
   });
 
@@ -18,6 +25,10 @@ describe('resolveAccessToken', () => {
     await expect(
       resolveAccessToken(transport, { clientId: 'id', clientSecret: 'secret' }),
     ).rejects.toThrow(/not authorized/);
+    // …and the fix is a button on a page, not a variable to export.
+    await expect(
+      resolveAccessToken(transport, { clientId: 'id', clientSecret: 'secret' }),
+    ).rejects.toThrow(/System configuration/i);
     expect(transport).not.toHaveBeenCalled();
   });
 

@@ -82,7 +82,23 @@ export function stepAt(index: number): WizardStep {
 export function firstIncompleteStep(settings: ApiDeploymentSettings): WizardStepId {
   if (!settings.organizationName) return "organization";
   if (!settings.gateway.clientId || !settings.gateway.webhookSecret.configured) return "gateway";
-  if (!settings.adaptor.id || !settings.adaptor.credentials.configured) return "accounting";
+  /*
+    TWO DIFFERENT QUESTIONS, AND THIS STEP ASKS THE SECOND ONE.
+
+    `credentials.configured` asks whether a client id and secret are STORED here.
+    `canAuthorize` asks whether the server can complete an authorization at all —
+    from a stored pair OR from the deployment's environment, and only when the
+    result could be saved. Asking the first alone parked a QuickBooks deployment
+    configured entirely from `.env` on a step it could never complete: it had
+    everything it needed to connect, and the console told it it had nothing.
+
+    Sage stays out of it deliberately. It has no browser authorization, so a stored
+    pair is the only evidence that any pair exists.
+  */
+  const canAuthorize =
+    settings.adaptor.credentials.configured ||
+    (settings.adaptor.id === "quickbooks" && settings.adaptor.canAuthorize);
+  if (!settings.adaptor.id || !canAuthorize) return "accounting";
   if (!settings.verifiedAt) return "verify";
   return "people";
 }
@@ -266,15 +282,25 @@ export function validateAccounting(
  * puts a token there: a redirect is a place secrets and provider detail leak. The
  * wording an operator reads is chosen here, where it can be reviewed, rather than
  * being assembled from whatever the provider happened to send.
+ *
+ * ONE SENTENCE EACH, no blame, and the NEXT ACTION rather than the diagnosis alone:
+ * every one of these is read by an operator who has just been thrown back from a
+ * provider login and wants to know what to do next, not what went wrong internally.
+ *
+ * `not_writable` deliberately does not name the environment variable. The 503 the
+ * API returns for the same condition already names it, for the administrator who
+ * can act on it, and this page is read by operators who cannot.
  */
 export const CONNECT_FAILURE_COPY: Record<string, string> = {
   unverified: "That connection could not be verified, so nothing was saved. Start the connection again.",
   declined: "Authorization was cancelled at QuickBooks, so nothing was saved.",
   no_code: "QuickBooks did not return an authorization. Start the connection again.",
   no_credentials:
-    "This deployment has no client ID and client secret stored, so there is nothing to connect with.",
+    "This deployment has no client ID and client secret in either its stored settings or its environment; add them, then start the connection again.",
   exchange_failed:
     "QuickBooks rejected the authorization. Check the client ID and client secret belong to the same app, and that the redirect URI is registered with it.",
+  not_writable:
+    "This deployment cannot store credentials, so the authorization was not saved; its secrets key has to be configured before a connection can be kept.",
   default: "The connection did not complete, so nothing was saved. Start again from this page.",
 };
 

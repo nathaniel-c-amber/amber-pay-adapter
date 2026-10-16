@@ -100,11 +100,66 @@ describe("firstIncompleteStep", () => {
   });
 
   it("returns to accounting when the credentials are gone but the rest is set", () => {
+    /*
+      `canAuthorize` goes with them: once nothing is stored and the environment has
+      nothing either, the server stops answering true, so the regression is stated
+      the way the server states it.
+    */
     const regressed = settings({
       ...CONFIGURED,
-      adaptor: { ...CONFIGURED.adaptor, credentials: { configured: false, lastFour: null, unreadable: false } },
+      adaptor: {
+        ...CONFIGURED.adaptor,
+        credentials: { configured: false, lastFour: null, unreadable: false },
+        canAuthorize: false,
+      },
     });
     expect(firstIncompleteStep(regressed)).toBe("accounting");
+  });
+
+  /*
+    THE SECOND QUESTION, WHICH IS NOT THE FIRST.
+
+    A QuickBooks deployment configured entirely from its environment stores nothing
+    and can still authorize — which used to strand it on a step it could never
+    complete: it had everything it needed and the console said it had nothing.
+  */
+  it("passes accounting when QuickBooks resolves the pair from the environment", () => {
+    const fromEnvironment = settings({
+      ...CONFIGURED,
+      adaptor: {
+        ...CONFIGURED.adaptor,
+        credentials: { configured: false, lastFour: null, unreadable: false },
+        canAuthorize: true,
+      },
+    });
+    expect(firstIncompleteStep(fromEnvironment)).toBe("people");
+  });
+
+  it("holds accounting when QuickBooks can resolve nothing at all", () => {
+    const unresolvable = settings({
+      ...CONFIGURED,
+      adaptor: {
+        ...CONFIGURED.adaptor,
+        credentials: { configured: false, lastFour: null, unreadable: false },
+        canAuthorize: false,
+      },
+    });
+    expect(firstIncompleteStep(unresolvable)).toBe("accounting");
+  });
+
+  /* Sage has no browser authorization, so `canAuthorize` is not evidence about a
+     pair that exists — only a stored pair is. */
+  it("does not let a Sage deployment skip accounting on canAuthorize alone", () => {
+    const sage = settings({
+      ...CONFIGURED,
+      adaptor: {
+        ...CONFIGURED.adaptor,
+        id: "sage",
+        credentials: { configured: false, lastFour: null, unreadable: false },
+        canAuthorize: true,
+      },
+    });
+    expect(firstIncompleteStep(sage)).toBe("accounting");
   });
 });
 
@@ -232,6 +287,30 @@ describe("connectOutcomeFromSearch", () => {
     const outcome = connectOutcomeFromSearch("?connect=error&reason=something_new");
     expect(outcome.connected).toBe(false);
     expect(outcome.message).toBe(CONNECT_FAILURE_COPY.default);
+  });
+
+  /*
+    A deployment with no secrets key can now come back from QuickBooks having
+    authorized and saved nothing. It must read as THAT, not as the generic default,
+    because the operator's next move is completely different: an administrator has
+    to configure the deployment, and no amount of retrying will help. It names the
+    limit without naming the variable — the 503 already does that, for the
+    administrator who can act on it, and this page is read by operators who can't.
+  */
+  it("resolves not_writable to its own copy rather than the default", () => {
+    const outcome = connectOutcomeFromSearch("?connect=error&reason=not_writable");
+    expect(outcome.connected).toBe(false);
+    expect(outcome.message).toBe(CONNECT_FAILURE_COPY.not_writable);
+    expect(outcome.message).not.toBe(CONNECT_FAILURE_COPY.default);
+    expect(outcome.message).not.toContain("SECRETS_KEY");
+  });
+
+  /* "Nothing stored" is no longer the only way to have no pair to connect with, so
+     the copy must not tell an operator their environment is irrelevant. */
+  it("does not blame stored credentials alone when nothing can be resolved", () => {
+    const outcome = connectOutcomeFromSearch("?connect=error&reason=no_credentials");
+    expect(outcome.message).toBe(CONNECT_FAILURE_COPY.no_credentials);
+    expect(outcome.message).toContain("environment");
   });
 
   it("is a quiet no-op when the marker is absent", () => {

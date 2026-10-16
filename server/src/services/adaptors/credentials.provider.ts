@@ -6,13 +6,10 @@
  * drifting back into an adaptor the next time one is touched, which is exactly
  * the coupling this change removes.
  *
- * STORED FIRST, ENVIRONMENT SECOND — and the second half is TRANSITIONAL. A
- * deployment configured entirely from `.env` keeps working unchanged, including
- * a sandbox base URL and a hand-pasted access token, while the onboarding wizard
- * gradually takes ownership of those values. Removing the fallback before the
- * wizard can set every field would break every existing install on upgrade,
- * which is a worse failure than having two sources for a while. When the wizard
- * owns all of them, delete `fromEnvironment` and its fields from the env schema.
+ * STORED FIRST, ENVIRONMENT SECOND — and the second half is TRANSITIONAL, for the
+ * reasons stated where the fallback now lives: `appCredentials.ts` holds the
+ * environment-side values and the rationale for keeping them, in a leaf that
+ * does not import this file. Read it before changing the precedence below.
  *
  * IT ALSO PERSISTS A ROTATION. Intuit invalidates a refresh token as it spends
  * it, so the value handed back has to be written somewhere or the next process
@@ -24,6 +21,7 @@
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import { settingsService } from '../settings/settings.service.js';
+import { environmentAdaptorCredentials } from './appCredentials.js';
 import type {
   AccountingAdaptor,
   AdaptorCredentials,
@@ -41,23 +39,18 @@ import type {
  */
 export type AdaptorCredentialsProvider = (id: AdaptorId) => Promise<AdaptorCredentials>;
 
-/** Deployment-level fallbacks, until the wizard owns every field. */
-function fromEnvironment(id: AdaptorId): AdaptorCredentials {
-  if (id === 'quickbooks') {
-    return {
-      clientId: env.QUICKBOOKS_CLIENT_ID,
-      clientSecret: env.QUICKBOOKS_CLIENT_SECRET,
-      baseUrl: env.QUICKBOOKS_BASE_URL,
-      realmId: env.QUICKBOOKS_REALM_ID,
-      accessToken: env.QUICKBOOKS_ACCESS_TOKEN,
-      refreshToken: env.QUICKBOOKS_REFRESH_TOKEN,
-    };
-  }
-  return {
-    clientId: env.SAGE_CLIENT_ID,
-    clientSecret: env.SAGE_CLIENT_SECRET,
-    baseUrl: env.SAGE_BASE_URL,
-  };
+/**
+ * Whether the STORED set for this adaptor carries a grant of its own.
+ *
+ * A stored refresh token IS the browser grant: `oauth.ts` exchanges it for an
+ * access token and the replacement is written back by `persistRotation`. A value
+ * that is only whitespace is not a grant, and treating it as one would be worse
+ * than ignoring it — `oauth.ts` would try to exchange it, and the environment's
+ * working token would already have been suppressed. `definedFields` cannot be
+ * used for this test: it admits any non-empty string, padding included.
+ */
+function hasStoredGrant(fields: Record<string, string>): boolean {
+  return typeof fields.refreshToken === 'string' && fields.refreshToken.trim() !== '';
 }
 
 /** Drop absent and empty values, so a stored field cannot blank out a real one. */
@@ -70,7 +63,12 @@ function definedFields(credentials: AdaptorCredentials): Record<string, string> 
 }
 
 export async function credentialsForAdaptor(id: AdaptorId): Promise<AdaptorCredentials> {
-  const fallback = fromEnvironment(id);
+  // `env` passed explicitly rather than defaulted: this module has no injectable
+  // environment of its own, and the call is the place to look when a deployment's
+  // credentials come from somewhere unexpected. The leaf's second argument exists
+  // for tests, which cannot mutate `process.env` after `config/env.ts` has parsed
+  // it at import.
+  const fallback = environmentAdaptorCredentials(id, env);
 
   let configured;
   try {
@@ -89,12 +87,39 @@ export async function credentialsForAdaptor(id: AdaptorId): Promise<AdaptorCrede
     return fallback;
   }
 
-  return {
+  const stored = definedFields(configured.fields);
+  const resolved: AdaptorCredentials = {
     ...fallback,
-    ...definedFields(configured.fields),
+    ...stored,
     ...(configured.realmId ? { realmId: configured.realmId } : {}),
     ...(configured.baseUrl ? { baseUrl: configured.baseUrl } : {}),
   };
+
+  /*
+    A COMPLETED GRANT SUPERSEDES A PASTED TOKEN.
+
+    `oauth.ts` returns `accessToken` as-is when there is one, so left merged,
+    `env.QUICKBOOKS_ACCESS_TOKEN` outranks a grant the operator just completed in
+    the browser: the callback stores a refresh token and deliberately no access
+    token, so the deployment would report connected while authenticating with
+    whatever was pasted into `.env` hours or days earlier — a green tick over a
+    grant that was never exercised, and a failure that first appears when Intuit
+    expires the pasted token, long after the re-authorization meant to replace it.
+
+    The guard is the STORED side only. A stored set with an access token of its own
+    keeps it — nothing is dropped — and with no stored grant the transitional
+    environment pair remains the whole answer, because suppressing it there would
+    break every `.env`-configured install on upgrade. That is the only trade-off,
+    and it is deliberate: an operator who sets both gets the stored grant, which is
+    the one that rotates and persists (`persistRotation`), while a pasted token can
+    never be renewed and is spent one restart later. An operator who wanted the
+    paste to keep winning has to clear the stored grant rather than edit `.env`.
+  */
+  if (hasStoredGrant(stored) && stored['accessToken'] === undefined) {
+    delete resolved.accessToken;
+  }
+
+  return resolved;
 }
 
 /**

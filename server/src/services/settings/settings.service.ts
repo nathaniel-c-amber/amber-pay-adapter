@@ -7,11 +7,14 @@
  * credential, so a console cannot display one, a browser devtools panel cannot
  * hold one, and a response logged by a reverse proxy cannot capture one.
  *
- * THE PLAINTEXT EXISTS IN EXACTLY ONE PLACE, `resolveCredentials()`, which is
- * explicitly server-side: the webhook controller needs the signature secret and
- * the adaptor needs its OAuth fields, and both are the server talking to itself.
- * It is named to be conspicuous at a call site, and it must never be serialized
- * into an HTTP response, an event detail, a failure note, or a log line.
+ * THE PLAINTEXT EXISTS IN EXACTLY TWO PLACES, both explicitly server-side.
+ * `resolveCredentials()` is the general one: the webhook controller needs the
+ * signature secret and the adaptor needs its OAuth fields. `resolveAppCredentials()`
+ * is the narrow one — the client id/secret pair the browser-authorization flow is
+ * handed, so the exchange cannot be built from a different pair than the one the
+ * console decided it could authorize. Both are named to be conspicuous at a call
+ * site, and neither must ever be serialized into an HTTP response, an event
+ * detail, a failure note, or a log line.
  *
  * WHY VALIDATION LIVES HERE, not in the wizard: the wizard is one client. A
  * value that arrives from anywhere else — a script, a future API consumer, a
@@ -26,8 +29,18 @@ import { lastFourOf, openSecret, sealSecret, secretsConfigured } from '../../uti
 import { getRepositories } from '../../repositories/index.js';
 import { env } from '../../config/env.js';
 import type { SettingsRepository } from '../../types/repository.js';
-import type { CustomerMatchConfig, CustomerMatchMode, CustomerMatchStrategy } from '../../types/adaptor.js';
+import type {
+  AdaptorId,
+  CustomerMatchConfig,
+  CustomerMatchMode,
+  CustomerMatchStrategy,
+} from '../../types/adaptor.js';
 import { CUSTOM_FIELD_NAME } from '../adaptors/quickbooksWire.js';
+import {
+  environmentAdaptorCredentials,
+  resolveAppCredentials,
+} from '../adaptors/appCredentials.js';
+import type { AppCredentialEnv } from '../adaptors/appCredentials.js';
 import type {
   ConfiguredAdaptorId,
   DeploymentSettings,
@@ -61,17 +74,26 @@ export interface PublicAdaptorSettings {
   baseUrl: string | null;
   credentials: CredentialPresence;
   /**
-   * Can the provider-authorization step actually run?
+   * Can the provider-authorization step actually run TO COMPLETION?
    *
-   * True when BOTH the client id and the client secret are stored. `credentials
-   * .configured` answers "is there any stored credential at all", which is not the
-   * question the setup screen has: it needs to know whether the two values the
-   * authorization URL is built from are present, or it would offer a button that
-   * fails with a 400 whose cause is invisible from the browser.
+   * True when the two values the authorization URL is built from resolve — stored
+   * first, environment second, through the same `resolveAppCredentials` rule the
+   * exchange itself uses — AND the deployment can keep what comes back. The
+   * second half is `writable`: on a deployment with no `SECRETS_KEY` the provider
+   * would accept the code, and the refresh token it returned would then be
+   * refused by `assertStorable()` and thrown away. Offering the button there would
+   * end with the operator told QuickBooks rejected an authorization it had in
+   * fact accepted — indistinguishable, from the browser, from a real rejection.
    *
-   * It discloses PRESENCE of named fields and nothing about their values — the same
-   * category of information as `lastFour`, and the reason the browser never has to
-   * be told a secret to decide whether it can ask the server to start a flow.
+   * `credentials.configured` answers "is there any stored credential at all",
+   * which is not the question the setup screen has: it needs to know whether the
+   * flow can run, or it would offer a button that fails for a reason invisible
+   * from where the click happened.
+   *
+   * It discloses PRESENCE of named fields and nothing about their values — the
+   * same category of information as `lastFour`, and the reason the browser never
+   * has to be told a secret to decide whether it can ask the server to start a
+   * flow.
    */
   canAuthorize: boolean;
   /**
@@ -132,6 +154,20 @@ export interface ResolvedCredentials {
     | null;
 }
 
+/**
+ * The application credentials the browser-authorization exchange is built from.
+ *
+ * Same warning as `ResolvedCredentials`: server-side only, and for a shorter
+ * journey — out of a service method, into a redirect URL, and gone. The client
+ * secret in particular must never reach a response body or a log line.
+ */
+export interface ResolvedAppCredentials {
+  clientId: string;
+  clientSecret: string;
+  /** Where the exchange is sent; `null` lets the caller apply its own default. */
+  baseUrl: string | null;
+}
+
 /** Read a stored secret into a presence summary, never into a value. */
 function presence(sealed: Buffer | null): CredentialPresence {
   if (!sealed) {
@@ -144,27 +180,65 @@ function presence(sealed: Buffer | null): CredentialPresence {
   }
 }
 
-/** Are both application credentials present, so a grant can be started? */
-function canAuthorize(sealed: Buffer | null): boolean {
-  if (!sealed) return false;
+/**
+ * The stored credential set as a plain record, or `null` when there is nothing
+ * readable to take.
+ *
+ * `null` rather than a throw, because an undecryptable blob is a state an
+ * operator has to be able to READ PAST: the stored side is simply treated as
+ * absent and the environment decides. Refusing to describe the deployment at all
+ * would take the whole settings read down for one bad row, and would disable a
+ * button that would have worked.
+ */
+function storedFields(sealed: Buffer | null): Record<string, unknown> | null {
+  if (!sealed) return null;
   try {
-    const fields = JSON.parse(openSecret(sealed)) as Record<string, unknown>;
-    return (
-      typeof fields['clientId'] === 'string' &&
-      fields['clientId'].trim().length > 0 &&
-      typeof fields['clientSecret'] === 'string' &&
-      fields['clientSecret'].trim().length > 0
-    );
+    const parsed: unknown = JSON.parse(openSecret(sealed));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Can the provider-authorization step run, for this adaptor, with what we have?
+ *
+ * STORED FIRST, ENVIRONMENT SECOND, through the one shared rule
+ * (`resolveAppCredentials`) rather than a private reading of the sealed blob. That
+ * is the whole point: a button the console offers and the pair the exchange is
+ * built from are computed by the same function, so they cannot drift into
+ * disagreeing — which is exactly the bug this replaced, where an env-configured
+ * deployment was told its credentials were missing.
+ *
+ * `sealed` is the stored set ONLY IF the caller has established it belongs to
+ * `id` (see `toPublic`). A set that belongs to the other accounting system is
+ * never offered here: authorizing QuickBooks with Sage's client id produces an
+ * authorization request the provider refuses, for a reason the browser cannot see.
+ */
+function canAuthorize(id: AdaptorId, sealed: Buffer | null, environment: AppCredentialEnv): boolean {
+  return resolveAppCredentials(id, storedFields(sealed), environment) !== null;
 }
 
 function toPublic(
   settings: DeploymentSettings,
   organizationId: string,
   writable: boolean,
+  environment: AppCredentialEnv,
 ): PublicDeploymentSettings {
+  /*
+    THE ACTIVE ADAPTOR, by the SAME precedence as
+    `resolveConfiguredAdaptorId` (`activeAdaptor.service.ts`): the wizard's stored
+    choice first, then the environment. Asking this file for its own opinion is
+    how a console ends up describing a Sage deployment as QuickBooks.
+
+    The stored blob is handed to `canAuthorize` only when the row says which
+    adaptor it belongs to — the same gate `resolveCredentials()` applies, so a
+    credential set stored beside no choice (or beside the other system) is ignored
+    here exactly as the adaptor ignores it when connecting.
+  */
+  const activeId: AdaptorId = settings.adaptorId ?? env.ADAPTOR_ID;
+  const stored = settings.adaptorId === activeId ? settings.adaptorCredentials : null;
+
   return {
     organizationId,
     organizationName: settings.organizationName,
@@ -177,7 +251,16 @@ function toPublic(
       realmId: settings.adaptorRealmId,
       baseUrl: settings.adaptorBaseUrl,
       credentials: presence(settings.adaptorCredentials),
-      canAuthorize: canAuthorize(settings.adaptorCredentials),
+      /*
+        AND WRITABLE, because the flag means "this flow can run to completion"
+        rather than "the two values the URL is built from are present". Without a
+        `SECRETS_KEY` the provider accepts the authorization code, the returned
+        refresh token is then refused by `assertStorable()` and discarded, and the
+        operator is told the provider rejected an authorization it had in fact
+        accepted. Offering a button whose outcome the server cannot keep is worse
+        than not offering it.
+      */
+      canAuthorize: canAuthorize(activeId, stored, environment) && writable,
       invoiceMatching: {
         strategy: settings.invoiceMatchStrategy,
         mode: settings.invoiceMatchMode,
@@ -380,11 +463,21 @@ export interface PreferencesUpdate {
 }
 
 export class SettingsService {
-  constructor(private readonly repository: SettingsRepository = getRepositories().settings) {}
+  /**
+   * `environment` is INJECTED so the stored-then-environment rule can be tested
+   * against a chosen source rather than against whatever `setup-env.cjs` happens
+   * to set — `env` is parsed once at import, so a test cannot arrange an empty
+   * deployment any other way. Passing `{}` means "a deployment configured
+   * entirely from the database", which is the other half of the rule.
+   */
+  constructor(
+    private readonly repository: SettingsRepository = getRepositories().settings,
+    private readonly environment: AppCredentialEnv = env,
+  ) {}
 
   /** The write-only projection. No credential value appears in the result. */
   async getSettings(): Promise<PublicDeploymentSettings> {
-    return toPublic(await this.repository.get(), env.ORGANIZATION_ID, secretsConfigured());
+    return toPublic(await this.repository.get(), env.ORGANIZATION_ID, secretsConfigured(), this.environment);
   }
 
   /**
@@ -589,7 +682,7 @@ export class SettingsService {
   async complete(now: string = new Date().toISOString()): Promise<PublicDeploymentSettings> {
     const current = await this.repository.get();
     if (current.configuredAt !== null) {
-      return toPublic(current, env.ORGANIZATION_ID, secretsConfigured());
+      return toPublic(current, env.ORGANIZATION_ID, secretsConfigured(), this.environment);
     }
     return this.apply({ configuredAt: now }, ['configuredAt']);
   }
@@ -647,6 +740,61 @@ export class SettingsService {
     };
   }
 
+  /**
+   * The client id/secret pair the authorization exchange runs with, or `null`.
+   *
+   * ONE PLACE THE CONTROLLER READS THE PAIR FROM, and that is the reason it
+   * exists as a method here rather than as a second reading of the row in the
+   * connect flow: the button on the settings page, this resolution, and the
+   * credentials the adaptor connects with all go through `resolveAppCredentials`,
+   * so a flow cannot be started with a pair that the projection never offered (or
+   * refused to offer).
+   *
+   * THE ROW IS READ WITH `repository.get()`, NOT `resolveCredentials()`. The
+   * latter THROWS on a blob it cannot open, which is right for the adaptor — it
+   * cannot connect with a credential it cannot read — and wrong here: a corrupt
+   * row must not take down a flow that the environment can still complete. So the
+   * stored side is caught and treated as absent, which is also what the
+   * projection does.
+   *
+   * Stored-then-environment, exactly as `credentials.provider.ts` connects: a
+   * stored set is used only when the row says which adaptor it belongs to, and
+   * `baseUrl` follows the same split (the operator's override, else the
+   * environment's for that adaptor) so the exchange is not sent somewhere the
+   * adaptor would never have connected.
+   */
+  async resolveAppCredentials(): Promise<ResolvedAppCredentials | null> {
+    let id: AdaptorId = env.ADAPTOR_ID;
+    let stored: Record<string, unknown> | null = null;
+    let storedBaseUrl: string | null = null;
+
+    try {
+      const settings = await this.repository.get();
+      id = settings.adaptorId ?? env.ADAPTOR_ID;
+      /*
+        Attributable to the active adaptor, or not used at all — the row's
+        `adaptorId` is the only record of whose credentials these are, and a set
+        with no owner is the other system's.
+      */
+      if (settings.adaptorId !== null) {
+        stored = storedFields(settings.adaptorCredentials);
+        storedBaseUrl = settings.adaptorBaseUrl;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Stored application credentials unreadable; falling back to environment');
+    }
+
+    const pair = resolveAppCredentials(id, stored, this.environment);
+    if (!pair) {
+      return null;
+    }
+
+    return {
+      ...pair,
+      baseUrl: storedBaseUrl ?? environmentAdaptorCredentials(id, this.environment).baseUrl ?? null,
+    };
+  }
+
   private async apply(
     patch: DeploymentSettingsPatch,
     changed: string[],
@@ -676,7 +824,7 @@ export class SettingsService {
         'Deployment settings updated',
       );
     }
-    return toPublic(settings, env.ORGANIZATION_ID, secretsConfigured());
+    return toPublic(settings, env.ORGANIZATION_ID, secretsConfigured(), this.environment);
   }
 }
 

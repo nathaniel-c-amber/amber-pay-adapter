@@ -15,7 +15,7 @@ import type { AdaptorTransport } from '../../types/adaptor.js';
  * Sources, in order:
  *   1. `accessToken`   — used as-is (short-lived; the operator can paste one).
  *   2. `refreshToken`  — exchanged for an access token at the token endpoint.
- *   3. neither         — an AdaptorAuthError naming both env vars.
+ *   3. neither         — an AdaptorAuthError naming the page that grants it.
  *
  * The exchange is deliberately part of `connect()` rather than of the transport
  * layer: it is authorization, and an expired token is the failure an operator
@@ -65,8 +65,16 @@ export async function resolveAccessToken(
   const { clientId, clientSecret, accessToken, refreshToken } = credentials;
 
   if (!clientId || !clientSecret) {
+    /*
+      SAME RULE AS THE MESSAGE BELOW, for the same reason: the two application
+      credentials are typed in the console, by ConfigPage's own link into the
+      guided setup, so an operator reading this on a page of the console is told
+      where to type them rather than which variables to export. Naming
+      QUICKBOOKS_CLIENT_ID / QUICKBOOKS_CLIENT_SECRET here sent them to a
+      deployment file they cannot see and a path the wizard replaced.
+    */
     throw new AdaptorAuthError(
-      'QuickBooks credentials are not configured (set QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET)',
+      'QuickBooks credentials are not configured: run the guided setup from System configuration and save the client ID and client secret',
     );
   }
 
@@ -76,7 +84,16 @@ export async function resolveAccessToken(
 
   if (!refreshToken) {
     throw new AdaptorAuthError(
-      'QuickBooks is configured but not authorized: set QUICKBOOKS_ACCESS_TOKEN, or QUICKBOOKS_REFRESH_TOKEN for the adaptor to exchange',
+      /*
+        THE FIX IS A PAGE, NOT AN ENVIRONMENT VARIABLE. The QuickBooks form collects
+        no token — the grant comes from the browser authorization — so telling an
+        operator to set QUICKBOOKS_ACCESS_TOKEN points them at the one path the
+        console does not offer, and at a deployment file they cannot see from the
+        page they are reading. The console already owns the fix, and this message
+        reaches every surface the failure reaches (connector rows, the service
+        window, findings), so naming the page and its button fixes them all at once.
+      */
+      'QuickBooks is configured but not authorized: approve the connection in System configuration (Re-authorize with QuickBooks)',
     );
   }
 

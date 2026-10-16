@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { RequestHandler } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { UnauthorizedError, ValidationError } from '../utils/errors.js';
+import { AppError, UnauthorizedError, ValidationError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
 import { verifyAdaptorConnection } from '../services/settings/verify.service.js';
@@ -93,6 +93,31 @@ function stringFields(credentials: AdaptorCredentials): Record<string, string> {
   );
 }
 
+/**
+ * Can this deployment keep what a consent is about to produce?
+ *
+ * The authorization URL leads somewhere a grant is minted, and the callback's
+ * whole purpose is to STORE that grant. If the store cannot accept a credential
+ * — no `SECRETS_KEY` — then completing consent spends an authorization code at
+ * Intuit and the refresh token is dropped on the floor, which looks on the next
+ * restart like a connection that expired for no reason.
+ *
+ * So the question is asked BEFORE anything is spent, in both halves of the flow:
+ * `beginConnect` refuses to start, and `connectCallback` refuses to exchange.
+ * `assertStorable` already answers it at credential-write time with a 503 and
+ * this exact wording, which is deliberate — an operator who hits it here and an
+ * operator who hits it on save are being told the same true thing and given the
+ * same one-command fix, rather than one of them meeting Intuit's error instead.
+ */
+async function assertCredentialsWritable(settingsService: SettingsService): Promise<void> {
+  if ((await settingsService.getSettings()).writable) return;
+  throw new AppError(
+    503,
+    'SECRETS_NOT_CONFIGURED',
+    'This deployment has no SECRETS_KEY, so credentials cannot be stored. Generate one with `openssl rand -hex 32` and set it in the environment.',
+  );
+}
+
 export interface SettingsControllerDeps {
   settingsService: SettingsService;
   /** Test seams: the registry the throwaway instance is built from. */
@@ -128,7 +153,7 @@ export interface SettingsController {
   complete: RequestHandler;
   /**
    * GET /api/v1/settings/adaptor/connect — 302 to Intuit for consent.
-   * Requires a session, because it reads the stored client credentials.
+   * Requires a session, because it reads this deployment's client credentials.
    */
   beginConnect: RequestHandler;
   /**
@@ -313,14 +338,23 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
      * attempt.
      */
     beginConnect: asyncHandler(async (_req, res) => {
-      const stored = await deps.settingsService.resolveCredentials();
-      const clientId = stored.adaptor?.fields['clientId'];
-      const clientSecret = stored.adaptor?.fields['clientSecret'];
-      if (!clientId || !clientSecret) {
+      /*
+        STORED FIRST, ENVIRONMENT SECOND — and the precedence lives in the service,
+        which already knows how to tell an unreadable blob from an absent one. The
+        controller asks one question ("which client id and secret is this
+        deployment authorizing with?") rather than re-deriving the answer, so a
+        deployment configured entirely from `.env` can start a consent at all: the
+        console tells that operator to click "Re-authorize with QuickBooks", and
+        reading the store alone meant the button could only ever answer 400.
+      */
+      const app = await deps.settingsService.resolveAppCredentials();
+      if (!app) {
         throw new ValidationError(
           'Save the QuickBooks client ID and client secret first, then connect.',
         );
       }
+
+      await assertCredentialsWritable(deps.settingsService);
 
       const buildUrl = deps.buildUrl ?? buildAuthorizationUrl;
       const nonce = (deps.newNonce ?? newNonce)();
@@ -329,11 +363,11 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
       /*
         A URL, NOT A 302.
 
-        This route is behind `requireAuth`, and that is correct: it reads the stored
-        client credentials, and an unauthenticated stranger must not be able to start
-        an authorization against this deployment. But a browser NAVIGATION carries
-        no `Authorization` header, so a 302 from this endpoint was unreachable —
-        the button it backed could only ever produce 401.
+        This route is behind `requireAuth`, and that is correct: it reads this
+        deployment's client credentials, and an unauthenticated stranger must not
+        be able to start an authorization against it. But a browser NAVIGATION
+        carries no `Authorization` header, so a 302 from this endpoint was
+        unreachable — the button it backed could only ever produce 401.
 
         Handing the URL back to the caller instead lets the client authenticate the
         call and then navigate, which is how every other OAuth integration does it.
@@ -343,7 +377,7 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
       */
       res.status(200).json({
         authorizationUrl: buildUrl({
-          clientId,
+          clientId: app.clientId,
           redirectUri: redirectUri(),
           state,
         }),
@@ -359,6 +393,11 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
      * process exchange anything, store anything, or reveal whether a grant exists —
      * so the state check happens first and returns on failure, and the only thing
      * the operator sees either way is the same generic message.
+     *
+     * The writability gate sits BETWEEN resolving the credentials and spending the
+     * authorization code — late enough that the more fundamental "no credentials
+     * at all" is reported first, early enough that a deployment which cannot store
+     * a refresh token never consumes a grant it would then have to discard.
      *
      * On success the browser is redirected to the console with a `connected`
      * marker and NO token material in the URL. A token in a redirect URL lands in
@@ -388,11 +427,26 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
         return deny('no_code');
       }
 
-      const stored = await deps.settingsService.resolveCredentials();
-      const clientId = stored.adaptor?.fields['clientId'];
-      const clientSecret = stored.adaptor?.fields['clientSecret'];
-      if (!clientId || !clientSecret) {
+      // 3. Same pair the URL was built from, stored first and environment second.
+      const app = await deps.settingsService.resolveAppCredentials();
+      if (!app) {
         return deny('no_credentials');
+      }
+
+      /*
+        4. BEFORE `exchange()`. The exchange is what spends Intuit's one-time
+        authorization code, and its product is the refresh token this handler's
+        next line is about to store. With no `SECRETS_KEY` the store refuses that
+        write, so without this gate the operator completes consent at Intuit, the
+        code is gone, the token is dropped — and they are told "QuickBooks
+        rejected the authorization" about a grant Intuit actually accepted.
+        `not_writable` is a SEPARATE reason code for exactly that reason: it is
+        not the provider refusing, and folding it into `exchange_failed` would
+        send the operator to re-check their Intuit app instead of their own
+        environment.
+      */
+      if (!(await deps.settingsService.getSettings()).writable) {
+        return deny('not_writable');
       }
 
       const exchange = deps.exchangeCode ?? exchangeAuthorizationCode;
@@ -403,18 +457,58 @@ export function createSettingsController(deps: SettingsControllerDeps): Settings
       try {
         const grant = await exchange(
           deps.httpTransport ?? httpTransport,
-          { code: rawCode, realmId, clientId, clientSecret },
+          { code: rawCode, realmId, clientId: app.clientId, clientSecret: app.clientSecret },
         );
         grantedRealm = grant.realmId;
 
         /*
-          MERGED, not replaced — the operator's existing client id and secret must
-          survive, or the connection that was just established is one restart away
-          from being unable to refresh anything.
+          THE ENVIRONMENT'S CREDENTIALS ARE ADOPTED INTO THE STORE HERE, and that is
+          the one asymmetry with the unattended rotation sink in
+          `credentials.provider.ts`, which must not do this: a rotation there comes
+          from a background timer with no operator present, so it cannot know which
+          source was authoritative and guessing invents a stored credential set out
+          of a fallback. This write is attended and its provenance is not a guess.
+
+          (a) THE VALUES WRITTEN ARE, BY CONSTRUCTION, THE ONES INTUIT ACCEPTED.
+          `app` is the single resolved pair: the same `resolveAppCredentials()` call
+          built the authorization URL this grant came back from and supplies the
+          exchange below, so Intuit's own success is the proof that these are the
+          credentials it accepted. There is nothing to record about provenance and
+          nothing that could drift from it.
+
+          (b) `baseUrl` MUST BE WRITTEN, not left alone, because the environment's
+          `QUICKBOOKS_BASE_URL` would otherwise keep shadowing whatever is stored —
+          an operator pointed at sandbox who consents against production would be
+          authenticated and then 401 on every single call, with no error naming the
+          cause. THE CONSEQUENCE, stated plainly: after this write the Intuit
+          environment is changed IN THE CONSOLE, not in `.env`. `.env` still wins
+          for any deployment that has not been through this flow, which is exactly
+          why this cannot be done by the rotation sink.
+
+          (c) `id` TRAVELS WITH THEM, and it is not a guess about which system the
+          operator meant. This handler is QuickBooks-specific end to end — the state
+          is verified as `'quickbooks'`, the URL is an Intuit URL, the exchange is
+          Intuit's — so a credential blob written here is QuickBooks' by
+          construction. It has to be attributed, because an UNOWNED blob is unreadable
+          by design: both `resolveAppCredentials()` and `credentials.provider.ts` gate
+          the stored side on the row saying whose it is. Left unattributed, a
+          deployment configured entirely from `.env` — which reaches this callback
+          without ever having chosen a system in the console — would store the grant
+          the operator just earned and then keep going to `QUICKBOOKS_REFRESH_TOKEN`,
+          because nothing could see what it had just saved.
+
+          MERGED, not replaced — `updateAdaptor` merges into the stored set — so any
+          field this resolver does not supply survives the write.
         */
         await deps.settingsService.updateAdaptor({
+          id: 'quickbooks',
           realmId: grant.realmId,
-          credentials: { refreshToken: grant.refreshToken },
+          baseUrl: app.baseUrl ?? undefined,
+          credentials: {
+            clientId: app.clientId,
+            clientSecret: app.clientSecret,
+            refreshToken: grant.refreshToken,
+          },
         });
         /*
           NOT stamped here. `updateAdaptor` clears `verifiedAt` because a credential
