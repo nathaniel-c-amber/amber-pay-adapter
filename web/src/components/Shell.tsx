@@ -1130,6 +1130,78 @@ export default function Shell() {
     if (first !== null) setTourIndex(first);
   }, [activePolicy]);
 
+  /*
+    TAKING A PAYMENT.
+
+    These five hooks sit ABOVE every early return in this component, and they used
+    to sit below two of them. `Shell` is mounted once and never unmounts — hash
+    navigation only changes what it returns — so a hook declared after a
+    `return` is a hook that is skipped on some renders and not on others, and
+    React throws ("Rendered fewer hooks than expected") the moment a navigation
+    crosses that boundary. The state is unreachable on the surfaces that skip it
+    (onboarding, invite), but that is beside the point: the hook order is the
+    invariant, not the state. `npm run lint` enforces it now.
+
+    The request itself is made HERE, in the shell, rather than in the page —
+    because the signed parameters must survive the navigation to `#/checkout`.
+    They are held in `checkoutSession` (module scope, consumed on read) and the
+    browser then goes to the provider. Keeping the request in the page would
+    mean handing signed values to a component that unmounts on navigate, which
+    is exactly how a signature ends up in history.state or the URL.
+  */
+  const [creatingCheckout, setCreatingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  /*
+    Bumped every time a checkout is minted, so the handoff subtree REMOUNTS and
+    consumes the new one-shot session. A retry mints a FRESH checkout (a new
+    transaction id and a new single-use signature), and without the remount the
+    page would keep rendering the first, already-burned session.
+  */
+  const [checkoutEpoch, setCheckoutEpoch] = useState(0);
+  /*
+    The last request, kept so a retry can mint a fresh checkout for the SAME
+    customer and amount instead of replaying a spent signature. Held in a ref,
+    not state: it is read only inside the retry handler and must not itself cause
+    a render.
+  */
+  const lastCheckoutInput = useRef<{
+    studentId: string;
+    amount: string;
+    currency: "USD" | "JMD";
+  } | null>(null);
+
+  const startCheckout = useCallback(
+    async (input: { studentId: string; amount: string; currency: "USD" | "JMD" }) => {
+      if (!token) return;
+      lastCheckoutInput.current = input;
+      setCreatingCheckout(true);
+      setCheckoutError(null);
+      try {
+        const { checkout } = await createCheckout(token, {
+          // An invoice reference is not something an operator types here: the
+          // accounting invoice is found by matching the customer, which is what
+          // the matching rule is configured for. This id is the local handle.
+          invoiceId: input.studentId,
+          studentId: input.studentId,
+          amount: input.amount,
+          currency: input.currency,
+        });
+        setPendingCheckout(checkout);
+        setCheckoutEpoch((n) => n + 1);
+        navigate("checkout");
+      } catch (err) {
+        setCheckoutError(
+          err instanceof Error && err.message
+            ? err.message
+            : "The payment could not be prepared.",
+        );
+      } finally {
+        setCreatingCheckout(false);
+      }
+    },
+    [token],
+  );
+
   const renderPage = () => {
     if (denied) {
       return (
@@ -1306,69 +1378,6 @@ export default function Shell() {
       />
     );
   }
-
-  /*
-    TAKING A PAYMENT.
-
-    The request is made HERE, in the shell, rather than in the page — because the
-    signed parameters must survive the navigation to `#/checkout`. They are held
-    in `checkoutSession` (module scope, consumed on read) and the browser then goes
-    to the provider. Keeping the request in the page would mean handing signed
-    values to a component that unmounts on navigate, which is exactly how a
-    signature ends up in history.state or the URL.
-  */
-  const [creatingCheckout, setCreatingCheckout] = useState(false);
-  const [checkoutError, setCheckoutError] = useState<string | null>(null);
-  /*
-    Bumped every time a checkout is minted, so the handoff subtree REMOUNTS and
-    consumes the new one-shot session. A retry mints a FRESH checkout (a new
-    transaction id and a new single-use signature), and without the remount the
-    page would keep rendering the first, already-burned session.
-  */
-  const [checkoutEpoch, setCheckoutEpoch] = useState(0);
-  /*
-    The last request, kept so a retry can mint a fresh checkout for the SAME
-    customer and amount instead of replaying a spent signature. Held in a ref,
-    not state: it is read only inside the retry handler and must not itself cause
-    a render.
-  */
-  const lastCheckoutInput = useRef<{
-    studentId: string;
-    amount: string;
-    currency: "USD" | "JMD";
-  } | null>(null);
-
-  const startCheckout = useCallback(
-    async (input: { studentId: string; amount: string; currency: "USD" | "JMD" }) => {
-      if (!token) return;
-      lastCheckoutInput.current = input;
-      setCreatingCheckout(true);
-      setCheckoutError(null);
-      try {
-        const { checkout } = await createCheckout(token, {
-          // An invoice reference is not something an operator types here: the
-          // accounting invoice is found by matching the customer, which is what
-          // the matching rule is configured for. This id is the local handle.
-          invoiceId: input.studentId,
-          studentId: input.studentId,
-          amount: input.amount,
-          currency: input.currency,
-        });
-        setPendingCheckout(checkout);
-        setCheckoutEpoch((n) => n + 1);
-        navigate("checkout");
-      } catch (err) {
-        setCheckoutError(
-          err instanceof Error && err.message
-            ? err.message
-            : "The payment could not be prepared.",
-        );
-      } finally {
-        setCreatingCheckout(false);
-      }
-    },
-    [token],
-  );
 
   /*
     THE PAYMENT SURFACES A CUSTOMER USES.
