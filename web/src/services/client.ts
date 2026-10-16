@@ -461,12 +461,31 @@ export async function updateUserPermissions(
   return body.user;
 }
 
-/** POST /users/:id/resend-invite — re-issue a pending invite link. */
-export function resendInvite(token: string, id: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
-    `/users/${encodeURIComponent(id)}/resend-invite`,
-    { method: "POST", headers: authHeaders(token) },
-  );
+/**
+ * POST /users/:id/resend-invite — re-issue a pending invite link.
+ *
+ * Returns the RAW token alongside the new invite record. That is the only way the
+ * console can offer a copyable link: only the token's hash is persisted, so an
+ * outstanding link can never be read back — a re-issue is what surfaces one. The
+ * server narrows this to the caller's administered organizations, so the token
+ * goes to the party already able to issue invites for the address.
+ */
+export function resendInvite(
+  token: string,
+  id: string,
+): Promise<{
+  status: string;
+  invite: { id: string; email: string; expiresAt: string };
+  token: string;
+}> {
+  return request<{
+    status: string;
+    invite: { id: string; email: string; expiresAt: string };
+    token: string;
+  }>(`/users/${encodeURIComponent(id)}/resend-invite`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
 }
 
 /** POST /auth/invite — create an account invitation (PBAC `admin` on `users`). */

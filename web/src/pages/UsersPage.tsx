@@ -34,6 +34,7 @@ import { PolicyAttributeEditor } from "@/components/PolicyAttributeEditor";
 import { Can, Cannot, useCan } from "@/components/Can";
 import { ABILITY } from "@/utils/permissions";
 import { formatDateTime } from "@/utils/datetime";
+import { inviteLink } from "@/utils/inviteLink";
 import {
   inviteUser,
   listUsers,
@@ -58,6 +59,20 @@ interface DirectoryRow {
   /** Present only for live rows — the editor needs the real attribute set. */
   policyAttributes: ApiPolicyAttribute[] | null;
 }
+
+/**
+ * The outcome of the last `Copy invitation link` press.
+ *
+ * A union rather than flags: at most one of "preparing this row", "just copied
+ * this address" and "this link needs copying by hand" can be true, and the
+ * address keys the confirmation across the re-read that follows a re-issue
+ * (the invite id changes, the address does not).
+ */
+type CopyState =
+  | { kind: "idle" }
+  | { kind: "copying"; id: string }
+  | { kind: "copied"; email: string }
+  | { kind: "manual"; email: string; url: string };
 
 function actionsOf(attributes: ApiPolicyAttribute[]): string {
   const all = [...new Set(attributes.flatMap((a) => a.actions))];
@@ -153,6 +168,7 @@ export function UsersPage({
   */
   const [baseline, setBaseline] = useState<ApiPolicyAttribute[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
+  const [copy, setCopy] = useState<CopyState>({ kind: "idle" });
 
   const live = mode === "live" && Boolean(token);
 
@@ -188,6 +204,15 @@ export function UsersPage({
     const id = setTimeout(() => setNotice(null), 6000);
     return () => clearTimeout(id);
   }, [notice]);
+
+  // "Copied" is a momentary confirmation and decays; the manual fallback has no
+  // timer, because a link that has to be copied by hand must stay on screen
+  // until it is taken.
+  useEffect(() => {
+    if (copy.kind !== "copied") return;
+    const id = setTimeout(() => setCopy({ kind: "idle" }), 5000);
+    return () => clearTimeout(id);
+  }, [copy]);
 
   const directory = rows ?? [];
   const filtered = useMemo(() => {
@@ -239,6 +264,64 @@ export function UsersPage({
     } finally {
       setBusyId(null);
     }
+  };
+
+  /*
+    `Copy invitation link` is a RE-ISSUE, not a read.
+
+    Only the invite token's hash is stored, so the outstanding link cannot be
+    recovered from the API — the only link that can be handed to the clipboard is
+    a freshly minted one. That also supersedes the previous link, which is why the
+    confirmation says so: an administrator pasting this into a chat is replacing
+    whatever earlier link the invitee may already hold.
+
+    The clipboard is not guaranteed (it needs a secure context and, in some
+    browsers, a user gesture). Refusal is not a failure: the link is shown in a
+    selectable field instead, so the operator still leaves with the link.
+  */
+  const copyInviteLink = async (row: DirectoryRow) => {
+    setActionError(null);
+    setNotice(null);
+    setCopy({ kind: "copying", id: row.id });
+    try {
+      const { token: inviteToken } = await resendInvite(token ?? "", row.id);
+      const url = inviteLink(window.location.origin, inviteToken);
+      let copied = true;
+      try {
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(url);
+      } catch {
+        copied = false;
+      }
+      if (copied) {
+        setCopy({ kind: "copied", email: row.email });
+        setNotice(
+          `Invitation link copied for ${row.email}. It replaces the link sent earlier.`,
+        );
+      } else {
+        setCopy({ kind: "manual", email: row.email, url });
+        setNotice(
+          `A new invitation link is ready for ${row.email} — copy it from the panel above the table.`,
+        );
+      }
+      // Re-read so the row shows the new expiry rather than the previous one.
+      await load();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onRequireSignIn();
+        return;
+      }
+      setCopy({ kind: "idle" });
+      setActionError(
+        err instanceof Error ? err.message : "The invitation link could not be prepared.",
+      );
+    }
+  };
+
+  const copyButtonLabel = (row: DirectoryRow): string => {
+    if (copy.kind === "copying" && copy.id === row.id) return "Preparing…";
+    if (copy.kind === "copied" && copy.email === row.email) return "Copied";
+    return "Copy invitation link";
   };
 
   const openEdit = (row: DirectoryRow) => {
@@ -553,6 +636,28 @@ export function UsersPage({
           </div>
         }
       >
+        {/* Clipboard fallback: the browser refused `navigator.clipboard`, so the
+            fresh link is set down here to be copied by hand. It is stated as a
+            replacement, because the re-issue that produced it superseded the
+            link that was emailed. */}
+        {copy.kind === "manual" && (
+          <div className="mb-3 flex flex-col gap-2 rounded-panel border border-[rgb(230_161_42/0.4)] bg-state-tint-delayed px-4 py-3">
+            <p className="m-0 max-w-[70ch] text-sm leading-prose text-text-delayed">
+              The clipboard is unavailable in this browser. Copy the new invitation link for{" "}
+              <span className="mono">{copy.email}</span> by hand — it replaces the link sent
+              earlier.
+            </p>
+            <input
+              className={`${INPUT} mono`}
+              type="text"
+              readOnly
+              value={copy.url}
+              aria-label={`Invitation link for ${copy.email}`}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+          </div>
+        )}
+
         {/* Seven columns of identities do not compress into a phone width, and
             squeezing them clips the fields that matter. The table keeps its
             real geometry and the frame scrolls instead. */}
@@ -601,23 +706,38 @@ export function UsersPage({
                   <td className="text-right whitespace-nowrap">
                     <Can ability={ABILITY.usersManage}>
                       {row.status === "invite pending" ? (
-                        <button
-                          type="button"
-                          className={LINK_BTN}
-                          disabled={!live || busyId === row.id}
-                          title={live ? "Issue a fresh invite link" : "Sign in to manage accounts"}
-                          onClick={() =>
-                            void runAction(
-                              row.id,
-                              async () => {
-                                await resendInvite(token ?? "", row.id);
-                              },
-                              `A fresh invite link was sent to ${row.email}.`,
-                            )
-                          }
-                        >
-                          {busyId === row.id ? "Sending…" : "Resend invite"}
-                        </button>
+                        <span className="inline-flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className={LINK_BTN}
+                            disabled={!live || (copy.kind === "copying" && copy.id === row.id)}
+                            title={
+                              live
+                                ? "Issue a fresh link and copy it — this replaces the link sent earlier"
+                                : "Sign in to manage accounts"
+                            }
+                            onClick={() => void copyInviteLink(row)}
+                          >
+                            {copyButtonLabel(row)}
+                          </button>
+                          <button
+                            type="button"
+                            className={LINK_BTN}
+                            disabled={!live || busyId === row.id}
+                            title={live ? "Email a fresh invite link" : "Sign in to manage accounts"}
+                            onClick={() =>
+                              void runAction(
+                                row.id,
+                                async () => {
+                                  await resendInvite(token ?? "", row.id);
+                                },
+                                `A fresh invite link was sent to ${row.email}.`,
+                              )
+                            }
+                          >
+                            {busyId === row.id ? "Sending…" : "Resend invite"}
+                          </button>
+                        </span>
                       ) : (
                         <button
                           type="button"

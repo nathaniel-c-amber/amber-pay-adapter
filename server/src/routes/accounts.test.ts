@@ -337,6 +337,17 @@ describe('POST /users/:id/resend-invite', () => {
     expect(invites).toHaveLength(2);
     expect(invites[1]?.token).not.toBe(firstToken);
 
+    // The fresh link comes back so the console can offer `Copy invitation link`.
+    // It is the SAME token the recipient was emailed, not a second one.
+    expect(res.body.token).toBe(invites[1]?.token);
+    expect(res.body.invite.email).toBe('pending@example.com');
+    expect(typeof res.body.invite.expiresAt).toBe('string');
+
+    // And the returned token is the LIVE one the invite route will accept.
+    const readable = await request(app).get(`/api/v1/auth/invite/${res.body.token as string}`);
+    expect(readable.status).toBe(200);
+    expect(readable.body.invite.email).toBe('pending@example.com');
+
     // The superseded link no longer works.
     const stale = await request(app)
       .post('/api/v1/auth/accept-invite')

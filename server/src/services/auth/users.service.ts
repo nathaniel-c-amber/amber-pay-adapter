@@ -183,8 +183,18 @@ export class UsersService {
    * The original token is unrecoverable by design (only its hash is stored), so
    * "resending" means issuing a fresh link and invalidating the previous one —
    * which is also what makes a lost invite safe to replace.
+   *
+   * The raw token is RETURNED, not only emailed, so the console can offer the
+   * administrator a copyable link. That disclosure is deliberate and narrow: the
+   * caller has already passed `admin` on `users` and the target has already
+   * passed `withinAdministration`, so the token reaches the one party who could
+   * issue an invite for this address either way. The invite record travels back
+   * with it so the caller can state the new expiry rather than guess it.
    */
-  async resendInvite(inviteId: string, adminPolicy: PolicyAttribute[]): Promise<void> {
+  async resendInvite(
+    inviteId: string,
+    adminPolicy: PolicyAttribute[],
+  ): Promise<{ invite: Invite; token: string }> {
     const organizations = administeredOrganizations(adminPolicy);
     const invites = await this.invites.list();
     const previous = invites.find((invite) => invite.id === inviteId);
@@ -202,16 +212,18 @@ export class UsersService {
 
     const token = randomBytes(32).toString('hex');
     const now = new Date();
-    await this.invites.create({
+    const reissued: Invite = {
       id: randomUUID(),
       email: previous.email,
       policyAttributes: previous.policyAttributes,
       tokenHash: hashToken(token),
       expiresAt: new Date(now.getTime() + parseDurationMs(env.INVITE_TTL)).toISOString(),
       createdAt: now.toISOString(),
-    });
+    };
+    await this.invites.create(reissued);
     await this.emailSender.sendInvite(previous.email, token);
     logger.info({ inviteId: previous.id }, 'Invite re-issued');
+    return { invite: reissued, token };
   }
 }
 

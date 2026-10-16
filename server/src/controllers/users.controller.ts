@@ -58,13 +58,30 @@ export function createUsersController(deps: UsersControllerDeps): UsersControlle
       res.status(200).json({ user });
     }),
 
+    /*
+      A DELIBERATE EXCEPTION to the "a token is never in a response" rule the
+      invite-creation route keeps. Like an invite, only the token's HASH is
+      stored, so a fresh link can never be read back — returning it on re-issue is
+      the only way the console can offer `Copy invitation link` at all. The
+      disclosure is bounded by the same authorization as the write: `requireAuth`
+      plus `admin` on `users` (route), then `withinAdministration` and
+      `assertGrantableByAdmin` on the invite itself (service). The token therefore
+      reaches the one party who could already issue an invite for this address.
+    */
     resendInvite: asyncHandler(async (req, res) => {
       const auth = req.auth;
       if (!auth) {
         throw new UnauthorizedError('Authentication required');
       }
-      await deps.usersService.resendInvite(req.params['id'] ?? '', auth.policy);
-      res.status(202).json({ status: 'resent' });
+      const { invite, token } = await deps.usersService.resendInvite(
+        req.params['id'] ?? '',
+        auth.policy,
+      );
+      res.status(202).json({
+        status: 'resent',
+        invite: { id: invite.id, email: invite.email, expiresAt: invite.expiresAt },
+        token,
+      });
     }),
   };
 }
