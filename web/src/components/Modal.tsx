@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useId, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 import { cx } from "./ui";
 import { IconClose } from "./icons";
 
@@ -33,6 +33,7 @@ export function Modal({
   children,
   footer,
   width = "max-w-[40rem]",
+  initialFocusRef,
 }: {
   title: string;
   /**
@@ -48,16 +49,34 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
   width?: string;
+  /**
+   * Where focus lands when the dialog opens.
+   *
+   * Defaults to the heading, which is the right answer for an editing dialog:
+   * the reader is told what they are editing before they are put in a field.
+   * A destructive confirmation is the exception — it is handed the SAFE action,
+   * so a stray Enter or Space cannot commit the thing being confirmed.
+   */
+  initialFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const returnTo = useRef<HTMLElement | null>(null);
+  /* One id pair per mounted dialog, so the title and description association
+     cannot collide with another overlay and does not rely on a page-wide
+     constant. */
+  const titleId = useId();
+  const descriptionId = useId();
 
   // Remember what opened us, so closing puts the operator back where they were.
+  // Focus lands on the safe target when one is named; otherwise on the heading.
   useEffect(() => {
     returnTo.current = (document.activeElement as HTMLElement | null) ?? null;
-    headingRef.current?.focus();
+    (initialFocusRef?.current ?? headingRef.current)?.focus();
     return () => returnTo.current?.focus?.();
+    // Mount-only on purpose: re-running would re-capture `returnTo` and move
+    // focus back to the top of a dialog the operator is already using.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /*
@@ -122,7 +141,8 @@ export function Modal({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={cx(
           "flex w-full flex-col gap-4 rounded-panel border border-ink-4 bg-midnight-2 p-5 shadow-panel focus-visible:outline-none max-xs:p-4",
@@ -133,7 +153,7 @@ export function Modal({
           <div className="min-w-0 flex-1">
             <p className={TITLE_CLASS}>{eyebrow}</p>
             <h2
-              id="modal-title"
+              id={titleId}
               ref={headingRef}
               tabIndex={-1}
               className="m-0 text-lg font-semibold leading-tight text-ink-1 focus-visible:outline-none"
@@ -141,7 +161,9 @@ export function Modal({
               {title}
             </h2>
             {description && (
-              <div className="m-0 mt-1 text-sm leading-prose text-ink-2">{description}</div>
+              <div id={descriptionId} className="m-0 mt-1 text-sm leading-prose text-ink-2">
+                {description}
+              </div>
             )}
           </div>
           {/*

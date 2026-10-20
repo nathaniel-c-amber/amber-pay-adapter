@@ -12,7 +12,7 @@ import { BTN, BTN_PRIMARY, Card, EmptyState, INPUT, Kpi, PageHeader, SearchBox }
 import { Can, Cannot } from "@/components/Can";
 import { EventStream } from "@/components/Tables";
 import { FilterChips, toggleInSet } from "@/components/FilterChips";
-import { IconCard, IconRefresh } from "@/components/icons";
+import { IconAlert, IconCard, IconRefresh } from "@/components/icons";
 import { formatDateTime } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
 import {
@@ -34,6 +34,7 @@ export function PaymentsPage({
   onCreateCheckout,
   creating,
   createError,
+  onOpenPayment,
 }: {
   events: LifecycleEvent[];
   recon: ReconciliationReport;
@@ -46,6 +47,8 @@ export function PaymentsPage({
   }) => void;
   creating: boolean;
   createError: string | null;
+  /** Opens a payment's detail from a lifecycle event's reference. */
+  onOpenPayment: (transactionId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<EventFilters>(NO_FILTERS);
@@ -233,10 +236,31 @@ export function PaymentsPage({
               recorded once the provider calls back.
             </p>
 
+            {/*
+              THE SERVER'S OWN EXPLANATION, NOT A GENERIC FAILURE.
+
+              `POST /payments` answers a 400 with the reason the pre-flight
+              rejected the request — no matching customer, no open invoice, an
+              amount above the balance, a currency the invoice is not held in.
+              Those are the only sentences that tell an operator what to change,
+              so they are shown verbatim inside a visible alert rather than
+              flattened into "The payment could not be prepared".
+            */}
             {createError && (
-              <p className="m-0 text-sm text-text-suspended" role="alert">
-                {createError}
-              </p>
+              <div
+                className="flex items-start gap-2 rounded-panel border border-[rgb(248_113_113/0.3)] bg-state-tint-suspended px-3 py-2 text-text-suspended"
+                role="alert"
+              >
+                <span className="mt-0.5 flex-none" aria-hidden>
+                  <IconAlert />
+                </span>
+                <p className="m-0 text-sm leading-prose text-ink-1">
+                  <span className="font-semibold text-text-suspended">
+                    The payment was not started.
+                  </span>{" "}
+                  {createError}
+                </p>
+              </div>
             )}
           </form>
         </Can>
@@ -319,7 +343,7 @@ export function PaymentsPage({
             }
           />
         ) : (
-          <EventStream events={filtered} />
+          <EventStream events={filtered} onOpenPayment={onOpenPayment} />
         )}
       </Card>
     </div>

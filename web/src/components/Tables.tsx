@@ -12,7 +12,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { EVENT_LABEL } from "@/types/domain";
 import type { EventType, Failure, LifecycleEvent } from "@/types/domain";
 import { Can } from "./Can";
-import { IconSortAsc, IconSortAscDesc, IconSortDesc } from "./icons";
+import { IconChevronRight, IconSortAsc, IconSortAscDesc, IconSortDesc } from "./icons";
 import { formatDate, formatDateTime, formatTimeOfDay } from "@/utils/datetime";
 import { ABILITY } from "@/utils/permissions";
 import { cx } from "./ui";
@@ -98,7 +98,23 @@ const EVENT_HEAD_LABEL: Record<string, string> = {
   detail: "Detail",
 };
 
-function buildEventColumns(): ColumnDef<any, LifecycleEvent, unknown>[] {
+/**
+ * The event types whose `ref` is a gateway transaction reference and therefore
+ * resolves to a payment. A connector or sync event's ref is a connection id,
+ * and offering to "open the payment" for one would be a dead end dressed as a
+ * link.
+ */
+const PAYMENT_REF_TYPES: ReadonlySet<EventType> = new Set<EventType>([
+  "initiated",
+  "collected",
+  "payment-refunded",
+  "payment-declined",
+  "payment-failed",
+]);
+
+function buildEventColumns(
+  onOpenPayment?: (transactionId: string) => void,
+): ColumnDef<any, LifecycleEvent, unknown>[] {
   return [
     {
       id: "at",
@@ -127,12 +143,38 @@ function buildEventColumns(): ColumnDef<any, LifecycleEvent, unknown>[] {
       accessorKey: "type",
       header: "Event",
       sortFn: sortEventType,
-      cell: (info) => (
-        <span className="inline-flex items-center gap-2 text-sm font-semibold whitespace-nowrap text-ink-1">
-          <span className="size-2 rounded-[1px] bg-primary" aria-hidden />
-          {EVENT_LABEL[String(info.getValue()) as EventType] ?? "Event"}
-        </span>
-      ),
+      cell: (info) => {
+        const event = info.row.original;
+        const openable = onOpenPayment && PAYMENT_REF_TYPES.has(event.type);
+        const label = EVENT_LABEL[event.type] ?? "Event";
+        if (!openable) {
+          return (
+            <span className="inline-flex items-center gap-2 text-sm font-semibold whitespace-nowrap text-ink-1">
+              <span className="size-2 rounded-[1px] bg-primary" aria-hidden />
+              {label}
+            </span>
+          );
+        }
+        /*
+           The EVENT is the control, not the reference beside it. Both columns
+           are not always visible — the ref is dropped at the narrow tier — and
+           two controls to the same payment would be two tab stops announcing
+           the same destination. The event name is the thing an operator picks
+           out of the row anyway.
+        */
+        return (
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-panel border-0 bg-transparent p-0 text-left text-sm font-semibold whitespace-nowrap text-ink-1 transition-colors hover:text-primary-ink"
+            onClick={() => onOpenPayment(event.ref)}
+            aria-label={`Open payment ${event.ref}: ${label}`}
+          >
+            <span className="size-2 flex-none rounded-[1px] bg-primary" aria-hidden />
+            {label}
+            <IconChevronRight size={12} className="flex-none text-ink-3" />
+          </button>
+        );
+      },
     },
     {
       id: "ref",
@@ -212,8 +254,19 @@ const EVENT_HEAD_CLASS: Record<string, string> = {
 const EVENT_GRID = "gap-x-5 px-4";
 const EVENT_COLS = "grid-cols-[118px_136px_minmax(104px,0.7fr)_minmax(132px,1fr)_minmax(0,2.2fr)]";
 
-export function EventStream({ events }: { events: LifecycleEvent[] }) {
-  const columns = useMemo(() => buildEventColumns(), []);
+export function EventStream({
+  events,
+  onOpenPayment,
+}: {
+  events: LifecycleEvent[];
+  /**
+   * When supplied, a payment event's reference becomes a control that opens
+   * that payment's detail. Omitted elsewhere (the Event log, Overview) where a
+   * reference is a log value rather than a destination.
+   */
+  onOpenPayment?: (transactionId: string) => void;
+}) {
+  const columns = useMemo(() => buildEventColumns(onOpenPayment), [onOpenPayment]);
   const table = useTable({
     key: "events",
     features,

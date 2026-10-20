@@ -298,6 +298,58 @@ export interface ApiPayment {
   transactionId: string;
   status: "initiated" | "collected" | "failed" | "refunded";
   processedAt: string;
+  /**
+   * MAJOR units as a decimal string ("250.00"), never a number.
+   *
+   * Optional because the original payment entity deliberately carried no
+   * figure, and a deployment that predates refunds will not send one. The
+   * refund dialog reads it as the ceiling for a partial refund and offers full
+   * only when it is absent — it never guesses a figure.
+   */
+  amount?: string | null;
+  /**
+   * The original charge under the name a refund-aware read may use. Kept as an
+   * alias of `amount` rather than a second concept: the dialog reads
+   * `amount ?? originalAmount` and there is only ever one original figure.
+   */
+  originalAmount?: string | null;
+  /** ISO 4217 code the amount is denominated in, when the API reports it. */
+  currency?: string | null;
+  /** Present once a refund has been recorded, when the API reports it. */
+  refundedAt?: string | null;
+  /** The refunded figure in MAJOR units, when the API reports it. */
+  refundAmount?: string | null;
+}
+
+/**
+ * The record `POST /payments/:id/refund` returns alongside the updated payment.
+ *
+ * Only the fields the console can display are declared. The server may return
+ * more; nothing here is required, because the authoritative refunded state is
+ * `payment.status === "refunded"` — this is the receipt for the one refund that
+ * was just made, and a reload must not depend on having it.
+ */
+export interface ApiRefund {
+  /** Whether the whole charge, or part of it, was returned. */
+  scope?: "full" | "partial";
+  /**
+   * What happened in the accounting system AFTER the money moved. `failed` and
+   * `manual-adjustment-required` are both "the refund succeeded, the books did
+   * not" — the distinction is who has to finish the job, not whether money
+   * moved, so neither may be presented as a failed refund.
+   */
+  accountingReversal?: "reversed" | "manual-adjustment-required" | "failed" | "not-configured";
+  /** The server's explanation when the books still need a person. */
+  message?: string;
+  /* The local refund record, when the API sends one. Optional because the
+     authoritative refunded state is `payment.status`, and a reload must not
+     depend on this receipt. */
+  id?: string;
+  paymentId?: string;
+  /** MAJOR units as a decimal string. */
+  amount?: string;
+  currency?: string;
+  refundedAt?: string;
 }
 
 /**

@@ -10,7 +10,8 @@
  *
  * Route strings are the *canonical* paths (no leading slash):
  *   overview · connections · connections/:id · findings · findings/:id ·
- *   events · events/:stage · payments · synchronization · reconciliation ·
+ *   events · events/:stage · payments · payments/:transactionId ·
+ *   synchronization · reconciliation ·
  *   users · settings · profile · signin · invite/:token · forgot · reset/:token
  */
 
@@ -63,7 +64,10 @@ export interface Route {
    (events/ingested) so a stage in the flow spine can drill through to exactly
    the events that stage is derived from, rather than dumping the operator into
    an unfiltered log and leaving them to re-create the filter by hand. */
-const DETAIL_ROUTES: RouteName[] = ["connections", "findings", "events", "invite", "reset"];
+/* `payments` carries a GATEWAY transaction reference, not our payment uuid:
+   that is the value a lifecycle event shows an operator, and the authorized
+   by-transaction lookup resolves it. */
+const DETAIL_ROUTES: RouteName[] = ["connections", "findings", "events", "payments", "invite", "reset"];
 
 function parse(hash: string): Route {
   /*

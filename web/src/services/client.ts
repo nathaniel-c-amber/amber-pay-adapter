@@ -15,6 +15,7 @@ import type {
   ApiInvoiceMatchStrategy,
   ApiPayment,
   ApiPolicyAttribute,
+  ApiRefund,
   ApiServiceStatus,
   MetricsResponse,
 } from "@/types/api";
@@ -146,6 +147,40 @@ export async function getPaymentByTransaction(
     { headers: authHeaders(token) },
   );
   return result.payment;
+}
+
+/**
+ * POST /payments/:id/refund — refund a collected payment, once.
+ *
+ * THE TRANSACTION ID IS THE SAFETY CATCH, not a formality. The provider allows
+ * exactly one refund per transaction and there is no undo, so the server
+ * refuses unless `confirmation` equals the payment's own transaction id. The
+ * console makes the operator type it rather than asking "are you sure?" — a
+ * second yes/no is something a hand can dismiss without reading, while copying
+ * a specific reference is not.
+ *
+ * `amount` is OMITTED for a full refund. When supplied it is MAJOR units as a
+ * decimal string ("10.00") — never a number, for the same reason every other
+ * monetary field here is a string: a binary float cannot hold it exactly.
+ *
+ * A 502 has two meanings with very different consequences — the gateway refused
+ * (nothing moved) and the money moved but the accounting system could not be
+ * updated (it did) — so callers must classify the message before presenting it.
+ * See `classifyRefundRejection` in `@/utils/refund`.
+ */
+export function refundPayment(
+  token: string,
+  paymentId: string,
+  body: { confirmation: string; amount?: string },
+): Promise<{ payment: ApiPayment; refund: ApiRefund }> {
+  return request<{ payment: ApiPayment; refund: ApiRefund }>(
+    `/payments/${encodeURIComponent(paymentId)}/refund`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 /* ----------------------------------------------- the customer's own status */

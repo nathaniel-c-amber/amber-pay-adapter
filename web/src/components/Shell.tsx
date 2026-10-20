@@ -79,6 +79,7 @@ import { ConnectionsPage, ConnectionDetailPage } from "@/pages/ConnectionsPage";
 import { FindingsPage, FindingDetailPage } from "@/pages/FindingsPage";
 import { EventsPage } from "@/pages/EventsPage";
 import { PaymentsPage } from "@/pages/PaymentsPage";
+import { PaymentDetailPage } from "@/pages/PaymentDetailPage";
 import { SynchronizationPage } from "@/pages/SynchronizationPage";
 import { ReconciliationPage } from "@/pages/ReconciliationPage";
 import { ConfigPage } from "@/pages/ConfigPage";
@@ -1292,7 +1293,14 @@ export default function Shell() {
           />
         );
       case "payments":
-        return (
+        return route.param ? (
+          <PaymentDetailPage
+            transactionId={route.param}
+            token={token}
+            onBack={() => navigate("payments")}
+            onRequireSignIn={requireSignIn}
+          />
+        ) : (
           <PaymentsPage
             events={data.events}
             recon={recon}
@@ -1300,6 +1308,7 @@ export default function Shell() {
             creating={creatingCheckout}
             createError={checkoutError}
             onCreateCheckout={(input) => void startCheckout(input)}
+            onOpenPayment={(transactionId) => navigate("payments", transactionId)}
           />
         );
       case "synchronization":

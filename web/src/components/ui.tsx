@@ -86,6 +86,15 @@ export const BTN_PRIMARY = `${BTN_BASE} border-primary bg-primary text-on-primar
 */
 export const BTN_OUTLINE = `${BTN_BASE} border-primary bg-transparent text-primary hover:not-disabled:bg-sel-bg`;
 
+/*
+   The IRREVERSIBLE action, as its own whole string for the same reason as the
+   pair above. Scarlet is the console's "suspended" line ink; the on-scarlet ink
+   is `ink-1`, which measures 5.97:1 (white on the brand amber is the 3.31:1
+   defect this palette already corrected once). Used for a control that moves
+   money back and cannot be undone — never as decoration.
+*/
+export const BTN_DANGER = `${BTN_BASE} border-line-scarlet bg-line-scarlet text-ink-1 hover:not-disabled:border-text-suspended hover:not-disabled:bg-text-suspended hover:not-disabled:text-midnight`;
+
 /* Secondary text button (the old `.amb-link-btn`). */
 /* Secondary text button (the old `.amb-link-btn`).
    `whitespace-nowrap` because a button's LABEL is a phrase, and a phrase broken
@@ -327,6 +336,42 @@ export function SeverityBadge({ severity }: { severity: Severity | "info" }) {
     <span className={cx(PILL, "font-mono uppercase tracking-label", SEVERITY_TONE[tone])}>
       <span className={MARK} aria-hidden />
       {label}
+    </span>
+  );
+}
+
+/* A payment's lifecycle state. Refunded is deliberately MUTED rather than red:
+   a refund is a completed reversal, not a fault. Every state still carries a
+   shape mark and its word, so the badge never depends on colour. */
+const PAYMENT_STATUS_TONE: Record<
+  "initiated" | "collected" | "failed" | "refunded",
+  string
+> = {
+  initiated: "text-secondary-ink bg-secondary-soft",
+  collected: "text-line-green bg-state-tint-arriving",
+  failed: "text-text-suspended bg-state-tint-suspended",
+  refunded: "text-ink-2 bg-midnight-3",
+};
+
+const PAYMENT_STATUS_LABEL: Record<
+  "initiated" | "collected" | "failed" | "refunded",
+  string
+> = {
+  initiated: "Initiated",
+  collected: "Collected",
+  failed: "Failed",
+  refunded: "Refunded",
+};
+
+export function PaymentStatusBadge({
+  status,
+}: {
+  status: "initiated" | "collected" | "failed" | "refunded";
+}) {
+  return (
+    <span className={cx(PILL, PAYMENT_STATUS_TONE[status])}>
+      <span className={MARK} aria-hidden />
+      {PAYMENT_STATUS_LABEL[status]}
     </span>
   );
 }
