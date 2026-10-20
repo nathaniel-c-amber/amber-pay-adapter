@@ -7,6 +7,7 @@ import { organizationIdOf } from '../utils/policyResource.js';
 import { createPaymentsController } from '../controllers/payments.controller.js';
 import { PaymentService } from '../services/payments/payment.service.js';
 import { PaymentStatusService } from '../services/payments/paymentStatus.service.js';
+import { RefundService } from '../services/payments/refund.service.js';
 import { CheckoutService } from '../services/gateway/checkout.service.js';
 import { PostgresCheckoutIntentStore } from '../repositories/postgres.js';
 import { getPool } from '../db/pool.js';
@@ -36,12 +37,22 @@ const STATUS_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 */
 const STATUS_RATE_LIMIT_MAX = 60;
 
+/*
+  A REFUND IS IRREVERSIBLE AND THE PROVIDER PERMITS EXACTLY ONE, so this budget is
+  about a stuck client or a repeated click, not throughput. Ten in the same
+  quarter-hour as every other limiter here; anything past that is not an operator
+  making progress.
+*/
+const REFUND_RATE_LIMIT_MAX = 10;
+
 export interface PaymentRouteDeps {
   payments?: PaymentRepository;
   /** Test seam: the checkout, so a route test never reaches the gateway. */
   checkout?: CheckoutService;
   /** Test seam: the status read behind the public token endpoint. */
   statusStore?: PaymentStatusStore;
+  /** Test seam: the refund write, so a route test never reaches the gateway. */
+  refund?: RefundService;
 }
 
 /**
@@ -53,19 +64,29 @@ export interface PaymentRouteDeps {
  */
 export function createPaymentRouter(deps: PaymentRouteDeps = {}): express.Router {
   const intents = new PostgresCheckoutIntentStore(getPool());
+  const payments = deps.payments ?? getRepositories().payments;
   const service = new PaymentService(
-    deps.payments ?? getRepositories().payments,
+    payments,
     deps.checkout ?? new CheckoutService(intents),
   );
   const controller = createPaymentsController({
     service,
     status: new PaymentStatusService(deps.statusStore ?? intents),
+    refund: deps.refund ?? new RefundService({ payments }),
   });
   const router = express.Router();
 
   const statusLimiter = rateLimit({
     windowMs: STATUS_RATE_LIMIT_WINDOW_MS,
     max: STATUS_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: rateLimitHandler,
+  });
+
+  const refundLimiter = rateLimit({
+    windowMs: STATUS_RATE_LIMIT_WINDOW_MS,
+    max: REFUND_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     handler: rateLimitHandler,
@@ -158,6 +179,22 @@ export function createPaymentRouter(deps: PaymentRouteDeps = {}): express.Router
       organizationId: organizationIdOf(req),
     })),
     controller.getPayment,
+  );
+
+  /*
+    POST /api/v1/payments/:id/refund
+
+    The same PBAC boundary as creating a payment: a refund moves money back out,
+    so it is a `write` on the same scope. `paymentScope` falls back to the
+    deployment's organization when the body omits one (the body deliberately
+    does — a refund identifies a payment, not a tenant).
+  */
+  router.post(
+    '/payments/:id/refund',
+    refundLimiter,
+    requireAuth,
+    requirePolicy('write', paymentScope),
+    controller.refundPayment,
   );
 
   return router;

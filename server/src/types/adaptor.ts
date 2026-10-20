@@ -47,6 +47,42 @@ export type CustomerMatchStrategy = 'displayName' | 'customField' | 'notes';
 export type CustomerMatchMode = 'exact' | 'contains';
 
 /**
+ * Why a pre-flight check refused a checkout.
+ *
+ * These are DEFINITIVE data answers: the accounting record says the payment
+ * cannot be placed. They are values so the caller can map each to a sentence
+ * that names the fix, and so an upstream fault can never be mistaken for one
+ * of them (see `preflightPayment` below).
+ */
+export type PreflightRejection =
+  | 'customer-not-found'
+  | 'customer-ambiguous'
+  | 'invoice-not-found'
+  | 'amount-invalid'
+  | 'amount-exceeds-balance'
+  | 'currency-mismatch';
+
+export interface PreflightOutcome {
+  ok: boolean;
+  /** Present only when `ok` is false. */
+  reason?: PreflightRejection;
+}
+
+/**
+ * What a pre-flight check is told about the payment being created.
+ *
+ * THE MATCH RULE IS PART OF THE INPUT, not read by the adaptor: an adaptor
+ * reads no configuration (the same rule `pushCompletedPayment` follows), so the
+ * caller resolves it and hands it over.
+ */
+export interface PreflightPaymentInput {
+  matchValue: string;
+  amount: string;
+  currency: string;
+  match: CustomerMatchConfig;
+}
+
+/**
  * HOW an adaptor resolves a payment to a customer and an invoice.
  *
  * Deployment configuration, supplied by the CALLER — an adaptor reads no
@@ -126,6 +162,32 @@ export interface HealthCheckResult {
  * does not exist, or guess. The invoice is now DISCOVERED, from the customer
  * the payment identifies.
  */
+/**
+ * What an adaptor is asked to reverse after the GATEWAY has already refunded.
+ *
+ * `originalAmount` and `refundAmount` are the two figures the accounting side
+ * needs to tell a full reversal (remove the payment) from a partial one (which
+ * must be adjusted by hand). They are named with the qualifier rather than
+ * `amount` because they are not a figure the domain ever keeps — they exist
+ * only for the duration of this call.
+ */
+export interface ReversalPaymentInput {
+  transactionId: string;
+  originalAmount: string;
+  refundAmount: string;
+}
+
+/**
+ * What the accounting system did about a refund that already happened.
+ *
+ * A PARTIAL REFUND IS NOT DELETED. Deleting the upstream payment would restore
+ * the whole invoice balance, which is wrong when only part of the money went
+ * back; the adaptor says so and a person completes the adjustment.
+ */
+export type ReversalOutcome =
+  | { status: 'reversed' }
+  | { status: 'manual-adjustment-required' };
+
 export interface PaymentRef {
   /**
    * The gateway's transaction id for this payment. It is the pipeline's
@@ -233,6 +295,28 @@ export interface AccountingAdaptor {
     payment: PaymentRef,
     match: CustomerMatchConfig,
   ): Promise<PushResult>;
+  /**
+   * Check whether a payment COULD be placed before a checkout is minted.
+   *
+   * OPTIONAL on purpose. Absence means "this adaptor cannot check", which is
+   * different from "the check passed": the caller skips validation and lets the
+   * payment through, exactly as it does for a deployment with no accounting
+   * integration at all. Sage therefore needs no change.
+   *
+   * A definitive data refusal is RETURNED (`ok:false`); an upstream fault
+   * THROWS. The caller must not treat the second as the first — a QuickBooks
+   * outage must never stop a customer from paying.
+   */
+  preflightPayment?(input: PreflightPaymentInput): Promise<PreflightOutcome>;
+  /**
+   * Reverse the accounting record after the GATEWAY has refunded the money.
+   *
+   * OPTIONAL for the same reason `preflightPayment` is. It is called only after
+   * the provider has already accepted the refund, so a failure here is reported
+   * as a bookkeeping problem and never treated as a refund failure — the gateway
+   * permits exactly one refund and cannot be made to try again.
+   */
+  reverseCompletedPayment?(input: ReversalPaymentInput): Promise<ReversalOutcome>;
   pullSyncStatus(): Promise<SyncResult>;
   healthCheck(): Promise<HealthCheckResult>;
 }

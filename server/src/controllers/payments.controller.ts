@@ -8,6 +8,7 @@ import { GATEWAY_CURRENCIES, DECIMAL_AMOUNT, STUDENT_ID } from '../services/gate
 import { OPAQUE_REFERENCE } from '../services/adaptors/quickbooksWire.js';
 import type { PaymentService } from '../services/payments/payment.service.js';
 import type { PaymentStatusService } from '../services/payments/paymentStatus.service.js';
+import type { RefundService } from '../services/payments/refund.service.js';
 
 const createPaymentBodySchema = z.object({
   invoiceId: z.string().min(1),
@@ -66,6 +67,8 @@ export interface PaymentsControllerDeps {
    * does not.
    */
   status?: PaymentStatusService;
+  /** The refund write. Supplied by the route; optional for existing tests. */
+  refund?: RefundService;
 }
 
 export interface PaymentsController {
@@ -89,7 +92,15 @@ export interface PaymentsController {
    * return and, more importantly, for what it may not.
    */
   getPaymentStatus: RequestHandler;
+  /** POST /api/v1/payments/:id/refund */
+  refundPayment: RequestHandler;
 }
+
+/** The refund body: a typed confirmation, and an optional partial amount. */
+const refundBodySchema = z.object({
+  confirmation: z.string().min(1).max(64),
+  amount: z.string().regex(DECIMAL_AMOUNT).optional(),
+});
 
 /**
  * Payment endpoints.
@@ -210,6 +221,36 @@ export function createPaymentsController(deps: PaymentsControllerDeps): Payments
       }
       const view = await deps.status.lookup(req.params['token'] ?? '');
       res.status(200).json(view);
+    }),
+
+    refundPayment: asyncHandler(async (req, res) => {
+      if (!req.auth) {
+        throw new UnauthorizedError('Authentication required');
+      }
+      if (!deps.refund) {
+        throw new NotFoundError('Refunds are not available');
+      }
+      const parsed = refundBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError('Invalid refund payload');
+      }
+
+      // C1: the service reads the payment inside the caller's organizations and
+      // answers 404 when it is not there — a foreign payment must be
+      // indistinguishable from one that does not exist.
+      const organizationIds = authorizedOrganizationIds(req.auth.policy, 'payments');
+      const result = await deps.refund.refundPayment(
+        req.params['id'] ?? '',
+        parsed.data,
+        organizationIds,
+      );
+
+      /*
+        Explicitly field-by-field. `refund` carries a scope and a reversal
+        outcome, never a figure or anything from the gateway's response — the
+        only money in this exchange is what the caller already knew.
+      */
+      res.status(200).json({ payment: result.payment, refund: result.refund });
     }),
   };
 }

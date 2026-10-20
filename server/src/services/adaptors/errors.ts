@@ -68,7 +68,11 @@ export type AdaptorApplyFailure =
   /** The payment was recorded but the invoice did not clear. */
   | 'invoice-not-cleared'
   /** A bounded scan ran out of pages before it found a match. */
-  | 'scan-limit-reached';
+  | 'scan-limit-reached'
+  /** No upstream payment carries the reference a reversal was asked for. */
+  | 'payment-not-found'
+  /** The upstream accepted the refund but its own record could not be corrected. */
+  | 'refund-reversal-failed';
 
 /**
  * A payment that could not be applied. Thrown, never returned, so it cannot be

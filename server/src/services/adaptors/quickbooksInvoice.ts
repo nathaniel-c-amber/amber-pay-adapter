@@ -23,9 +23,10 @@
  * make that claim true.
  */
 
-import { AdaptorApplyError } from './errors.js';
+import { AdaptorApplyError, AdaptorError } from './errors.js';
 import {
   assertQboOk,
+  queryReturned,
   queryRows,
   queryPath,
   sqlLiteral,
@@ -34,6 +35,7 @@ import type { CustomerMatchConfig } from '../../types/adaptor.js';
 import type {
   QboInvoice,
   QboPaymentCreated,
+  QboPaymentDelete,
   QboPaymentRequest,
   QboRequest,
 } from './quickbooksWire.js';
@@ -188,13 +190,103 @@ function compareNullable(a: string | undefined, b: string | undefined): number {
 export async function findPaymentByReference(
   request: QboRequest,
   reference: string,
-): Promise<{ found: boolean; invoiceIds: string[]; calls: number }> {
-  const response = await request(
-    queryPath(`select * from Payment where PaymentRefNum = ${sqlLiteral(reference)}`),
-  );
-  assertQboOk(response, 'QuickBooks payment lookup');
-  const payments = queryRows<QboPaymentCreated>(response.body, 'Payment');
+): Promise<{
+  found: boolean;
+  invoiceIds: string[];
+  paymentId: string | null;
+  syncToken: string | null;
+  calls: number;
+}> {
+  try {
+    const response = await request(
+      queryPath(`select * from Payment where PaymentRefNum = ${sqlLiteral(reference)}`),
+    );
+    assertQboOk(response, 'QuickBooks payment lookup');
+    return outcomeFromPayments(queryRows<QboPaymentCreated>(response.body, 'Payment'), 1);
+  } catch (err) {
+    /*
+      ★ THE FILTER IS TRIED FIRST, AND THE FALLBACK IS EVIDENCE-DRIVEN.
 
+      `PaymentRefNum` is not listed as filterable on the Payment entity, and a
+      live provider is entitled to answer the filter with HTTP 400 "Error
+      parsing query" — the same way it refuses `Invoice.Balance`. Because that
+      has NOT been verified against the refund fixture, the filter is still
+      attempted (it is one call when it works) and a 400 falls back to the
+      bounded scan below. Any other fault is a real fault and is rethrown: an
+      outage must not be reported as "no payment".
+    */
+    if (!isRefusedQuery(err)) throw err;
+    return scanPaymentsByReference(request, reference);
+  }
+}
+
+/** How many Payment rows one page of the fallback scan asks for. */
+export const PAYMENT_SCAN_PAGE_SIZE = 200;
+
+/**
+ * The page ceiling for the fallback scan. The same bounded-crawl reasoning as
+ * the customer scan: a provider that cannot filter must not turn one refund
+ * into an unbounded walk of a rate-limited API.
+ */
+export const PAYMENT_SCAN_MAX_PAGES = 10;
+
+/** Did the provider reject the QUERY rather than the call? */
+function isRefusedQuery(err: unknown): boolean {
+  return err instanceof AdaptorError && err.statusCode === 400;
+}
+
+/**
+ * The documented fallback when `PaymentRefNum` is not filterable: page through
+ * payments and compare the reference in memory.
+ *
+ * BOUNDED deliberately, and it says which limit it hit rather than reporting a
+ * miss: a reference past the ceiling has not been shown to be absent.
+ */
+async function scanPaymentsByReference(
+  request: QboRequest,
+  reference: string,
+): Promise<{
+  found: boolean;
+  invoiceIds: string[];
+  paymentId: string | null;
+  syncToken: string | null;
+  calls: number;
+}> {
+  let calls = 0;
+  for (let page = 1; page <= PAYMENT_SCAN_MAX_PAGES; page += 1) {
+    const response = await request(
+      queryPath(
+        `select * from Payment startPosition ${(page - 1) * PAYMENT_SCAN_PAGE_SIZE + 1} maxResults ${PAYMENT_SCAN_PAGE_SIZE}`,
+      ),
+    );
+    calls += 1;
+    assertQboOk(response, 'QuickBooks payment scan');
+    const rows = queryRows<QboPaymentCreated>(response.body, 'Payment');
+    const matches = rows.filter((payment) => payment.PaymentRefNum === reference);
+    if (matches.length > 0) {
+      return outcomeFromPayments(matches, calls);
+    }
+    if (rows.length < PAYMENT_SCAN_PAGE_SIZE || queryReturned(response.body) < PAYMENT_SCAN_PAGE_SIZE) {
+      return outcomeFromPayments([], calls);
+    }
+  }
+  throw new AdaptorApplyError(
+    'scan-limit-reached',
+    `Scanned ${PAYMENT_SCAN_MAX_PAGES * PAYMENT_SCAN_PAGE_SIZE} QuickBooks payments without finding this transaction reference`,
+  );
+}
+
+/** Reduce payment rows to the identity and linked invoices a caller needs. */
+function outcomeFromPayments(
+  payments: QboPaymentCreated[],
+  calls: number,
+): {
+  found: boolean;
+  invoiceIds: string[];
+  paymentId: string | null;
+  syncToken: string | null;
+  calls: number;
+} {
   const invoiceIds: string[] = [];
   for (const payment of payments) {
     for (const line of payment.Line ?? []) {
@@ -203,7 +295,14 @@ export async function findPaymentByReference(
       }
     }
   }
-  return { found: payments.length > 0, invoiceIds, calls: 1 };
+  const first = payments[0];
+  return {
+    found: payments.length > 0,
+    invoiceIds,
+    paymentId: first?.Id ?? null,
+    syncToken: first?.SyncToken ?? null,
+    calls,
+  };
 }
 
 /* --- 3. APPLY ------------------------------------------------------------ */
@@ -264,6 +363,46 @@ function readCreatedPayment(body: unknown): QboPaymentCreated | null {
     Id: id,
     ...(typeof unapplied === 'number' ? { UnappliedAmt: unapplied } : {}),
   };
+}
+
+/* --- 3b. REVERSE --------------------------------------------------------- */
+
+/**
+ * The optimistic-concurrency token a delete needs.
+ *
+ * Read from the payment itself rather than remembered from the original create:
+ * the create response is not the thing being deleted, and a token can move
+ * whenever anything else touches the record. A delete with a stale token is
+ * refused by the provider, so this is the only safe source.
+ */
+export async function readPaymentSyncToken(
+  request: QboRequest,
+  paymentId: string,
+): Promise<string | null> {
+  const response = await request(`/payment/${paymentId}`);
+  assertQboOk(response, 'QuickBooks payment read');
+  const body = response.body;
+  if (typeof body !== 'object' || body === null) return null;
+  const payment = (body as { Payment?: unknown }).Payment;
+  if (typeof payment !== 'object' || payment === null) return null;
+  const syncToken = (payment as { SyncToken?: unknown }).SyncToken;
+  return typeof syncToken === 'string' && syncToken.length > 0 ? syncToken : null;
+}
+
+/**
+ * Remove an upstream payment, which is how QuickBooks undoes a FULL refund.
+ *
+ * The body is exactly `{ Id, SyncToken }`: the provider's delete operation
+ * identifies the row and the version it is deleting, and nothing else.
+ */
+export async function deletePayment(
+  request: QboRequest,
+  paymentId: string,
+  syncToken: string,
+): Promise<void> {
+  const body: QboPaymentDelete = { Id: paymentId, SyncToken: syncToken };
+  const response = await request('/payment?operation=delete', body);
+  assertQboOk(response, 'QuickBooks payment delete');
 }
 
 /* --- 4. VERIFY ----------------------------------------------------------- */

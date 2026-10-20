@@ -451,6 +451,17 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     }
     return undefined;
   }
+
+  async updateStatus(id: string, status: Payment['status']): Promise<Payment | undefined> {
+    const existing = this.byId.get(id);
+    if (!existing) return undefined;
+    // A new object rather than a mutation: a caller may still be holding the
+    // previous read, and a status that changed underneath it is exactly the
+    // race this method is supposed to make visible.
+    const updated: Payment = { ...existing, status };
+    this.byId.set(id, updated);
+    return updated;
+  }
 }
 
 /**

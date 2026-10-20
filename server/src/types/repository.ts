@@ -3,6 +3,7 @@ import type {
   Failure,
   LifecycleEvent,
   Payment,
+  PaymentStatus,
   ReconciliationJob,
 } from '../models/domain.js';
 import type { DeploymentSettings, DeploymentSettingsPatch } from '../models/deploymentSettings.js';
@@ -211,6 +212,16 @@ export interface PaymentRepository {
     transactionId: string,
     organizationIds: string[] | null,
   ): Promise<Payment | undefined>;
+  /**
+   * Move a payment to a new status, returning the row as written.
+   *
+   * There is no optimistic-concurrency token here on purpose: the only
+   * transitions this currently serves are terminal (`refunded`) and are guarded
+   * by a read of the current status in the service. A caller that needs to
+   * distinguish a successful transition from a concurrent one must check the
+   * returned status rather than assume the write landed.
+   */
+  updateStatus(id: string, status: PaymentStatus): Promise<Payment | undefined>;
 }
 
 /** Container of every repository, wired by the factory. */

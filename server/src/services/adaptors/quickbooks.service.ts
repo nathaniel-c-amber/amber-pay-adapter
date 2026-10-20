@@ -11,7 +11,11 @@ import type {
   HealthCheckResult,
   HttpMethod,
   PaymentRef,
+  PreflightOutcome,
+  PreflightPaymentInput,
   PushResult,
+  ReversalOutcome,
+  ReversalPaymentInput,
   SyncResult,
 } from '../../types/adaptor.js';
 import {
@@ -24,14 +28,17 @@ import {
 import { findCustomerByIdentifier } from './quickbooksCustomer.js';
 import {
   createPaymentForInvoice,
+  deletePayment,
   findOpenInvoices,
   findPaymentByReference,
+  readPaymentSyncToken,
   selectInvoiceToPay,
   unappliedRemainder,
   verifyInvoiceCleared,
 } from './quickbooksInvoice.js';
 import { httpTransport } from './httpTransport.js';
 import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
+import { minorUnitsFromNumber, toMinorUnits } from '../../utils/money.js';
 import type { QboRequest } from './quickbooksWire.js';
 
 /**
@@ -261,6 +268,111 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
       alreadyApplied: false,
       verified: true,
     };
+  }
+
+  /**
+   * Check whether a payment COULD be placed, without writing anything.
+   *
+   * The same three questions `pushCompletedPayment` asks before its first
+   * write — who is this, what is outstanding, and does the figure fit — so a
+   * customer is refused at checkout for the reason the ledger push would later
+   * fail, rather than after their card has been charged.
+   *
+   * Each refusal is a DEFINITIVE data answer. A fault is thrown instead, because
+   * the caller must let the payment through when the provider is merely
+   * unreachable; making an outage look like a rejection would stop every
+   * customer from paying during it.
+   */
+  async preflightPayment(input: PreflightPaymentInput): Promise<PreflightOutcome> {
+    this.assertConnected();
+    const request = this.qboRequest;
+
+    const lookup = await findCustomerByIdentifier(request, input.match, input.matchValue);
+    if (!lookup.ok) {
+      return { ok: false, reason: lookup.reason };
+    }
+
+    const { invoices } = await findOpenInvoices(request, lookup.customer.id);
+    if (invoices.length === 0) {
+      return { ok: false, reason: 'invoice-not-found' };
+    }
+    const invoice = selectInvoiceToPay(invoices);
+
+    const requested = toMinorUnits(input.amount);
+    if (requested === null || requested <= 0) {
+      return { ok: false, reason: 'amount-invalid' };
+    }
+
+    const balance = minorUnitsFromNumber(invoice.Balance);
+    if (balance === null) {
+      // Not a rejection: the provider returned a balance this process cannot
+      // compare, which is a fault in the answer rather than a fact about the
+      // payment. Throwing keeps the caller's "do not block on a fault" rule.
+      throw new AdaptorConnectionError(
+        'QuickBooks returned an invoice balance that could not be compared',
+      );
+    }
+    if (requested > balance) {
+      return { ok: false, reason: 'amount-exceeds-balance' };
+    }
+
+    // Absence means the company's home currency — a real state, not missing
+    // data — so only a PRESENT and different currency is a mismatch.
+    const invoiceCurrency = invoice.CurrencyRef?.value;
+    if (invoiceCurrency !== undefined && invoiceCurrency !== input.currency) {
+      return { ok: false, reason: 'currency-mismatch' };
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Correct the ledger after the gateway has already refunded.
+   *
+   * A FULL refund is the only case that can be undone automatically, and it is
+   * undone by DELETING the payment: the provider re-opens the invoice, which is
+   * exactly what a full refund means. A PARTIAL refund must not delete it —
+   * removing the whole payment would restore the whole balance — so the adaptor
+   * reports that a person has to make the adjustment.
+   */
+  async reverseCompletedPayment(input: ReversalPaymentInput): Promise<ReversalOutcome> {
+    this.assertConnected();
+    const request = this.qboRequest;
+
+    const original = toMinorUnits(input.originalAmount);
+    const refund = toMinorUnits(input.refundAmount);
+    if (original === null || refund === null) {
+      throw new AdaptorApplyError(
+        'refund-reversal-failed',
+        'The refund figures could not be compared, so the accounting record was left untouched',
+      );
+    }
+    if (refund !== original) {
+      return { status: 'manual-adjustment-required' };
+    }
+
+    const seen = await findPaymentByReference(request, input.transactionId);
+    if (!seen.found || seen.paymentId === null) {
+      throw new AdaptorApplyError(
+        'payment-not-found',
+        'No QuickBooks payment carries this transaction reference, so there is nothing to reverse',
+      );
+    }
+
+    const syncToken = seen.syncToken ?? (await readPaymentSyncToken(request, seen.paymentId));
+    if (syncToken === null) {
+      throw new AdaptorApplyError(
+        'refund-reversal-failed',
+        'QuickBooks did not report a version for the payment, so it could not be deleted',
+      );
+    }
+
+    await deletePayment(request, seen.paymentId, syncToken);
+    logger.info(
+      { adaptor: this.id, payment: seen.paymentId },
+      'QuickBooks payment reversed after a full refund',
+    );
+    return { status: 'reversed' };
   }
 
   async pullSyncStatus(): Promise<SyncResult> {

@@ -65,6 +65,15 @@ export interface QboInvoice {
   Balance: number;
   TotalAmt?: number;
   CustomerRef?: { value: string; name?: string };
+  /**
+   * The invoice's currency, when it is not the company's home currency.
+   *
+   * ABSENT MEANS HOME CURRENCY, and that is a real state rather than missing
+   * data: QuickBooks omits currency entirely on a home-currency transaction.
+   * Treating absence as "unknown, so refuse" would block every ordinary
+   * domestic invoice.
+   */
+  CurrencyRef?: { value: string };
 }
 
 /* --- Payment ------------------------------------------------------------- */
@@ -110,6 +119,23 @@ export interface QboPaymentCreated {
   Id: string;
   UnappliedAmt?: number;
   Line?: QboPaymentLine[];
+  /**
+   * The reference number the payment was written with. Read back only by the
+   * bounded scan used when the provider will not filter on it; the create path
+   * already knows what it sent.
+   */
+  PaymentRefNum?: string;
+  /**
+   * The optimistic-concurrency token required by a delete. Read from the row
+   * itself, because the provider rejects a delete that supplies a stale one.
+   */
+  SyncToken?: string;
+}
+
+/** The body QuickBooks requires to remove a payment. */
+export interface QboPaymentDelete {
+  Id: string;
+  SyncToken: string;
 }
 
 /* --- query --------------------------------------------------------------- */

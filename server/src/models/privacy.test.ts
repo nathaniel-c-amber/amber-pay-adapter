@@ -254,6 +254,16 @@ describe('privacy constraint', () => {
      *                        one payment by a 256-bit token and carries nothing
      *                        else. `services/payments/paymentStatus.service.ts`
      *                        argues it in full.
+     *   PreflightPaymentInput, PaymentPreflightInput
+     *                      — what the customer is ABOUT to be charged, handed to
+     *                        the accounting check so an impossible payment is
+     *                        refused before a checkout is signed. It exists only
+     *                        for the duration of that call.
+     *   RefundInput, RefundWireRequest
+     *                      — the figure being returned, and the provider's own
+     *                        body for it. A refund cannot be requested without
+     *                        both the original amount and the amount to return,
+     *                        and `refund.service.ts` argues the ordering there.
      *
      * Different questions, different files. What none of them may do is let a
      * figure OUT: no domain type, no event, no failure, no log line may carry
@@ -270,6 +280,10 @@ describe('privacy constraint', () => {
       'CreatePaymentInput',
       'ExpectedCharge',
       'CustomerPaymentStatusView',
+      'PreflightPaymentInput',
+      'PaymentPreflightInput',
+      'RefundInput',
+      'RefundWireRequest',
     ]);
 
     /*
@@ -328,11 +342,15 @@ describe('privacy constraint', () => {
         figure is found by the same code, at the same size, in the same place.
       */
       const sources = [
+        'src/types/adaptor.ts',
         'src/services/adaptors/quickbooksWire.ts',
         'src/services/gateway/amberPayWire.ts',
         'src/services/gateway/checkout.service.ts',
+        'src/services/gateway/refund.service.ts',
         'src/services/payments/payment.service.ts',
+        'src/services/payments/paymentPreflight.service.ts',
         'src/services/payments/paymentStatus.service.ts',
+        'src/services/payments/refund.service.ts',
       ].map((relative) =>
         readFileSync(join(serverRoot, relative), 'utf8')
           .replace(/\/\*[\s\S]*?\*\//g, '')

@@ -1051,7 +1051,17 @@ export class PostgresPaymentRepository implements PaymentRepository {
           );
     const row = result.rows[0];
     return row === undefined ? undefined : toPayment(row);
-  }}
+  }
+
+  async updateStatus(id: string, status: Payment['status']): Promise<Payment | undefined> {
+    const result = await this.pool.query<PaymentRow>(
+      `UPDATE payments SET status = $2 WHERE id = $1 RETURNING ${PAYMENT_COLUMNS}`,
+      [id, status],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : toPayment(row);
+  }
+}
 
 // --- deployment settings ----------------------------------------------------
 

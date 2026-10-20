@@ -5,9 +5,11 @@ import { DECIMAL_AMOUNT, GATEWAY_CURRENCIES, STUDENT_ID } from '../gateway/amber
 import { CheckoutService } from '../gateway/checkout.service.js';
 import { getPool } from '../../db/pool.js';
 import { PostgresCheckoutIntentStore } from '../../repositories/postgres.js';
+import { defaultPaymentPreflight } from './paymentPreflight.service.js';
 import type { PaymentRepository } from '../../types/repository.js';
 import type { Payment } from '../../models/domain.js';
 import type { CheckoutSession, GatewayCurrency } from '../gateway/amberPayWire.js';
+import type { PaymentPreflight } from './paymentPreflight.service.js';
 
 export interface CreatePaymentInput {
   invoiceId: string;
@@ -56,6 +58,13 @@ export class PaymentService {
     private readonly checkout: CheckoutService = new CheckoutService(
       new PostgresCheckoutIntentStore(getPool()),
     ),
+    /*
+      BEFORE THE CHECKOUT IS MINTED, so a payment the ledger cannot accept is
+      refused while the customer is still on the form. Defaulted rather than
+      required: an existing caller keeps working, and the default reports and
+      allows on every fault — see `paymentPreflight.service.ts`.
+    */
+    private readonly preflight: PaymentPreflight = defaultPaymentPreflight,
   ) {}
 
   /**
@@ -82,6 +91,13 @@ export class PaymentService {
         'amount must be a decimal figure in major units with at most two decimal places, such as 250.00',
       );
     }
+
+    await this.preflight({
+      organizationId: input.organizationId,
+      matchValue: input.studentId,
+      amount: input.amount,
+      currency: input.currency,
+    });
 
     const session = await this.checkout.create({
       organizationId: input.organizationId,
