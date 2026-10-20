@@ -2,7 +2,7 @@ import { WebhookProcessor } from './webhookProcessor.service.js';
 import { EventLog } from '../events/eventLog.service.js';
 import { FailureTracker } from '../events/failureTracker.service.js';
 import { QuickBooksAdaptor } from '../adaptors/quickbooks.service.js';
-import { AdaptorConnectionError } from '../adaptors/errors.js';
+import { AdaptorAuthError, AdaptorConnectionError } from '../adaptors/errors.js';
 import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import type { WebhookEvent } from '../../types/gateway.js';
@@ -444,6 +444,37 @@ describe('WebhookProcessor', () => {
     const failures = await failureTracker.list(['org-1']);
     expect(failures).toHaveLength(1);
     expect(failures[0]?.severity).toBe('critical');
+  });
+
+  it('names a credential refusal as a credential refusal, not as a matching failure', async () => {
+    /*
+      ★ THE TITLE IS THE DIAGNOSIS.
+
+      A dead grant stops every payment BEFORE any customer matching runs, yet it
+      used to be filed as a generic "payment push to adaptor failed" — the same
+      sentence an unmatched display name produces. An operator reading that goes
+      and rewrites a correct matching rule while the connection has never been
+      authorized. The reason has to survive into the dashboard.
+    */
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor({
+      pushCompletedPayment: jest
+        .fn()
+        .mockRejectedValue(
+          new AdaptorAuthError(
+            'QuickBooks Online: token exchange failed (status 400: Incorrect or invalid refresh token)',
+          ),
+        ),
+    });
+    const resolver = { get: jest.fn().mockReturnValue(adaptor) };
+    const processor = buildProcessor(eventLog, failureTracker, resolver);
+
+    await processor.processWebhook(collectedEvent);
+
+    const [failure] = await failureTracker.list(['org-1']);
+    expect(failure?.title).toMatch(/credentials/i);
+    expect(failure?.title).toMatch(/invalid refresh token/i);
   });
 
   it('records a critical failure when the adaptor push times out', async () => {

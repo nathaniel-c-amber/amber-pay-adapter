@@ -2,7 +2,11 @@ import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import { connectAdaptor } from '../adaptors/credentials.provider.js';
 import { resolveConfiguredAdaptorId } from '../adaptors/activeAdaptor.service.js';
-import { AdaptorApplyError, AdaptorConnectionError } from '../adaptors/errors.js';
+import {
+  AdaptorApplyError,
+  AdaptorAuthError,
+  AdaptorConnectionError,
+} from '../adaptors/errors.js';
 import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
@@ -56,6 +60,34 @@ function describePushFailure(action: string, err: unknown): string {
       case 'scan-limit-reached':
         return 'The customer scan hit its limit before finding a match';
     }
+  }
+  /*
+    ★ AUTH IS NAMED SEPARATELY, and it is safe here where the apply branches
+    above are not.
+
+    The rule above exists because a QuickBooks ENTITY fault quotes back what it
+    refused, which is often a customer's name. An OAuth refusal is about the
+    CREDENTIAL — "Incorrect or invalid refresh token" — and names no entity, so
+    repeating it leaks nothing.
+
+    Leaving it unnamed was not a cosmetic problem. A dead grant stops EVERY
+    payment before matching begins, and reporting it as "payment push to adaptor
+    failed" makes it indistinguishable from "your display-name rule matched
+    nobody" — which sends an operator to rewrite a correct matching rule while
+    the connection has simply never been authorized. That confusion is exactly
+    what happened here.
+  */
+  if (err instanceof AdaptorAuthError) {
+    return `The accounting connection rejected our credentials (${action}): ${err.message}`;
+  }
+  /*
+    These are OUR sentences — "the gateway named no customer", "no matching rule
+    is configured", "no accounting system is configured" — each already saying
+    what to do. Flattening them into a generic title would discard the only part
+    worth reading.
+  */
+  if (err instanceof AdaptorConnectionError) {
+    return err.message;
   }
   return `Payment push to adaptor failed (${action})`;
 }
