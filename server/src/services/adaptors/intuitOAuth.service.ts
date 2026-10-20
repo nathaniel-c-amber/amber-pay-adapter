@@ -128,6 +128,25 @@ function describeError(body: unknown, status: number): string {
 }
 
 /**
+ * Is this refusal specifically "that redirect URI is not registered"?
+ *
+ * Checked against the body rather than the status, because Intuit answers 400
+ * for several unrelated faults. Only this one has a remedy the operator can
+ * perform, and only this one is worth quoting our own callback back at them.
+ */
+function isRedirectUriRejection(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const record = body as Record<string, unknown>;
+  for (const key of ['error', 'error_description', 'message']) {
+    const value = record[key];
+    if (typeof value === 'string' && /invalid[_\s-]*redirect[_\s-]*uri/i.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Exchange an authorization code for tokens.
  *
  * A RESPONSE WITHOUT A REALM IS REFUSED rather than accepted with a blank company.
@@ -164,9 +183,26 @@ export async function exchangeAuthorizationCode(
   );
 
   if (response.status < 200 || response.status >= 300) {
-    throw new AdaptorAuthError(
-      `QuickBooks rejected the authorization (${describeError(response.body, response.status)})`,
-    );
+    const detail = describeError(response.body, response.status);
+    /*
+      ★ A REDIRECT MISMATCH NAMES THE URI WE SENT, because that string IS the fix.
+
+      `invalid_redirect_uri` is not a bug in this code: Intuit compares the value
+      to the list registered against the client id, character for character, and
+      the only remedy is to register the exact one we send. A message that says
+      "rejected" and stops leaves an operator guessing at scheme, port and
+      trailing slash — the three things that actually differ. The URI contains no
+      secret (it is this deployment's own public callback), so quoting it is safe.
+    */
+    if (isRedirectUriRejection(response.body)) {
+      throw new AdaptorAuthError(
+        `QuickBooks does not recognise the redirect URI "${redirectUri()}". ` +
+          'Register exactly that value — scheme, host, port and path — under Redirect URIs ' +
+          'for this app in the Intuit developer dashboard, or set QUICKBOOKS_REDIRECT_URI to ' +
+          `a URI that is already registered (${detail})`,
+      );
+    }
+    throw new AdaptorAuthError(`QuickBooks rejected the authorization (${detail})`);
   }
 
   const body = (response.body ?? {}) as Record<string, unknown>;

@@ -45,7 +45,7 @@ Services and ports:
 | --------- | ------------- | --------------------------------------- |
 | `web`   | `8080`      | Frontend SPA (nginx)                  |
 | `api`   | `3300`      | Backend API (`/health`, `/api/v1/*`)  |
-| `db`    | `5432`      | PostgreSQL 16 (internal to the stack) |
+| `db`    | `15432`     | PostgreSQL 16 (host loopback; internal to the stack on 5432) |
 
 The `api` service runs migrations on startup and waits for `db` to be healthy.
 PostgreSQL data persists in the `db-data` volume.
@@ -202,6 +202,23 @@ call. QuickBooks needs a bearer token, so set one of:
 
 Also set `QUICKBOOKS_REALM_ID` (the company id) and, for a sandbox company,
 `QUICKBOOKS_BASE_URL=https://sandbox-quickbooks.api.intuit.com`.
+
+**The redirect URI must be registered against the app.** Intuit compares the
+value we send to the app's Redirect URIs character for character, and reports a
+mismatch as `invalid_redirect_uri` with no hint about which part differs. Unless
+`QUICKBOOKS_REDIRECT_URI` is set, we send:
+
+```
+${APP_BASE_URL}/api/v1/settings/adaptor/callback
+```
+
+so with the default `APP_BASE_URL=http://localhost:8080` that is
+`http://localhost:8080/api/v1/settings/adaptor/callback`. Add that exact string
+under **Redirect URIs** for the app in the Intuit developer dashboard
+(*Development → Keys & OAuth*), or set `QUICKBOOKS_REDIRECT_URI` to one that is
+already registered. Intuit accepts `http` only for `localhost`; a public host
+must be `https`, which also means a `trycloudflare.com` URL only works until it
+changes on restart.
 
 The API connects every configured adaptor at startup and logs one line per
 adaptor — check it with `docker compose logs api | grep -i adaptor`. The console's

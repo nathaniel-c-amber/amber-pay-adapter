@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { runMigrations } from '../db/migrator.js';
 import { PostgresCheckoutIntentStore, createPostgresRepositories } from './postgres.js';
@@ -32,21 +33,58 @@ runTests('Postgres repositories integration', () => {
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: process.env.DATABASE_URL });
-    await runMigrations();
+
+    /*
+      ★ THE DATABASE IS EMPTIED BETWEEN RUNS, SO IT MUST BE A DISPOSABLE ONE.
+
+      These tests assert on exact ids and counts, and for as long as they only
+      ever skipped, nobody noticed that they inserted FIXED ids into a persistent
+      database: the second run collided on the first one's rows and the suite
+      could only ever pass once. A test that can only run once is a test that is
+      not running.
+
+      Resetting the schema is what makes it repeatable, and dropping `public` is
+      only acceptable if this really is a scratch database — so the name is
+      checked first, and a database called `amber` is refused rather than wiped.
+    */
+    const identity = await pool.query<{ name: string }>('SELECT current_database() AS name');
+    const name = identity.rows[0]?.name ?? '';
+    if (!/(^|_)test($|_)/i.test(name)) {
+      throw new Error(
+        `Refusing to run: this suite resets its database, and "${name}" is not named as disposable. ` +
+          'Point DATABASE_URL at a scratch database such as `amber_test`.',
+      );
+    }
+
+    await pool.query('DROP SCHEMA IF EXISTS public CASCADE');
+    await pool.query('CREATE SCHEMA public');
+    await runMigrations(pool);
     repos = createPostgresRepositories(pool);
-  });
+    // Reset + a full migration run is well over jest's 5s default when the whole
+    // suite is competing for CPU; the standalone run just happened to fit.
+  }, 60_000);
 
   afterAll(async () => {
     await pool.end();
   });
 
   it('runMigrations applies the schema and is idempotent', async () => {
-    await expect(runMigrations()).resolves.toBeInstanceOf(Array);
+    await expect(runMigrations(pool)).resolves.toBeInstanceOf(Array);
   });
 
   it('scopes events/failures/connectors/reconciliation by organization (C1)', async () => {
+    // UUIDs because these ids really are `uuid` columns in the schema — text
+    // literals were rejected by Postgres outright, which is one reason this test
+    // had never actually executed.
+    const evtOrg1 = randomUUID();
+    const evtOrg2 = randomUUID();
+    const failOrg1 = randomUUID();
+    const failOrg2 = randomUUID();
+    const jobOrg1 = randomUUID();
+    const jobOrg2 = randomUUID();
+
     await repos.events.append({
-      id: 'evt-org1',
+      id: evtOrg1,
       organizationId: 'org-1',
       at: '2026-01-01T00:00:00.000Z',
       type: 'collected',
@@ -55,7 +93,7 @@ runTests('Postgres repositories integration', () => {
       detail: 'Payment collected',
     });
     await repos.events.append({
-      id: 'evt-org2',
+      id: evtOrg2,
       organizationId: 'org-2',
       at: '2026-01-02T00:00:00.000Z',
       type: 'collected',
@@ -65,10 +103,10 @@ runTests('Postgres repositories integration', () => {
     });
 
     const org1Events = await repos.events.list(['org-1']);
-    expect(org1Events.map((e) => e.id)).toEqual(['evt-org1']);
+    expect(org1Events.map((e) => e.id)).toEqual([evtOrg1]);
 
     await repos.failures.append({
-      id: 'fail-org1',
+      id: failOrg1,
       organizationId: 'org-1',
       severity: 'critical',
       channel: 'webhook',
@@ -77,7 +115,7 @@ runTests('Postgres repositories integration', () => {
       since: '2026-01-01T00:00:00.000Z',
     });
     await repos.failures.append({
-      id: 'fail-org2',
+      id: failOrg2,
       organizationId: 'org-2',
       severity: 'critical',
       channel: 'webhook',
@@ -87,7 +125,7 @@ runTests('Postgres repositories integration', () => {
     });
 
     const org1Failures = await repos.failures.list(['org-1']);
-    expect(org1Failures.map((f) => f.id)).toEqual(['fail-org1']);
+    expect(org1Failures.map((f) => f.id)).toEqual([failOrg1]);
 
     await repos.connectorStates.upsert({
       id: 'conn-org1',
@@ -112,7 +150,7 @@ runTests('Postgres repositories integration', () => {
     expect(org1Connectors.map((c) => c.id)).toEqual(['conn-org1']);
 
     await repos.reconciliation.create({
-      id: 'job-org1',
+      id: jobOrg1,
       organizationId: 'org-1',
       runAt: '2026-01-01T00:00:00.000Z',
       status: 'completed',
@@ -125,7 +163,7 @@ runTests('Postgres repositories integration', () => {
       },
     });
     await repos.reconciliation.create({
-      id: 'job-org2',
+      id: jobOrg2,
       organizationId: 'org-2',
       runAt: '2026-01-02T00:00:00.000Z',
       status: 'completed',
@@ -139,12 +177,14 @@ runTests('Postgres repositories integration', () => {
     });
 
     const org1Jobs = await repos.reconciliation.list(['org-1']);
-    expect(org1Jobs.map((j) => j.id)).toEqual(['job-org1']);
+    expect(org1Jobs.map((j) => j.id)).toEqual([jobOrg1]);
   });
 
   it('scopes payment reads by organization and 404s cross-org (C1)', async () => {
+    const payOrg1 = randomUUID();
+    const payOrg2 = randomUUID();
     await repos.payments.create({
-      id: 'pay-org1',
+      id: payOrg1,
       invoiceId: 'inv-1',
       organizationId: 'org-1',
       transactionId: 'ref-0001',
@@ -152,7 +192,7 @@ runTests('Postgres repositories integration', () => {
       processedAt: '2026-01-01T00:00:00.000Z',
     });
     await repos.payments.create({
-      id: 'pay-org2',
+      id: payOrg2,
       invoiceId: 'inv-2',
       organizationId: 'org-2',
       transactionId: 'ref-0002',
@@ -160,15 +200,16 @@ runTests('Postgres repositories integration', () => {
       processedAt: '2026-01-01T00:00:00.000Z',
     });
 
-    await expect(repos.payments.findById('pay-org1', ['org-1'])).resolves.toMatchObject({
-      id: 'pay-org1',
+    await expect(repos.payments.findById(payOrg1, ['org-1'])).resolves.toMatchObject({
+      id: payOrg1,
     });
-    await expect(repos.payments.findById('pay-org2', ['org-1'])).resolves.toBeUndefined();
+    await expect(repos.payments.findById(payOrg2, ['org-1'])).resolves.toBeUndefined();
   });
 
   it('exposes acknowledged status on failures (minor)', async () => {
+    const failAck = randomUUID();
     await repos.failures.append({
-      id: 'fail-ack',
+      id: failAck,
       organizationId: 'org-1',
       severity: 'attention',
       channel: 'system',
@@ -176,23 +217,32 @@ runTests('Postgres repositories integration', () => {
       detail: 'A sync warning',
       since: '2026-01-01T00:00:00.000Z',
     });
-    const acked = await repos.failures.acknowledge('fail-ack', '2026-01-03T00:00:00.000Z', [
-      'org-1',
-    ]);
+    const acked = await repos.failures.acknowledge(failAck, '2026-01-03T00:00:00.000Z', ['org-1']);
     expect(acked?.acknowledgedAt).toBe('2026-01-03T00:00:00.000Z');
   });
 
   it('dedup: a claimed id is never claimable twice, and a processed one stays claimed (M2)', async () => {
     const dedup = repos.webhookDedup;
 
-    await expect(dedup.claim('wh-fail', '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
+    /*
+      ★ REAL TIMESTAMPS, because the lease is measured against the DATABASE clock.
+
+      `claim` compares the stored `processed_at` to `now() - lease`, so a test
+      that claims at a fixed 2026 date is ALWAYS outside a five-minute lease and
+      the "second delivery" looks expired before it starts. The production caller
+      passes `new Date()`, so the real thing behaves as intended; this fixture was
+      the only thing disagreeing.
+    */
+    const at = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
+
+    await expect(dedup.claim('wh-fail', at(0))).resolves.toBe(true);
     // Claimed but never marked processed -> still a duplicate on re-delivery,
     // so a retry cannot double-process it.
-    await expect(dedup.claim('wh-fail', '2026-01-01T00:00:01.000Z')).resolves.toBe(false);
+    await expect(dedup.claim('wh-fail', at(1000))).resolves.toBe(false);
 
-    await expect(dedup.claim('wh-ok', '2026-01-01T00:00:00.000Z')).resolves.toBe(true);
-    await dedup.markProcessed('wh-ok', '2026-01-01T00:00:02.000Z');
-    await expect(dedup.claim('wh-ok', '2026-01-01T00:00:03.000Z')).resolves.toBe(false);
+    await expect(dedup.claim('wh-ok', at(0))).resolves.toBe(true);
+    await dedup.markProcessed('wh-ok', at(2000));
+    await expect(dedup.claim('wh-ok', at(3000))).resolves.toBe(false);
   });
 
   it('recordOutcome settles a payment ONCE — a repeated callback cannot move it', async () => {
@@ -233,19 +283,26 @@ runTests('Postgres repositories integration', () => {
       outcome: null,
     });
 
-    await intents.recordOutcome({
+    const first = await intents.recordOutcome({
       organizationId: 'org-outcome',
       transactionId,
       outcome: 'collected',
       failureReason: null,
     });
     // A repeat that CONTRADICTS the first. Only the first may stick.
-    await intents.recordOutcome({
+    const second = await intents.recordOutcome({
       organizationId: 'org-outcome',
       transactionId,
       outcome: 'failed',
       failureReason: 'Invalid transaction',
     });
+
+    // ★ THE ANSWER THAT LETS THE CALLER WRITE THE EVENTS ONCE. The first
+    // delivery owns the facts; the second is a duplicate of a payment already
+    // settled, so it must not re-write `collected`/`webhook-received` — while
+    // still being allowed to retry the accounting push.
+    expect(first).toBe(true);
+    expect(second).toBe(false);
 
     const settled = await intents.findByStatusToken(statusToken);
     expect(settled).toMatchObject({
@@ -266,6 +323,31 @@ runTests('Postgres repositories integration', () => {
     await expect(intents.findByStatusToken(statusToken)).resolves.toMatchObject({
       outcome: 'collected',
     });
+  });
+
+  it('a transaction we never recorded still OWNS its facts, rather than losing them', async () => {
+    /*
+      ★ THE THIRD ANSWER, AND WHY `rowCount` ALONE WAS WRONG.
+
+      "This payment was already settled" and "there is no intent row for this
+      transaction" both leave the UPDATE at zero, so a caller keyed on that alone
+      cannot tell them apart — and treating the second as a duplicate silently
+      drops the `collected` and `webhook-received` events of a payment made
+      outside our checkout. The money still arrived; the events are the only
+      trace of it, so they must be written.
+
+      Proven here rather than with a stub, because the distinction IS the query.
+    */
+    const intents = new PostgresCheckoutIntentStore(pool);
+
+    await expect(
+      intents.recordOutcome({
+        organizationId: 'org-outcome',
+        transactionId: 'TXNEVERRECORDED',
+        outcome: 'collected',
+        failureReason: null,
+      }),
+    ).resolves.toBe(true);
   });
 
   it('findByStatusToken reports an EXPIRED token as no row, not as a payment', async () => {

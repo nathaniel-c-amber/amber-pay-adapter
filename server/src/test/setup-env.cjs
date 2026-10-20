@@ -2,7 +2,13 @@
 // env schema (which fails fast on missing required vars) can load in tests.
 process.env.NODE_ENV = 'test';
 process.env.LOG_LEVEL = 'silent';
-process.env.DATABASE_URL = 'postgres://placeholder:placeholder@localhost:5432/amber_pay';
+// Respect a DATABASE_URL the caller supplied, so the integration suite can run
+// against a real Postgres (`docker compose up -d db`, then export DATABASE_URL).
+// The placeholder exists so the zod-validated env schema can load without one —
+// it must not OVERWRITE a real one, because that made
+// `postgres.integration.test.ts` skip unconditionally and its "is a database
+// configured?" guard unable to ever answer yes.
+process.env.DATABASE_URL ??= 'postgres://placeholder:placeholder@localhost:5432/amber_pay';
 process.env.JWT_SECRET = 'test-secret-placeholder-0123456789';
 process.env.AMBER_PAY_WEBHOOK_SECRET = 'test-webhook-secret-placeholder';
 // The merchant account the gateway issues per project and environment. It goes

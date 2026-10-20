@@ -34,7 +34,14 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      # Host loopback only, on 15432, because 5432 is commonly already taken by a
+      # locally installed Postgres. Windows happily lets BOTH bind :5432, so the
+      # published port silently stopped reaching this container — host-side tools
+      # and the DB-backed jest suite connected to the wrong server and failed
+      # authentication. (5433 is inside a Windows excluded port range, hence the
+      # higher number.) The stack itself uses `db:5432` internally and is
+      # unaffected; this is only how a host process reaches it.
+      - "127.0.0.1:15432:5432"
     networks:
       - amber
 

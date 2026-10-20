@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import type { Pool } from 'pg';
 import { logger } from '../utils/logger.js';
 import { getPool } from './pool.js';
 
@@ -32,9 +33,12 @@ function listMigrationFiles(migrationsDir: string): string[] {
 /**
  * Apply pending migrations in filename order, tracking applied ones in the
  * `schema_migrations` table. Safe to run repeatedly (idempotent).
+ *
+ * The pool is a parameter so a CALLER that owns a connection can migrate with
+ * it — the DB integration suite does, and without this the shared pool it
+ * never opened kept the jest worker alive after the run.
  */
-export async function runMigrations(): Promise<string[]> {
-  const pool = getPool();
+export async function runMigrations(pool: Pool = getPool()): Promise<string[]> {
   const migrationsDir = resolveMigrationsDir();
 
   await pool.query(

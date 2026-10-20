@@ -112,6 +112,26 @@ describe('exchangeAuthorizationCode', () => {
     ).toString('utf8')).toBe('client-1:secret-1');
   });
 
+  it('names the redirect URI it sent when Intuit says that URI is not registered', async () => {
+    /*
+      ★ THE MESSAGE IS THE FIX. `invalid_redirect_uri` has exactly one remedy —
+      register this exact string — so a message that says "rejected" and stops
+      leaves the operator guessing at scheme, port and trailing slash, which are
+      the only things that differ between a working and a failing value.
+    */
+    const transport = transportReturning(400, {
+      error: 'invalid_redirect_uri',
+      error_description: 'Invalid redirect URI',
+    });
+
+    await expect(exchangeAuthorizationCode(transport, parms)).rejects.toThrow(
+      new RegExp(`register exactly that value`, 'i'),
+    );
+    await expect(exchangeAuthorizationCode(transport, parms)).rejects.toThrow(
+      new RegExp(redirectUri().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  });
+
   it('refuses a grant with no refresh token, rather than storing something that dies hourly', async () => {
     const transport = transportReturning(200, { access_token: 'access-1', expires_in: 3600 });
 
