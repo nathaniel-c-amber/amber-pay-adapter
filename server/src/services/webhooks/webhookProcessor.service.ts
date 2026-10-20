@@ -7,6 +7,7 @@ import { adaptorRegistry } from '../adaptors/registry.js';
 import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
 import { settingsService } from '../settings/settings.service.js';
+import { GatewayStatusService, gatewayFailureReason } from '../gateway/transactionStatus.service.js';
 import { getPool } from '../../db/pool.js';
 import { getRepositories } from '../../repositories/index.js';
 import { InMemoryWebhookDedupRepository } from '../../repositories/inMemory.js';
@@ -19,7 +20,7 @@ import type {
   PaymentRef,
   PushResult,
 } from '../../types/adaptor.js';
-import type { WebhookEvent } from '../../types/gateway.js';
+import type { WebhookEvent, WebhookEventType } from '../../types/gateway.js';
 import type {
   CustomerPaymentStatus,
   PaymentOutcomeStore,
@@ -110,7 +111,50 @@ export interface WebhookProcessorOverrides {
    * is wired with the real one below.
    */
   outcomes?: PaymentOutcomeStore;
+  /**
+   * How a payment that named no customer is asked about one.
+   *
+   * An override for the same reason `outcomes` is: the singleton wires the real
+   * gateway below, and a unit test that exercises a callback with no
+   * `StudentID` must be able to answer without a network.
+   *
+   * Only ever consulted for a delivery that arrived WITHOUT a customer — see
+   * `resolveCustomer`, which returns immediately when the callback named one, so
+   * the common case pays no round trip.
+   */
+  statuses?: Pick<GatewayStatusService, 'lookup'>;
 }
+
+/**
+ * Which deliveries can be helped by asking the gateway who they were for.
+ *
+ * `payment.initiated` is absent because nothing downstream of it consumes a
+ * customer: it records an event keyed by `refFor`, which already falls back to
+ * the transaction id, and it never pushes. A lookup there would be a round trip
+ * to the gateway on every started payment for an answer nobody reads.
+ */
+const NEEDS_A_CUSTOMER: ReadonlySet<WebhookEventType> = new Set<WebhookEventType>([
+  'payment.collected',
+  'payment.refunded',
+  'payment.declined',
+  'payment.failed',
+]);
+
+/**
+ * The deliveries that HAVE a reason, so the only ones allowed to acquire one.
+ *
+ * Separate from `NEEDS_A_CUSTOMER` on purpose: a collected payment may well need
+ * a customer resolved, but it must never end up carrying a `failureReason`. The
+ * status API answers every transaction with a `ReasonCode` — for a success that
+ * is the approval code — so preferring its text unconditionally would store an
+ * approval as a failure on the one row whose whole job is to say the money
+ * arrived. The read path hides a reason on a non-failed row, which would make
+ * that invisible rather than harmless.
+ */
+const CAN_CARRY_A_REASON: ReadonlySet<WebhookEventType> = new Set<WebhookEventType>([
+  'payment.declined',
+  'payment.failed',
+]);
 
 /**
  * Async webhook processing pipeline (FR-2.2). Never throws — a webhook must
@@ -162,22 +206,31 @@ export class WebhookProcessor {
     }
 
     try {
-      switch (event.type) {
+      /*
+        ★ RESOLVED AFTER THE CLAIM AND BEFORE ANY HANDLER, and both ends of that
+        are deliberate. After the claim, because a delivery this processor is not
+        going to act on must not cost a round trip to the gateway. Before the
+        handlers, because what comes back is not decoration: it decides the ref
+        every lifecycle event is filed under, the `matchValue` the push matches
+        an accounting customer on, and the decline reason the customer reads.
+      */
+      const resolved = await this.resolveCustomer(event);
+      switch (resolved.type) {
         case 'payment.collected':
-          await this.handleCollected(event);
+          await this.handleCollected(resolved);
           break;
         case 'payment.refunded':
-          await this.handleRefunded(event);
+          await this.handleRefunded(resolved);
           break;
         case 'payment.declined':
         case 'payment.failed':
-          await this.handleFailure(event);
+          await this.handleFailure(resolved);
           break;
         case 'payment.initiated':
-          await this.handleInitiated(event);
+          await this.handleInitiated(resolved);
           break;
         default:
-          logger.warn({ webhookType: event.type }, 'Unhandled webhook type');
+          logger.warn({ webhookType: resolved.type }, 'Unhandled webhook type');
       }
       // Only mark processed after the whole handler succeeded, so a failure
       // leaves the webhook retryable (M2).
@@ -188,6 +241,83 @@ export class WebhookProcessor {
       // subsequent delivery of a payment we failed to push would be dismissed
       // as a duplicate and the accounting record would never be written.
       await this.dedup.release(event.id);
+    }
+  }
+
+  /**
+   * Fill in the customer the callback did not carry, by asking the gateway.
+   *
+   * ★ ONLY WHEN THERE IS NOTHING TO ASK WITH. A callback that named a customer
+   * returns immediately and the gateway is never contacted — the enrichment is
+   * for the delivery the pipeline is otherwise stuck on, and a webhook must not
+   * pay a round trip it does not need.
+   *
+   * ★ A FAULT HERE IS SWALLOWED, and this is the load-bearing decision of the
+   * whole method. The status API is a best-effort enrichment on a path that
+   * already answers the gateway: if it were allowed to fail the delivery, then a
+   * gateway outage would become a new failure mode, the customer whose browser is
+   * already on this url would get an error page instead of their status, and the
+   * `202` the sender depends on would become a `500`. So a lookup that throws
+   * logs identity and nothing else and hands the ORIGINAL event on, which lands
+   * exactly where this pipeline landed before the enrichment existed: the money
+   * recorded, and the critical finding that it cannot be applied to an invoice.
+   *
+   * The `err` is safe to log here, and that is not a habit: every error this
+   * path can produce is constructed with a status code or an internal fault and
+   * never with a response body. The body is the PII-dense thing — a cardholder
+   * name, a padded card number, a billing email and a billing phone — and it is
+   * read by one function that neither logs it nor lets it into an error.
+   */
+  private async resolveCustomer(event: WebhookEvent): Promise<WebhookEvent> {
+    if (event.reference !== null) return event;
+    if (!NEEDS_A_CUSTOMER.has(event.type)) return event;
+    // Resolved HERE rather than in the constructor, which is also why it is an
+    // override and not a tenth positional: a processor that never sees a
+    // customerless delivery should not have built a service to service one, and
+    // every positional added to this constructor is another that can quietly
+    // outrank a default in production while looking like configuration in a test.
+    const statuses = this.overrides.statuses ?? defaultGatewayStatus();
+    try {
+      const status = await statuses.lookup(this.organizationId, event.id);
+      if (status === undefined) return event;
+      return {
+        ...event,
+        reference: status.customerReference,
+        /*
+          THE GATEWAY'S OWN WORDS WIN over the callback's, and only for a
+          delivery that can have a reason at all. The callback's `ErrorMessage`
+          is the bare text a decline arrives with ("Invalid transaction"); the
+          status response carries the code beside it. A null from
+          `gatewayFailureReason` means the gateway said nothing useful either, and
+          then the callback's own text is still the best answer there is — so
+          this prefers, it never replaces.
+        */
+        failureReason: CAN_CARRY_A_REASON.has(event.type)
+          ? gatewayFailureReason(status) ?? event.failureReason ?? null
+          : event.failureReason ?? null,
+      };
+    } catch (err) {
+      /*
+        ★ TWO FAULTS, LOGGED AS TWO, because the service documents that they are
+        different and an operator acts on them differently. A connection fault is
+        the gateway being away and needs no action from us; anything else is our
+        own record being unreadable — a sealed value that will not open, a key
+        that changed — which is a fault in this system and will repeat on every
+        delivery. Collapsing them into one sentence would hide the second behind
+        the first.
+      */
+      if (err instanceof AdaptorConnectionError) {
+        logger.warn(
+          { webhookId: event.id, err },
+          'Amber Pay could not be reached to say which customer this payment was for — continuing without it',
+        );
+      } else {
+        logger.error(
+          { webhookId: event.id, err },
+          'Could not read our own record to ask the gateway which customer this payment was for — continuing without it',
+        );
+      }
+      return event;
     }
   }
 
@@ -204,27 +334,47 @@ export class WebhookProcessor {
   }
 
   private async handleCollected(event: WebhookEvent): Promise<void> {
-    await this.recordOutcome(event, 'collected');
-    await this.eventLog.recordEvent({
-      type: 'collected',
-      channel: 'webhook',
-      ref: this.refFor(event),
-      detail: 'Payment collected',
-      organizationId: this.organizationId,
-    });
-    // The flow ledger's "ingested" stage is derived from `webhook-received`, and
-    // NOTHING wrote that event — so a fully working pipeline still reported the
-    // ingested stage as "not reporting", and the Overview's hero panel was
-    // permanently blank in the middle. The collection notification IS the
-    // ingestion: it is recorded here rather than at claim time so the stages
-    // stay in ledger order (collected before ingested).
-    await this.eventLog.recordEvent({
-      type: 'webhook-received',
-      channel: 'webhook',
-      ref: this.refFor(event),
-      detail: 'Webhook accepted by the pipeline',
-      organizationId: this.organizationId,
-    });
+    /*
+      ★ THE FACTS ARE WRITTEN ONCE; THE PUSH IS ATTEMPTED EVERY TIME.
+      *
+      * `true` means this delivery is the one that settled the payment, so it is
+      * the one that may say so. `false` means an earlier delivery already
+      * recorded it — which is the ordinary case here, because the gateway's
+      * callback url IS its redirect url and a single payment arrives twice by
+      * design. Writing both events again put two identical `Collected` entries
+      * into an operator's timeline five seconds apart, which reads as two
+      * payments when it is one.
+      *
+      * The push below is NOT inside this branch, and that asymmetry is the whole
+      * fix: it is the only part of this pipeline with somewhere to go when it
+      * fails, and it is the part that has to be retried. A payment that could not
+      * reach QuickBooks because nothing was authorized is still owed to
+      * QuickBooks, and the next delivery — from the server, or from the
+      * customer's browser arriving on that same url — is what completes it.
+    */
+    const settled = await this.recordOutcome(event, 'collected');
+    if (settled) {
+      await this.eventLog.recordEvent({
+        type: 'collected',
+        channel: 'webhook',
+        ref: this.refFor(event),
+        detail: 'Payment collected',
+        organizationId: this.organizationId,
+      });
+      // The flow ledger's "ingested" stage is derived from `webhook-received`, and
+      // NOTHING wrote that event — so a fully working pipeline still reported the
+      // ingested stage as "not reporting", and the Overview's hero panel was
+      // permanently blank in the middle. The collection notification IS the
+      // ingestion: it is recorded here rather than at claim time so the stages
+      // stay in ledger order (collected before ingested).
+      await this.eventLog.recordEvent({
+        type: 'webhook-received',
+        channel: 'webhook',
+        ref: this.refFor(event),
+        detail: 'Webhook accepted by the pipeline',
+        organizationId: this.organizationId,
+      });
+    }
 
     await this.pushToAdaptor(event, 'collected payment');
   }
@@ -393,21 +543,29 @@ export class WebhookProcessor {
     // THAT, so it is recorded before the reaction starts — and if the write
     // fails, `processWebhook` releases the claim and the delivery stays retryable
     // rather than settling a payment nobody can see.
-    await this.recordOutcome(event, 'failed');
-    await this.eventLog.recordEvent({
-      type,
-      channel: 'webhook',
-      ref: this.refFor(event),
-      detail: 'Payment declined or failed',
-      organizationId: this.organizationId,
-    });
-    await this.failureTracker.recordFailure({
-      severity: 'critical',
-      channel: 'payment',
-      title: 'Payment declined or failed',
-      detail: 'Payment was declined or failed',
-      organizationId: this.organizationId,
-    });
+    //
+    // ★ AND THE REACTION IS WRITTEN ONCE, for the same reason `handleCollected`
+    // writes its facts once: the decline and the finding that reports it are two
+    // statements of the SAME fact, so a delivery that did not settle the payment
+    // repeats neither. A browser re-triggering the callback must not multiply an
+    // operator's open findings.
+    const settled = await this.recordOutcome(event, 'failed');
+    if (settled) {
+      await this.eventLog.recordEvent({
+        type,
+        channel: 'webhook',
+        ref: this.refFor(event),
+        detail: 'Payment declined or failed',
+        organizationId: this.organizationId,
+      });
+      await this.failureTracker.recordFailure({
+        severity: 'critical',
+        channel: 'payment',
+        title: 'Payment declined or failed',
+        detail: 'Payment was declined or failed',
+        organizationId: this.organizationId,
+      });
+    }
   }
 
   private async handleInitiated(event: WebhookEvent): Promise<void> {
@@ -432,20 +590,41 @@ export class WebhookProcessor {
    * schema in `amberpay.service.ts`. It is passed straight through rather than
    * re-cleaned here, because two sanitisation passes would be two places to keep
    * honest and the one that faces the wire is the one that should do it.
+   *
+   * ★ RETURNS WHETHER THE FACTS BELONG TO THIS DELIVERY, and the absent store
+   * answers `true` rather than `false`. That is not a shrug: with nothing
+   * persisting outcomes there is no earlier delivery that could have recorded
+   * one, so this delivery is the first and the only one, and the facts it writes
+   * belong to it. Answering `false` would silence every event in every unit test
+   * of a pipeline that is working perfectly.
    */
   private async recordOutcome(
     event: WebhookEvent,
     outcome: Exclude<CustomerPaymentStatus, 'unknown'>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const store = this.overrides.outcomes;
-    if (store === undefined) return;
-    await store.recordOutcome({
+    if (store === undefined) return true;
+    return store.recordOutcome({
       organizationId: this.organizationId,
       transactionId: event.id,
       outcome,
       failureReason: event.failureReason ?? null,
     });
   }
+}
+
+/**
+ * The gateway status service, built once.
+ *
+ * MEMOISED rather than constructed per processor, for the reason the pool
+ * underneath is: every caller shares one lazy pool, and a processor that never
+ * sees a customerless delivery should not have built anything to service one.
+ */
+let gatewayStatus: GatewayStatusService | undefined;
+
+function defaultGatewayStatus(): GatewayStatusService {
+  gatewayStatus ??= new GatewayStatusService(new PostgresCheckoutIntentStore(getPool()));
+  return gatewayStatus;
 }
 
 /**
@@ -460,6 +639,11 @@ export class WebhookProcessor {
  * repository keeps its position: dropping it would quietly swap the shared
  * container for a throwaway in-memory one and break webhook deduplication across
  * restarts.
+ *
+ * The GATEWAY STATUS SERVICE is left to its constructor default, deliberately:
+ * that default is the real service over the real store, so the singleton
+ * resolves a customerless callback. Omitting it would be tidier only if the
+ * singleton did not need it — which is the defect it exists to repair.
  */
 export const webhookProcessor = new WebhookProcessor(
   eventLog,

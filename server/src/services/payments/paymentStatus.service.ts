@@ -81,6 +81,23 @@ export interface PaymentOutcomeStore {
    * This is the write the customer-facing page is built on. It is a write, not a
    * read, and it happens on the webhook's own path; the status endpoint itself
    * never calls it.
+   *
+   * ★ IT ANSWERS WHETHER THE FACTS BELONG TO THIS DELIVERY, and that is the
+   * return value's only job. The gateway's callback url is also its redirect
+   * url, so one payment genuinely arrives twice: the money is real, the facts
+   * are the same, and only the ACCOUNTING PUSH should ever be attempted again. A
+   * caller that cannot tell the two deliveries apart therefore has no way to
+   * write the `collected` lifecycle event once and retry the push — and writing
+   * it twice is what put two identical events into an operator's timeline five
+   * seconds apart.
+   *
+   * `true` therefore means "write the events for this payment now"; `false` means
+   * "an earlier delivery already recorded this payment". It must NOT be
+   * implemented as "the row changed": a transaction with no intent row at all
+   * changes nothing either, and answering `false` there would silently drop the
+   * record of a payment that really arrived — the one case where the events are
+   * the only trace there is. `false` never means "something is wrong"; it means
+   * "someone already said this".
    */
   recordOutcome(input: {
     organizationId: string;
@@ -89,7 +106,7 @@ export interface PaymentOutcomeStore {
     outcome: Exclude<CustomerPaymentStatus, 'unknown'>;
     /** The gateway's own words, already sanitised and capped by the gateway layer. */
     failureReason: string | null;
-  }): Promise<void>;
+  }): Promise<boolean>;
 }
 
 /**

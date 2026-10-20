@@ -31,6 +31,7 @@ import type {
 import { WEBHOOK_CLAIM_LEASE_MS } from '../types/repository.js';
 import { DuplicateTransactionIdError, DuplicateStatusTokenError } from '../services/gateway/checkout.service.js';
 import type { CheckoutIntentStore } from '../services/gateway/checkout.service.js';
+import type { GatewayStatusStore } from '../services/gateway/transactionStatus.service.js';
 import type {
   CheckoutStatusRow,
   CustomerPaymentStatus,
@@ -777,13 +778,14 @@ function toPayment(row: PaymentRow): Payment {
  * alone means an unrelated unique violation is not silently reported as a
  * collision, which would send the caller round the retry loop for nothing.
  *
- * It implements THREE contracts, because they are three questions about one row
+ * It implements FOUR contracts, because they are four questions about one row
  * and they must not be able to disagree: the write (what a checkout needs), the
- * status read (what a customer needs), and the outcome write (what the webhook
- * processor needs). One class, one table, one place that knows its columns.
+ * status read (what a customer needs), the outcome write (what the webhook
+ * processor needs), and the sealed-figure read (what the gateway's status API
+ * needs). One class, one table, one place that knows its columns.
  */
 export class PostgresCheckoutIntentStore
-  implements CheckoutIntentStore, PaymentStatusStore, PaymentOutcomeStore
+  implements CheckoutIntentStore, PaymentStatusStore, PaymentOutcomeStore, GatewayStatusStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -853,6 +855,38 @@ export class PostgresCheckoutIntentStore
   }
 
   /**
+   * ★ THE SEALED FIGURE, FOR THE ONE CALL THAT GENUINELY NEEDS IT.
+   *
+   * A SEPARATE METHOD, not a field added to the read above, and the reason is
+   * that the read above's comment is a promise: attributing a callback needs to
+   * know WHO it was for, not what was expected, so a routine lookup never
+   * unseals a figure. Widening it would quietly break that promise for every
+   * caller at once. This one is single-purpose — `POST /gateway/v1/transactionstatus`
+   * will not accept a request without a `Signature`, and the signature is
+   * computed over `CurrencyCode` and `Amount`, which is the only reason anything
+   * on this path may open the value at all.
+   *
+   * ORG-SCOPED on the same key as every other read of this table, so a lookup
+   * cannot be pointed at another organization's payment by naming its id.
+   *
+   * Returned SEALED, and never opened here: the only opener is
+   * `openExpectedCharge` in the service that needs the figure, which is what
+   * keeps this method a read and not a second place money is understood.
+   */
+  async findExpectedChargeByTransactionId(
+    organizationId: string,
+    transactionId: string,
+  ): Promise<{ expectedSealed: Buffer } | undefined> {
+    const result = await this.pool.query<{ expected_sealed: Buffer }>(
+      `SELECT expected_sealed FROM checkout_intents
+        WHERE organization_id = $1 AND transaction_id = $2`,
+      [organizationId, transactionId],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : { expectedSealed: row.expected_sealed };
+  }
+
+  /**
    * The public status read. One equality probe on a unique index, and the expiry
    * is compared HERE rather than in application code so an expired token is
    * indistinguishable from one that never existed — which is the point, and is
@@ -894,22 +928,60 @@ export class PostgresCheckoutIntentStore
    *
    * `WHERE settled_at IS NULL` makes the write idempotent in the same direction
    * the rest of the flow is: a repeated callback cannot move a settled payment
-   * backwards, and the row count says whether it changed anything.
+   * backwards.
+   *
+   * ★ AND IT REPORTS WHETHER THE FACTS BELONG TO THIS DELIVERY, because that is
+   * what lets a second delivery of one payment write them ONCE. The gateway's
+   * callback url is also its redirect url, so one payment really does arrive
+   * twice; the dedup repository releases the claim when the accounting push
+   * fails, so the second delivery is deliberately allowed through. Without this
+   * return value that delivery would re-write the `collected` lifecycle event,
+   * and production showed exactly two of them five seconds apart.
+   *
+   * ★ THERE ARE THREE ANSWERS, NOT TWO, and conflating the third with "already
+   * settled" would silently delete the system of record. `rowCount` alone cannot
+   * tell "this payment was settled by an earlier delivery" from "there is no
+   * intent row for this transaction at all" — both leave the UPDATE at zero — and
+   * the second case is a real one: a payment made outside our checkout has no
+   * row here, so every `collected` and `webhook-received` event for it would be
+   * dropped, even though the money genuinely arrived. The events are the record
+   * of what happened, so a payment we cannot correlate is exactly the one whose
+   * events matter most.
+   *
+   * So the answer is `true` when the facts are THIS delivery's to write: it
+   * transitioned the row, or there was no row to transition. It is `false` only
+   * when a row exists that was already settled — the ordinary duplicate. Both
+   * existence checks are index probes in the SAME statement, so the second
+   * delivery still costs one round trip and cannot race a second query.
    */
   async recordOutcome(input: {
     organizationId: string;
     transactionId: string;
     outcome: Exclude<CustomerPaymentStatus, 'unknown'>;
     failureReason: string | null;
-  }): Promise<void> {
-    await this.pool.query(
-      `UPDATE checkout_intents
-          SET outcome = $3,
-              failure_reason = $4,
-              settled_at = now()
-        WHERE organization_id = $1 AND transaction_id = $2 AND settled_at IS NULL`,
+  }): Promise<boolean> {
+    const result = await this.pool.query<{ transitioned: boolean; known: boolean }>(
+      `WITH settled AS (
+         UPDATE checkout_intents
+            SET outcome = $3,
+                failure_reason = $4,
+                settled_at = now()
+          WHERE organization_id = $1 AND transaction_id = $2 AND settled_at IS NULL
+          RETURNING 1
+       )
+       SELECT
+         EXISTS (SELECT 1 FROM settled) AS transitioned,
+         EXISTS (
+           SELECT 1 FROM checkout_intents
+            WHERE organization_id = $1 AND transaction_id = $2
+         ) AS known`,
       [input.organizationId, input.transactionId, input.outcome, input.failureReason],
     );
+    const answer = result.rows[0];
+    // No row at all from the CTE would mean the query itself did not run; treat
+    // that as "not ours to write" so a broken query cannot multiply events.
+    if (answer === undefined) return false;
+    return answer.transitioned || !answer.known;
   }
 }
 

@@ -2,6 +2,8 @@ import { WebhookProcessor } from './webhookProcessor.service.js';
 import { EventLog } from '../events/eventLog.service.js';
 import { FailureTracker } from '../events/failureTracker.service.js';
 import { QuickBooksAdaptor } from '../adaptors/quickbooks.service.js';
+import { AdaptorConnectionError } from '../adaptors/errors.js';
+import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import type { WebhookEvent } from '../../types/gateway.js';
 import type {
@@ -9,6 +11,7 @@ import type {
   CustomerMatchConfig,
   PushResult,
 } from '../../types/adaptor.js';
+import type { GatewayTransactionStatus } from '../gateway/transactionStatus.service.js';
 import type {
   AdaptorResolver,
   WebhookProcessorOverrides,
@@ -241,15 +244,22 @@ describe('WebhookProcessor', () => {
     the store's (`WHERE settled_at IS NULL`), and it is asserted there.
   */
   describe('the gateway\'s verdict is recorded where the customer can read it', () => {
-    function withOutcomes() {
-      const outcomes = { recordOutcome: jest.fn().mockResolvedValue(undefined) };
+    function withOutcomes(extra: WebhookProcessorOverrides = {}) {
+      /*
+        ★ `true`, because THIS delivery is the one that settled the payment. The
+        store answers that question and the processor writes the lifecycle events
+        only for the delivery that moved it — see "writes the facts ONCE" below
+        for what `false` buys. A stub answering `undefined` would silence every
+        event in this block while still passing a test that only reads the call.
+      */
+      const outcomes = { recordOutcome: jest.fn().mockResolvedValue(true) };
       const processor = buildProcessor(
         new EventLog(),
         new FailureTracker(),
         { get: jest.fn().mockReturnValue(makeAdaptor()) },
         5000,
         undefined,
-        { matchConfig: MATCH, outcomes },
+        { matchConfig: MATCH, outcomes, ...extra },
       );
       return { outcomes, processor };
     }
@@ -275,7 +285,11 @@ describe('WebhookProcessor', () => {
     });
 
     it('writes a failure with the gateway\'s OWN words, and still files it', async () => {
-      const { outcomes, processor } = withOutcomes();
+      const { outcomes, processor } = withOutcomes({
+        // The gateway has nothing on this one, so the callback's own words stand —
+        // the enrichment PREFERS the status API's reason, it never replaces one.
+        statuses: { lookup: jest.fn().mockResolvedValue(undefined) },
+      });
       const declined: WebhookEvent = {
         id: 'w-fail-1',
         type: 'payment.failed',
@@ -481,6 +495,306 @@ describe('WebhookProcessor', () => {
 
     const events = await eventLog.list(['org-1']);
     expect(events[0]?.type).toBe('payment-failed');
+  });
+});
+
+/**
+ * ★ THE DELIVERY THAT NAMES NO CUSTOMER.
+ *
+ * The gateway registers one url as BOTH its callback and its redirect, so every
+ * payment arrives twice: once server-to-server, once from the customer's browser.
+ * The callback carries a `StudentID` only when the browser supplied one, and a
+ * card payment made on the gateway's own page supplies none — so the second
+ * arrival is often the only delivery that names anyone.
+ */
+const CUSTOMERLESS: WebhookEvent = {
+  id: 'w-twin-0001',
+  type: 'payment.collected',
+  reference: null,
+  status: 'collected',
+  at: '2026-10-16T21:17:10.000Z',
+};
+
+/** What the gateway's own status API answered, minus anything it must not carry. */
+function gatewaySays(overrides: Partial<GatewayTransactionStatus> = {}): GatewayTransactionStatus {
+  return {
+    customerReference: 'STU025',
+    reasonCode: null,
+    responseCode: null,
+    reasonDescription: null,
+    transactionIdentifier: '012072AB-756C-4D3e-85BF-EEF7A44D4969',
+    ...overrides,
+  };
+}
+
+describe('the customer the callback did not carry', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('resolves the customer with the gateway, and pushes the payment', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const lookup = jest.fn().mockResolvedValue(gatewaySays());
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { matchConfig: MATCH, statuses: { lookup } },
+    );
+
+    await processor.processWebhook(CUSTOMERLESS);
+
+    // Under OUR organization, for the transaction the gateway echoed — the same
+    // correlation every other read of this table is keyed on.
+    expect(lookup).toHaveBeenCalledWith(env.ORGANIZATION_ID, CUSTOMERLESS.id);
+    // The payment is applied on the value WE sent as the checkout's customer,
+    // coming back to us — not on a guess, and not on the gateway's timestamped
+    // OrderId, which can never identify anybody.
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ matchValue: 'STU025', transactionId: CUSTOMERLESS.id }),
+      MATCH,
+    );
+    // And the lifecycle events are filed under that same reference, so the
+    // ledger's ref matches the customer the payment was pushed for.
+    const events = await eventLog.list(['org-1']);
+    expect(events.map((e) => e.type).sort()).toEqual([
+      'collected',
+      'record-updated',
+      'webhook-received',
+    ]);
+    expect(new Set(events.map((e) => e.ref))).toEqual(new Set(['STU025']));
+    expect(await failureTracker.list(['org-1'])).toHaveLength(0);
+  });
+
+  it('never asks the gateway about a delivery that already named its customer', async () => {
+    /*
+      ★ NO WEBHOOK PAYS A ROUND TRIP IT DOES NOT NEED.
+
+      The common case is a callback that arrived complete, and every one of those
+      would otherwise cost a server-to-server call, a database read of a sealed
+      figure and a signature — to be told what the body already said.
+    */
+    const lookup = jest.fn().mockResolvedValue(gatewaySays());
+    const processor = buildProcessor(
+      new EventLog(),
+      new FailureTracker(),
+      { get: jest.fn().mockReturnValue(makeAdaptor()) },
+      5000,
+      undefined,
+      { matchConfig: MATCH, statuses: { lookup } },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the "cannot be applied" finding when the gateway is unreachable', async () => {
+    /*
+      ★ A GATEWAY OUTAGE MUST NOT BECOME A NEW FAILURE MODE.
+
+      This is the delivery the enrichment exists for, and it is the one the
+      enrichment is not allowed to make worse: the lookup throws, the webhook
+      still completes what it always did — the money is recorded, and a critical
+      finding says the payment cannot be applied to an invoice. No 500, no lost
+      event, no new reason the gateway is simply unreachable.
+    */
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const processor = buildProcessor(
+      new EventLog(),
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      {
+        matchConfig: MATCH,
+        statuses: {
+          // The ONLY error the status path raises for a fault, and it quotes the
+          // status and nothing else — which is what the logging below relies on.
+          lookup: jest.fn().mockRejectedValue(
+            new AdaptorConnectionError(
+              'Amber Pay could not report the status of this transaction (status 502)',
+            ),
+          ),
+        },
+      },
+    );
+
+    await expect(processor.processWebhook(CUSTOMERLESS)).resolves.toBeUndefined();
+
+    // No customer, so no push — the refusal is deliberate, not a crash.
+    expect(adaptor.pushCompletedPayment).not.toHaveBeenCalled();
+    const failures = await failureTracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.severity).toBe('critical');
+    // Today's behaviour, by its own words: the refusal is the finding.
+    const loggedErrors = error.mock.calls.flatMap((call) => {
+      const payload = call[0] as { err?: unknown } | undefined;
+      return payload?.err instanceof Error ? [payload.err.message] : [];
+    });
+    expect(
+      loggedErrors.some((message) => message.includes('cannot be applied to an invoice')),
+    ).toBe(true);
+    // The unreachable lookup is logged as IDENTITY ONLY. The response it never
+    // read is the PII-dense thing — a cardholder name, a padded card number, a
+    // billing email and phone — and none of it may reach a log or a finding.
+    const logged = warn.mock.calls.map((call) => JSON.stringify(call)).join('\n');
+    expect(logged).toContain(CUSTOMERLESS.id);
+    expect(logged).not.toMatch(/CardHolderName|PaddedCardNo|BillingEmail|BillingPhone/);
+  });
+
+  it('prefers the gateway\'s composed reason over the callback\'s bare message', async () => {
+    const outcomes = { recordOutcome: jest.fn().mockResolvedValue(true) };
+    const processor = buildProcessor(
+      new EventLog(),
+      new FailureTracker(),
+      { get: jest.fn().mockReturnValue(makeAdaptor()) },
+      5000,
+      undefined,
+      {
+        matchConfig: MATCH,
+        outcomes,
+        statuses: {
+          lookup: jest.fn().mockResolvedValue(
+            gatewaySays({ reasonCode: '12', responseCode: '12', reasonDescription: 'Invalid transaction' }),
+          ),
+        },
+      },
+    );
+
+    await processor.processWebhook({
+      ...CUSTOMERLESS,
+      type: 'payment.failed',
+      status: 'failed',
+      // What the callback's ErrorMessage said. True, and useless on its own: the
+      // code beside it is what a customer needs and what a bare decline omits.
+      failureReason: 'Invalid transaction',
+    });
+
+    expect(outcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ failureReason: '12: Invalid transaction' }),
+    );
+  });
+
+  /*
+    ★★★ THE BEHAVIOUR THIS WHOLE TASK EXISTS FOR. ★★★
+
+    Production showed two `Collected` lifecycle events for one payment, same
+    reference, five seconds apart — because the push threw (nothing was
+    authorized), the catch released the dedup claim, and the second delivery was
+    therefore free to re-write the facts.
+
+    So both halves are asserted, and the second one is the half a dedup-only test
+    would miss: the push is attempted TWICE, because that is the only part of
+    this pipeline with somewhere to go when it fails, and it is what succeeds
+    once QuickBooks is connected.
+  */
+  it('writes the facts ONCE and still retries the push', async () => {
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const outcomes = {
+      // The store's own idempotency, answering the question it is now asked:
+      // this call settled the payment; that later one found it already settled.
+      recordOutcome: jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+    };
+    let attempts = 0;
+    const adaptor = makeAdaptor({
+      pushCompletedPayment: jest.fn().mockImplementation(async () => {
+        attempts += 1;
+        // The production trigger, exactly: the accounting system is configured
+        // but not authorized, so the push throws however many times it is tried.
+        if (attempts === 1) throw new Error('boom');
+        return applied;
+      }),
+    });
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { matchConfig: MATCH, outcomes },
+    );
+
+    await processor.processWebhook(collectedEvent);
+    await processor.processWebhook(collectedEvent);
+
+    // ONE settlement, asked about twice. The second delivery saw the payment was
+    // already settled and therefore said nothing about it again.
+    expect(outcomes.recordOutcome).toHaveBeenCalledTimes(2);
+    expect(outcomes.recordOutcome.mock.calls[0]).toEqual(outcomes.recordOutcome.mock.calls[1]);
+
+    // THE FACTS, ONCE. Two `collected` and two `webhook-received` is what the
+    // operator saw, and it reads as two payments when it is one.
+    const events = await eventLog.list(['org-1']);
+    const types = events.map((e) => e.type);
+    expect(types.filter((type) => type === 'collected')).toHaveLength(1);
+    expect(types.filter((type) => type === 'webhook-received')).toHaveLength(1);
+    // And the retry's success is on the record — the terminal stage of the flow
+    // is written by whichever push actually landed.
+    expect(types).toContain('record-updated');
+
+    // ★ THE RETRY, WHICH A DEDUP-ONLY TEST WOULD NOT CATCH.
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(2);
+    // The first attempt's finding, and only that one: the retry worked, so
+    // nothing new is wrong.
+    expect(await failureTracker.list(['org-1'])).toHaveLength(1);
+  });
+
+  it('lets a LATER delivery that names the customer complete the push', async () => {
+    /*
+      ★ THE INTENT DOCUMENTED BESIDE THE REFUSAL, AND IT MUST SURVIVE.
+
+      "because `processWebhook` releases the claim on failure, the delivery stays
+      retryable in case a later callback does carry the identifier" — so a
+      genuinely NEW delivery carrying information the first one lacked still
+      finishes the job. Here the gateway knows nothing on the first arrival and
+      the second delivery names the customer outright.
+    */
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const outcomes = {
+      recordOutcome: jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+    };
+    const lookup = jest.fn().mockResolvedValue(undefined);
+    const adaptor = makeAdaptor();
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { matchConfig: MATCH, outcomes, statuses: { lookup } },
+    );
+
+    await processor.processWebhook(CUSTOMERLESS);
+    await processor.processWebhook({ ...CUSTOMERLESS, reference: 'STU025' });
+
+    // The second delivery needed no gateway round trip — it arrived complete.
+    expect(lookup).toHaveBeenCalledTimes(1);
+    // The FIRST delivery never reached the adaptor: with no customer there is
+    // nothing to match, so it refused before the push rather than guessing. The
+    // second one is what actually applies the payment, on the reference it named.
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
+    expect(adaptor.pushCompletedPayment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ matchValue: 'STU025' }),
+      MATCH,
+    );
+    // The facts were still written once, by the delivery that settled them, and
+    // the push that finally landed left the flow's terminal stage behind.
+    const types = (await eventLog.list(['org-1'])).map((e) => e.type);
+    expect(types.filter((type) => type === 'collected')).toHaveLength(1);
+    expect(types).toContain('record-updated');
+    // And the first delivery's finding is still on file — the second one was not a
+    // way of making it disappear, it was a way of finishing the job.
+    expect(await failureTracker.list(['org-1'])).toHaveLength(1);
   });
 });
 

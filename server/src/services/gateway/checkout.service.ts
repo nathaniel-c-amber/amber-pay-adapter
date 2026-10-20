@@ -38,6 +38,7 @@ import { env } from '../../config/env.js';
 import type { GatewayTransport } from '../../types/gateway.js';
 import type {
   CheckoutSession,
+  GenerateSignatureRequest,
   GatewayCurrency,
   StandardCheckoutParams,
 } from './amberPayWire.js';
@@ -176,7 +177,7 @@ export class CheckoutService {
   async create(input: CreateCheckoutInput): Promise<CheckoutSession> {
     const { transactionId, statusToken } = await this.persistWithFreshId(input);
 
-    const signature = await this.requestSignature({
+    const signature = await requestTransactionSignature(this.transport, {
       ClientId: input.clientId,
       TransactionId: transactionId,
       CurrencyCode: input.currency,
@@ -213,8 +214,9 @@ export class CheckoutService {
       statusToken,
     };
   }
+}
 
-  /**
+/**
  * One call to `/generatesignature`, and its response read strictly.
  *
  * ★ THE BEARER TOKEN GOES HERE, AND ONLY HERE.
@@ -227,29 +229,34 @@ export class CheckoutService {
  * credential living in the page, in the DOM, in a screenshot and in every
  * support log since. The `Signature` field is what proves the checkout; the
  * bearer token proves us, and we are the only ones making this call.
+ *
+ * ★ IT IS A STANDALONE FUNCTION AND NOT A METHOD, and the reason is that a
+ * second caller needs the identical call: `transactionStatus.service.ts` signs
+ * an ALREADY-PAID transaction so it can ask `/transactionstatus` what the
+ * gateway knows. That is the same request over the same transport with the same
+ * bearer and the same strict read — so it is this function, called twice, rather
+ * than a second implementation that could drift on any of those four points.
+ * The transport is therefore a PARAMETER: the owner chooses its own, exactly as
+ * it does for the checkout it is called from.
  */
-private async requestSignature(body: {
-    ClientId: string;
-    TransactionId: string;
-    CurrencyCode: GatewayCurrency;
-    Amount: string;
-    SignType: 1;
-  }): Promise<string> {
-    const response = await this.transport(
-      'POST',
-      buildSignaturePath(),
-      body,
-      bearerAuth(env.AMBER_PAY_API_TOKEN),
+export async function requestTransactionSignature(
+  transport: GatewayTransport,
+  body: GenerateSignatureRequest,
+): Promise<string> {
+  const response = await transport(
+    'POST',
+    buildSignaturePath(),
+    body,
+    bearerAuth(env.AMBER_PAY_API_TOKEN),
+  );
+  if (response.status < 200 || response.status >= 300) {
+    throw new AdaptorError(
+      502,
+      'GATEWAY_SIGNATURE_ERROR',
+      `Amber Pay could not sign this transaction (status ${response.status})`,
     );
-    if (response.status < 200 || response.status >= 300) {
-      throw new AdaptorError(
-        502,
-        'GATEWAY_SIGNATURE_ERROR',
-        `Amber Pay could not sign this transaction (status ${response.status})`,
-      );
-    }
-    return readSignature(response.body);
   }
+  return readSignature(response.body);
 }
 
 /**
