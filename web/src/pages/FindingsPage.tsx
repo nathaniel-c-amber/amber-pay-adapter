@@ -554,7 +554,7 @@ export function FindingDetailPage({
 
       <PageHeader
         title={group.title}
-        lead={`${group.channel} · reported ${occurrences.length} ${plural(occurrences.length, "time", "times")} between ${formatDateTime(group.firstSeen)} and ${formatDateTime(group.lastSeen)}`}
+        lead={`${group.channel} · reported ${occurrences.length} ${plural(occurrences.length, "time", "times")} ${occurrences.length <= 1 ? "at" : "between"} ${formatDateTime(group.firstSeen)} ${occurrences.length > 1 ? "and " + formatDateTime(group.lastSeen) : ""}`}
         actions={<SeverityBadge severity={group.severity} />}
       />
 
