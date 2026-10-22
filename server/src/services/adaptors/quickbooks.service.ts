@@ -27,14 +27,14 @@ import {
 } from './errors.js';
 import { findCustomerByIdentifier } from './quickbooksCustomer.js';
 import {
-  createPaymentForInvoice,
+  allocatePayment,
+  createPaymentForInvoices,
   deletePayment,
   findOpenInvoices,
   findPaymentByReference,
   readPaymentSyncToken,
-  selectInvoiceToPay,
   unappliedRemainder,
-  verifyInvoiceCleared,
+  verifyInvoicesApplied,
 } from './quickbooksInvoice.js';
 import { httpTransport } from './httpTransport.js';
 import { INTUIT_TOKEN_URL, resolveAccessToken } from './oauth.js';
@@ -147,30 +147,45 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
   }
 
   /**
-   * Apply a completed payment to an invoice, discovering the invoice first.
+   * Apply a completed payment across the customer's outstanding invoices,
+   * oldest created first, using the amount the gateway actually charged.
    *
    * WHAT THIS REPLACED: a single `POST /invoice/{id}/payment`, which is not a
-   * QuickBooks URL. There is no such endpoint, so the call had never succeeded
-   * against a real company — it had only never met one, because the webhook
-   * push is the only path that reaches it and a stored token is the only thing
-   * that enables it. The `{id}` in that path was a gateway order reference, not
-   * a QuickBooks transaction id, so even a URL that existed would have been
-   * given an identifier QuickBooks has never heard of.
+   * QuickBooks URL, and later a version that paid the whole balance of one
+   * invoice regardless of what the customer was charged. A partial payment was
+   * therefore recorded as if it were the full amount. The charged figure now
+   * arrives as `amount` and is allocated across invoices; the invoice balance
+   * is only ever what the money is applied AGAINST.
    *
    * The order below is the whole design and is not incidental: match, check,
-   * confirm-not-already-done, write, re-read. The re-read is what lets the
-   * caller report "posted" truthfully; the already-done check is what makes a
-   * retry safe. Both live here rather than in the caller because both need the
-   * adaptor's connection, and a caller that could skip them would eventually
-   * skip them.
+   * confirm-not-already-done, look up what is owed, allocate, write, re-read.
+   * The re-read is what lets the caller report "posted" truthfully; the
+   * already-done check is what makes a retry safe. Both live here rather than in
+   * the caller because both need the adaptor's connection, and a caller that
+   * could skip them would eventually skip them.
    */
   async pushCompletedPayment(
     payment: PaymentRef,
     match: CustomerMatchConfig,
+    amount: string,
   ): Promise<PushResult> {
     this.assertConnected();
     const request = this.qboRequest;
     const started = Date.now();
+
+    /*
+      THE CHARGED FIGURE IS PARSED BEFORE ANY UPSTREAM CALL. It comes from the
+      sealed checkout record, which is the figure the gateway signed, so a value
+      that cannot be read as money is OUR fault — and refusing before matching
+      means no ledger call is spent on a payment that could never be placed.
+    */
+    const paidMinor = toMinorUnits(amount);
+    if (paidMinor === null || paidMinor <= 0) {
+      throw new AdaptorApplyError(
+        'amount-invalid',
+        'The amount this payment was charged is not a usable figure, so it cannot be applied to an invoice',
+      );
+    }
 
     const lookup = await findCustomerByIdentifier(request, match, payment.matchValue);
     if (!lookup.ok) {
@@ -201,69 +216,97 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     const seen = await findPaymentByReference(request, payment.id);
     if (seen.found) {
       /*
-        Verify the invoice the ORIGINAL payment named, read from that payment's
-        own linked transactions. Not the outstanding-invoice lookup: that
-        invoice is settled now, and a settled invoice cannot be told apart from
-        any other settled one.
+        ★ THE DURABLE PAYMENT ROW IS THE EVIDENCE, NOT THE BALANCE.
+
+        This used to re-read the invoice the original payment named and treat a
+        zero balance as proof. That is no longer a valid test: a payment may
+        deliberately leave an invoice PARTLY paid, and after the fact a settled
+        balance and a partially-paid one cannot be told apart — both are just
+        "some money is owed" or "none is". The payment row carrying our
+        reference is the thing that proves the write happened, and its own
+        `LinkedTxn` says which invoices it touched. Re-reading would therefore
+        invent a conclusion the data cannot support, so it is not done.
       */
-      const alreadyPaid = seen.invoiceIds[0] ?? null;
-      const settled = alreadyPaid
-        ? await verifyInvoiceCleared(request, alreadyPaid)
-        : { verified: false, calls: 0 };
       logger.info(
-        { adaptor: this.id, invoice: alreadyPaid, ms: Date.now() - started },
+        { adaptor: this.id, invoices: seen.invoiceIds, ms: Date.now() - started },
         'Payment reference already recorded upstream; nothing written',
       );
       return {
         externalRef: payment.transactionId,
         at: new Date().toISOString(),
-        invoiceRef: alreadyPaid,
+        invoiceRefs: seen.invoiceIds,
+        reconciliationRequired: false,
         matchedBy: match.strategy,
         alreadyApplied: true,
-        verified: settled.verified,
+        verified: seen.invoiceIds.length > 0,
       };
     }
 
     const { invoices } = await findOpenInvoices(request, lookup.customer.id);
-    const invoice = selectInvoiceToPay(invoices);
+    const allocations = allocatePayment(invoices, paidMinor);
 
-    const created = await createPaymentForInvoice(request, invoice, {
+    /*
+      THE BALANCE CAN MOVE BETWEEN THE READ AND THE WRITE. `allocatePayment`
+      stops when the money or the invoices run out, so a short allocation means
+      the customer's total outstanding balance is now less than what was
+      charged. Nothing is written in that case: writing the shortfall would
+      either overpay an invoice or create an unlinked credit line, and neither
+      is a decision this adaptor can make on the customer's behalf. A person
+      has to reconcile it.
+    */
+    const allocatedMinor = allocations.reduce(
+      (sum, allocation) => sum + (minorUnitsFromNumber(allocation.amount) ?? 0),
+      0,
+    );
+    if (allocatedMinor < paidMinor) {
+      throw new AdaptorApplyError(
+        'amount-exceeds-balance',
+        'The customer\'s total outstanding balance is now less than the amount charged, so no payment was written',
+      );
+    }
+
+    const created = await createPaymentForInvoices(request, allocations, {
       customerId: lookup.customer.id,
       reference: payment.id,
       match,
     });
 
     const remainder = unappliedRemainder(created);
-    const settled = await verifyInvoiceCleared(request, invoice.Id);
+    const verification = await verifyInvoicesApplied(request, allocations);
+    const reconciliationRequired = remainder > 0 || verification.reconciliationRequired;
 
-    if (remainder > 0) {
+    if (reconciliationRequired) {
       /*
-        The invoice cleared but the payment is for more than it needed, which
-        means the balance moved between our read and our write. Reported, never
-        swallowed: the money is safe and the ledger disagrees, and only a person
-        can reconcile that.
+        The invoices moved but the ledger and the payment do not quite agree:
+        either upstream left part of the payment unapplied, or an invoice was
+        reduced by more than our share. Reported, never swallowed — the money
+        is safe, and only a person can reconcile the difference.
       */
       logger.warn(
-        { adaptor: this.id, invoice: invoice.Id, unapplied: remainder },
-        'Payment applied with an unapplied remainder; the invoice balance changed during the write',
+        { adaptor: this.id, invoices: allocations.map((a) => a.invoice.Id) },
+        'Payment applied with an unapplied remainder or a concurrent balance change; reconciliation required',
       );
     }
 
-    if (!settled.verified) {
+    if (!verification.verified) {
       throw new AdaptorApplyError(
         'invoice-not-cleared',
-        `QuickBooks recorded payment ${created.Id} but invoice ${invoice.Id} is still outstanding`,
+        `QuickBooks recorded payment ${created.Id} but ${allocations
+          .map((allocation) => allocation.invoice.Id)
+          .join(', ')} did not move by the amount applied`,
       );
     }
 
+    const invoiceRefs = allocations.map((allocation) => allocation.invoice.Id);
     logger.info(
-      { adaptor: this.id, invoice: invoice.Id, strategy: match.strategy, ms: Date.now() - started },
-      'QuickBooks invoice paid',
+      { adaptor: this.id, invoices: invoiceRefs, strategy: match.strategy, ms: Date.now() - started },
+      'QuickBooks invoices paid',
     );
     return {
       externalRef: created.Id,
       at: new Date().toISOString(),
-      invoiceRef: invoice.Id,
+      invoiceRefs,
+      reconciliationRequired,
       matchedBy: match.strategy,
       alreadyApplied: false,
       verified: true,
@@ -296,31 +339,47 @@ export class QuickBooksAdaptor implements AccountingAdaptor {
     if (invoices.length === 0) {
       return { ok: false, reason: 'invoice-not-found' };
     }
-    const invoice = selectInvoiceToPay(invoices);
 
     const requested = toMinorUnits(input.amount);
     if (requested === null || requested <= 0) {
       return { ok: false, reason: 'amount-invalid' };
     }
 
-    const balance = minorUnitsFromNumber(invoice.Balance);
-    if (balance === null) {
-      // Not a rejection: the provider returned a balance this process cannot
-      // compare, which is a fault in the answer rather than a fact about the
-      // payment. Throwing keeps the caller's "do not block on a fault" rule.
-      throw new AdaptorConnectionError(
-        'QuickBooks returned an invoice balance that could not be compared',
-      );
+    /*
+      THE CEILING IS THE CUSTOMER'S TOTAL OUTSTANDING, not one invoice's balance.
+      A payment that spans several invoices is legitimate — and the push applies
+      the same charged figure across them oldest-first — so checking a single
+      invoice would refuse payments the ledger would happily accept.
+
+      An unreadable balance is a FAULT, not a refusal: the provider returned an
+      answer this process cannot compare, and the caller's rule is to let the
+      customer pay when the accounting side is merely broken.
+    */
+    let total = 0;
+    for (const invoice of invoices) {
+      const balance = minorUnitsFromNumber(invoice.Balance);
+      if (balance === null) {
+        throw new AdaptorConnectionError(
+          'QuickBooks returned an invoice balance that could not be compared',
+        );
+      }
+      total += balance;
     }
-    if (requested > balance) {
+    if (requested > total) {
       return { ok: false, reason: 'amount-exceeds-balance' };
     }
 
-    // Absence means the company's home currency — a real state, not missing
-    // data — so only a PRESENT and different currency is a mismatch.
-    const invoiceCurrency = invoice.CurrencyRef?.value;
-    if (invoiceCurrency !== undefined && invoiceCurrency !== input.currency) {
-      return { ok: false, reason: 'currency-mismatch' };
+    /*
+      EVERY invoice must agree on the currency, not just the one that would be
+      paid first — the payment can span them. Absence means the company's home
+      currency — a real state, not missing data — so only a PRESENT and
+      different currency is a mismatch.
+    */
+    for (const invoice of invoices) {
+      const invoiceCurrency = invoice.CurrencyRef?.value;
+      if (invoiceCurrency !== undefined && invoiceCurrency !== input.currency) {
+        return { ok: false, reason: 'currency-mismatch' };
+      }
     }
 
     return { ok: true };

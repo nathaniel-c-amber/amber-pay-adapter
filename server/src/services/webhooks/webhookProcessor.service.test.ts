@@ -3,6 +3,7 @@ import { EventLog } from '../events/eventLog.service.js';
 import { FailureTracker } from '../events/failureTracker.service.js';
 import { QuickBooksAdaptor } from '../adaptors/quickbooks.service.js';
 import { AdaptorAuthError, AdaptorConnectionError } from '../adaptors/errors.js';
+import { sealExpectedCharge } from '../gateway/amberPayWire.js';
 import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import type { WebhookEvent } from '../../types/gateway.js';
@@ -44,11 +45,27 @@ const MATCH: CustomerMatchConfig = {
 const applied: PushResult = {
   externalRef: 'pay-1',
   at: '2026-01-01T00:00:00.000Z',
-  invoiceRef: 'inv-1',
+  invoiceRefs: ['inv-1'],
+  reconciliationRequired: false,
   matchedBy: 'customField',
   alreadyApplied: false,
   verified: true,
 };
+
+/**
+ * A sealed charge, as the gateway signed it.
+ *
+ * The push is handed the amount the customer was CHARGED, read from this row —
+ * never the invoice balance. A processor test that did not provide one would
+ * (rightly) refuse to push, so every harness in this file answers it.
+ */
+function defaultCharges(amount = '250.00') {
+  return {
+    findExpectedChargeByTransactionId: jest.fn(async () => ({
+      expectedSealed: sealExpectedCharge(amount, 'JMD'),
+    })),
+  };
+}
 
 /**
  * A QuickBooks that answers the whole pipeline.
@@ -77,7 +94,7 @@ function quickBooksScript() {
     if (statement.includes('from Invoice where CustomerRef')) {
       return {
         status: 200,
-        body: { QueryResponse: { Invoice: [{ Id: 'inv-1', DueDate: '2026-02-01', Balance: 100 }] } },
+        body: { QueryResponse: { Invoice: [{ Id: 'inv-1', DueDate: '2026-02-01', Balance: 250 }] } },
       };
     }
     if (statement.includes('from Payment')) {
@@ -111,7 +128,9 @@ function buildProcessor(
     activeAdaptorId,
     undefined,
     undefined,
-    overrides,
+    // The charge store is answered by default so a push has a figure to apply;
+    // a test that wants to exercise a MISSING charge overrides it explicitly.
+    { charges: defaultCharges(), ...overrides },
   );
 }
 
@@ -202,6 +221,77 @@ describe('WebhookProcessor', () => {
     ]);
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledTimes(1);
     expect(await failureTracker.list(['org-1'])).toHaveLength(0);
+  });
+
+  it('hands the adaptor the amount the gateway CHARGED, read from the sealed checkout', async () => {
+    /*
+      ★ THE FIGURE CROSSES THE PRIVACY BOUNDARY AS AN ARGUMENT, NOT A FIELD.
+
+      It is what was charged, keyed by our transaction id, and it is the only
+      number the ledger may apply. Asserting it here is the whole point: a push
+      that received `undefined`, a default, or the invoice balance would satisfy
+      every other test in this file.
+    */
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const charges = defaultCharges('137.25');
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      { matchConfig: MATCH, charges },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(charges.findExpectedChargeByTransactionId).toHaveBeenCalledWith(
+      env.ORGANIZATION_ID,
+      collectedEvent.id,
+    );
+    expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ id: collectedEvent.id }),
+      MATCH,
+      '137.25',
+    );
+    expect(await failureTracker.list(['org-1'])).toHaveLength(0);
+  });
+
+  it('refuses the push when the charged amount cannot be found — it never guesses', async () => {
+    /*
+      Falling back to an invoice balance is the original defect: a partial
+      payment recorded as the full outstanding amount. A refusal is visible and
+      fixable; a plausible wrong figure is invisible until the books disagree.
+    */
+    const eventLog = new EventLog();
+    const failureTracker = new FailureTracker();
+    const adaptor = makeAdaptor();
+    const processor = buildProcessor(
+      eventLog,
+      failureTracker,
+      { get: jest.fn().mockReturnValue(adaptor) },
+      5000,
+      undefined,
+      {
+        matchConfig: MATCH,
+        charges: { findExpectedChargeByTransactionId: jest.fn(async () => undefined) },
+      },
+    );
+
+    await processor.processWebhook(collectedEvent);
+
+    expect(adaptor.pushCompletedPayment).not.toHaveBeenCalled();
+    const failures = await failureTracker.list(['org-1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.title).toMatch(
+      /amount this payment was charged could not be found/i,
+    );
+    // And nothing reached the ledger's terminal stage.
+    expect((await eventLog.list(['org-1'])).map((e) => e.type)).not.toContain(
+      'record-updated',
+    );
   });
 
   it('connects the adaptor before pushing (real adaptor)', async () => {
@@ -413,6 +503,7 @@ describe('WebhookProcessor', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'refunded' }),
       MATCH,
+      '250.00',
     );
   });
 
@@ -588,6 +679,7 @@ describe('the customer the callback did not carry', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.objectContaining({ matchValue: 'STU025', transactionId: CUSTOMERLESS.id }),
       MATCH,
+      '250.00',
     );
     // And the lifecycle events are filed under that same reference, so the
     // ledger's ref matches the customer the payment was pushed for.
@@ -817,6 +909,7 @@ describe('the customer the callback did not carry', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenLastCalledWith(
       expect.objectContaining({ matchValue: 'STU025' }),
       MATCH,
+      '250.00',
     );
     // The facts were still written once, by the delivery that settled them, and
     // the push that finally landed left the flow's terminal stage behind.
@@ -848,6 +941,7 @@ describe('the customer matching rule', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.objectContaining({ matchValue: 'ref-0001' }),
       MATCH,
+      '250.00',
     );
   });
 
@@ -904,6 +998,7 @@ describe('the customer matching rule', () => {
     expect(adaptor.pushCompletedPayment).toHaveBeenCalledWith(
       expect.anything(),
       stored,
+      '250.00',
     );
   });
 });

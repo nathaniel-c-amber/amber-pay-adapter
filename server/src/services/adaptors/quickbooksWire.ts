@@ -89,12 +89,13 @@ export interface QboPaymentLine {
 }
 
 /**
- * The request body that applies money to an invoice.
+ * The request body that applies money to an invoice (or several).
  *
- * `TotalAmt` and `Line[].Amount` are REQUIRED by QuickBooks; the invoice
- * balance is the only correct value for either, so a caller cannot invent a
- * figure. `PaymentRefNum` carries the gateway's transaction id, which is what
- * makes a retried delivery recognisable as one already done.
+ * `TotalAmt` and `Line[].Amount` are REQUIRED by QuickBooks. `TotalAmt` is the
+ * sum of the line amounts, which is the amount actually CHARGED — not the
+ * invoice balance, which is what the invoice still owed and is frequently a
+ * different number. `PaymentRefNum` carries the gateway's transaction id, which
+ * is what makes a retried delivery recognisable as one already done.
  */
 export interface QboPaymentRequest {
   TotalAmt: number;

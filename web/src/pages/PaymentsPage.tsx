@@ -213,6 +213,7 @@ export function PaymentsPage({
                   placeholder="250.00"
                   inputMode="decimal"
                   autoComplete="off"
+                  aria-describedby="checkout-amount-help"
                   required
                 />
               </label>
@@ -229,6 +230,14 @@ export function PaymentsPage({
                 <IconCard /> {creating ? "Preparing…" : "Take payment"}
               </button>
             </div>
+
+            <p id="checkout-amount-help" className="m-0 text-xs leading-prose text-ink-3">
+              The checkout names the customer and an amount, not an invoice. The amount is
+              applied to that customer&apos;s outstanding invoices oldest first by creation
+              date, not due date, so one payment can cover several invoices, with the last one
+              partly paid. An amount above the customer&apos;s total outstanding balance is
+              refused before the payment starts.
+            </p>
 
             <p className="m-0 text-xs leading-prose text-ink-3">
               The customer is handed straight to the payment provider&apos;s own page to enter

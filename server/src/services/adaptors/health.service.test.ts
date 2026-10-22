@@ -145,7 +145,8 @@ describe('connectConfiguredAdaptors', () => {
       pushCompletedPayment: async () => ({
         externalRef: 'x',
         at: new Date().toISOString(),
-        invoiceRef: null,
+        invoiceRefs: [],
+        reconciliationRequired: false,
         matchedBy: 'none',
         alreadyApplied: false,
         verified: false,

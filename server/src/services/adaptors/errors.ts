@@ -61,8 +61,12 @@ export type AdaptorApplyFailure =
   | 'customer-not-found'
   /** More than one customer matched, so choosing one would be a guess. */
   | 'customer-ambiguous'
-  /** The customer matched but has nothing outstanding. */
+  /** The customer has nothing outstanding. */
   | 'invoice-not-found'
+  /** The amount charged is not a figure this process can compare. */
+  | 'amount-invalid'
+  /** The amount charged is more than the customer's total outstanding balance. */
+  | 'amount-exceeds-balance'
   /** The customer has several open invoices and no rule to pick between them. */
   | 'invoice-ambiguous'
   /** The payment was recorded but the invoice did not clear. */

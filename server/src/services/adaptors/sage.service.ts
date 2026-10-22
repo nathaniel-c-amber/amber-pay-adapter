@@ -86,6 +86,7 @@ export class SageAdaptor implements AccountingAdaptor {
   async pushCompletedPayment(
     _payment: PaymentRef,
     _match: CustomerMatchConfig,
+    _amount: string,
   ): Promise<PushResult> {
     this.assertConnected();
     throw new AdaptorError(

@@ -146,7 +146,8 @@ describe('privacy constraint', () => {
     const pushResult: PushResult = {
       externalRef: 'tx-1',
       at: '2026-01-01T00:00:00.000Z',
-      invoiceRef: 'inv-1',
+      invoiceRefs: ['inv-1'],
+      reconciliationRequired: false,
       matchedBy: 'customField',
       alreadyApplied: false,
       verified: true,
@@ -189,7 +190,8 @@ describe('privacy constraint', () => {
     expect(Object.keys(pushResult)).toEqual([
       'externalRef',
       'at',
-      'invoiceRef',
+      'invoiceRefs',
+      'reconciliationRequired',
       'matchedBy',
       'alreadyApplied',
       'verified',
@@ -318,9 +320,18 @@ describe('privacy constraint', () => {
         // Strip comments: a comment may DISCUSS a figure without holding one,
         // and `quickbooksWire.ts` is mostly commentary about these very names.
         const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+        /*
+          A METHOD PARAMETER IS TRANSIENT BY DEFINITION. `amount: string` in
+          `AccountingAdaptor.pushCompletedPayment` is the figure the payment was
+          charged, passed for the duration of one call and never stored — which
+          is the opposite of what this boundary protects. Only stored FIELDS are
+          in scope, so parameter lists are removed before interface bodies are
+          scanned. This does not loosen the check on any declared field.
+        */
+        const fieldsOnly = code.replace(/\([^()]*\)/g, '()');
         // Each interface body is scanned in isolation, so one allowed interface
         // cannot lend its fields to a neighbour that happens to follow it.
-        for (const match of code.matchAll(
+        for (const match of fieldsOnly.matchAll(
           /(?:export\s+)?interface\s+([A-Za-z0-9_]+)\s*(?:extends[^{]+)?\{([\s\S]*?)\n\}/g,
         )) {
           const [, name, body] = match;
@@ -354,7 +365,9 @@ describe('privacy constraint', () => {
       ].map((relative) =>
         readFileSync(join(serverRoot, relative), 'utf8')
           .replace(/\/\*[\s\S]*?\*\//g, '')
-          .replace(/\/\/.*$/gm, ''),
+          .replace(/\/\/.*$/gm, '')
+          // Parameters are transient, not stored fields — see the scan above.
+          .replace(/\([^()]*\)/g, '()'),
       );
 
       const declared = sources.flatMap((source) =>

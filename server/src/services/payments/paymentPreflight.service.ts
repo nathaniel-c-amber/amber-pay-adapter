@@ -65,7 +65,7 @@ const REFUSALS: Record<PreflightRejection, string> = {
   'amount-invalid':
     'The amount is not a figure the accounting system can accept. Correct the amount and try again.',
   'amount-exceeds-balance':
-    'The amount is more than the outstanding invoice balance. Reduce it to the balance or less before taking payment.',
+    'The amount is more than the customer\'s total outstanding balance. Reduce it to that total or less before taking payment.',
   'currency-mismatch':
     'The payment currency does not match the invoice currency. Use the invoice currency, or correct the invoice.',
 };

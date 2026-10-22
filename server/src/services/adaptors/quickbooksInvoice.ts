@@ -1,11 +1,19 @@
-/* Placing a completed payment on an invoice, and proving it landed.
+/* Placing a completed payment on invoices, and proving it landed.
  *
  * Four steps, in this order, and the order is the design:
  *
- *   1. CHECK        which invoice is outstanding for this customer
+ *   1. CHECK        which invoices are outstanding for this customer
  *   2. IDEMPOTENCY  has this reference already been paid — UPSTREAM
- *   3. APPLY        create the payment
- *   4. VERIFY       read the invoice back and confirm it cleared
+ *   3. APPLY        allocate the charged amount, oldest created first, and
+ *                   write ONE payment that names every invoice it touched
+ *   4. VERIFY       read each invoice back and confirm it moved by our share
+ *
+ * THE AMOUNT IS THE ONE THE GATEWAY CHARGED, NOT THE INVOICE BALANCE. This used
+ * to read the customer's oldest invoice and pay its whole outstanding balance,
+ * which meant a partial payment (a customer paying part of a term's fee) was
+ * recorded as if they had paid the lot. The figure the customer was charged is
+ * the only number that belongs in the ledger; the balance is what the invoice
+ * still owes afterwards.
  *
  * STEP 2 IS NOT REDUNDANT WITH OUR OWN WEBHOOK DEDUP. Ours marks a webhook
  * processed only after the whole handler succeeds, and RELEASES the claim on
@@ -32,6 +40,7 @@ import {
   sqlLiteral,
 } from './quickbooksWire.js';
 import type { CustomerMatchConfig } from '../../types/adaptor.js';
+import { minorUnitsFromNumber } from '../../utils/money.js';
 import type {
   QboInvoice,
   QboPaymentCreated,
@@ -41,16 +50,13 @@ import type {
 } from './quickbooksWire.js';
 
 /**
- * What a cleared balance is compared against.
+ * What a touched invoice's balance is compared against.
  *
- * QuickBooks returns money as a JSON number, and a balance that has been fully
- * paid arrives as `0` rather than as some near-miss residue, so an exact zero
- * is the right test for "did this clear" and needs no tolerance. The tolerance
- * exists for the OTHER comparison, `UnappliedAmt`, which is a remainder that
- * can carry representation error in the last place. A cent is the smallest
- * difference that can mean anything to an accountant.
+ * QuickBooks returns money as a JSON number. Both sides of the comparison are
+ * converted to integer minor units, so the tolerance exists only for the
+ * representation error the provider's own two-place figures can carry. A cent
+ * is the smallest difference that can mean anything to an accountant.
  */
-const CLEARED_EXACTLY = 0;
 const LEAST_MEANINGFUL_AMOUNT = 0.005;
 
 export interface ApplyOptions {
@@ -64,11 +70,11 @@ export interface ApplyOptions {
 }
 
 export interface ApplyOutcome {
-  /** The invoice the payment was applied to, or null when it was already done. */
-  invoiceId: string | null;
+  /** The invoices the payment was applied to, oldest created first. */
+  invoiceIds: string[];
   /** True when a prior payment already covered this reference. */
   alreadyApplied: boolean;
-  /** The post-write re-read confirmed the invoice cleared. */
+  /** The post-write re-read confirmed every allocated invoice moved as expected. */
   verified: boolean;
   /** Upstream calls spent, so the caller can see the real cost of a push. */
   calls: number;
@@ -128,36 +134,67 @@ function isOutstanding(invoice: QboInvoice): boolean {
   return typeof invoice.Balance === 'number' && invoice.Balance > 0;
 }
 
+/** One invoice and the share of the payment allocated to it. */
+export type InvoiceAllocation = {
+  invoice: QboInvoice;
+  /** MAJOR units, for the wire. Derived from integer minor units, never summed by float. */
+  amount: number;
+};
+
 /**
- * Choose which outstanding invoice to pay.
+ * Allocate a charged amount across the customer's outstanding invoices, oldest
+ * created first.
  *
  * A DETERMINISTIC RULE, not a first-row pick, and not a refusal. A customer
  * with two open invoices is ordinary — a student with a term's fee and a
  * material charge, say — and refusing would mean the pipeline silently does
  * nothing for exactly the people it exists for. The rule is therefore written
- * down and applied every time: the oldest due date first, then the oldest
- * transaction date, then the lowest id, so two runs over the same data always
- * choose the same invoice.
+ * down and applied every time: earliest `TxnDate`, then the lowest `Id`, and an
+ * undated invoice last. `DueDate` is NOT used: it is a due-by date, not an age,
+ * and a long-overdue invoice would otherwise be paid ahead of an older one.
  *
- * It is a business rule the operator can disagree with, which is why the
- * chosen id is reported in the `PushResult` rather than being an internal
- * detail — the console can show which invoice a payment landed on.
+ * THE ARITHMETIC IS IN INTEGER MINOR UNITS. `Balance` arrives as a JSON number;
+ * multiplying and subtracting those directly produces values like
+ * `250.00000000000003`, and an accountant will not accept a comparison that is
+ * "nearly" right. Every figure is converted once, allocated as whole cents, and
+ * converted back only when the body is built.
+ *
+ * The allocation stops when the money runs out, so the sum NEVER exceeds what
+ * was charged. A remainder is not invented here: if the invoices cannot absorb
+ * the whole amount, that is the caller's refusal to make (the balance moved
+ * since it was read), not a credit line this function could justify.
  */
-export function selectInvoiceToPay(invoices: QboInvoice[]): QboInvoice {
-  const first = invoices[0];
-  if (!first) {
+export function allocatePayment(
+  invoices: QboInvoice[],
+  paidMinorUnits: number,
+): InvoiceAllocation[] {
+  const ordered = [...invoices].sort(compareInvoices);
+  const allocations: InvoiceAllocation[] = [];
+  let remaining = paidMinorUnits;
+
+  for (const invoice of ordered) {
+    if (remaining <= 0) break;
+    const balance = minorUnitsFromNumber(invoice.Balance);
+    // A missing balance cannot be judged, and a settled one has nothing to give.
+    // Skipping is the only safe reading: treating either as payable would mean
+    // inventing a figure to apply money against.
+    if (balance === null || balance <= 0) continue;
+    const amount = Math.min(remaining, balance);
+    allocations.push({ invoice, amount: amount / 100 });
+    remaining -= amount;
+  }
+
+  if (allocations.length === 0) {
     throw new AdaptorApplyError(
       'invoice-not-found',
       'The matched QuickBooks customer has no outstanding invoice',
     );
   }
-  return [...invoices].sort(compareInvoices)[0] as QboInvoice;
+  return allocations;
 }
 
-/** Oldest due date, then oldest transaction date, then lowest id. */
+/** Earliest transaction date, then lowest id. Undated sorts last. */
 function compareInvoices(a: QboInvoice, b: QboInvoice): number {
-  const due = compareNullable(a.DueDate, b.DueDate);
-  if (due !== 0) return due;
   const txn = compareNullable(a.TxnDate, b.TxnDate);
   if (txn !== 0) return txn;
   return a.Id.localeCompare(b.Id, 'en');
@@ -308,29 +345,34 @@ function outcomeFromPayments(
 /* --- 3. APPLY ------------------------------------------------------------ */
 
 /**
- * Record the payment against the invoice.
+ * Record ONE payment that names every invoice it was allocated to.
  *
- * The amount is the INVOICE'S OWN OUTSTANDING BALANCE, read in step 1. It is
- * not taken from the gateway, not taken from a local record, and not computed:
- * the upstream already knows what is owed, and the only number that can be
- * correct here is the one it reported. QuickBooks requires `TotalAmt` and a
- * per-line `Amount`; both are set to it, and the line links to the invoice,
- * which is what actually reduces it.
+ * `TotalAmt` is the sum of the allocations, which is the amount actually
+ * charged (or the part of it the invoices could absorb). Each line carries its
+ * share and links to the invoice, which is what actually reduces it. QuickBooks
+ * requires both `TotalAmt` and a per-line `Amount`; the line amounts are the
+ * source of truth and the total is derived from them, so the two cannot
+ * disagree.
+ *
+ * ONE PAYMENT RATHER THAN ONE PER INVOICE, deliberately: the gateway charged
+ * one amount under one transaction reference, and the idempotency probe finds
+ * a payment BY that reference. Several payments would each carry a reference
+ * QuickBooks expects to be unique, and a retry would have to decide which of
+ * them it had already written.
  */
-export async function createPaymentForInvoice(
+export async function createPaymentForInvoices(
   request: QboRequest,
-  invoice: QboInvoice,
+  allocations: InvoiceAllocation[],
   options: ApplyOptions,
 ): Promise<QboPaymentCreated> {
+  const total = majorUnitsFrom(allocations.reduce((sum, a) => sum + a.amount, 0));
   const body: QboPaymentRequest = {
-    TotalAmt: invoice.Balance,
+    TotalAmt: total,
     CustomerRef: { value: options.customerId },
-    Line: [
-      {
-        Amount: invoice.Balance,
-        LinkedTxn: [{ TxnId: invoice.Id, TxnType: 'Invoice' }],
-      },
-    ],
+    Line: allocations.map((allocation) => ({
+      Amount: allocation.amount,
+      LinkedTxn: [{ TxnId: allocation.invoice.Id, TxnType: 'Invoice' }],
+    })),
     PaymentRefNum: options.reference,
     ...(options.txnDate ? { TxnDate: options.txnDate } : {}),
     ...(options.match.depositAccountId
@@ -349,6 +391,16 @@ export async function createPaymentForInvoice(
     );
   }
   return payment;
+}
+
+/**
+ * Round a float sum back to the two-place figure the wire understands.
+ *
+ * The operands are already exact cents expressed as major units, so this only
+ * removes the representation error introduced by adding them (`0.1 + 0.2`).
+ */
+function majorUnitsFrom(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /** Pull just the id and unapplied remainder out of a create response. */
@@ -408,27 +460,70 @@ export async function deletePayment(
 /* --- 4. VERIFY ----------------------------------------------------------- */
 
 /**
- * Re-read the invoice and report whether it is settled.
+ * Re-read every touched invoice and report how it moved.
  *
- * Only the invoice's own balance is consulted, because that is the claim the
- * console makes. A payment can be created successfully while the invoice does
- * not move — the write can be applied to a different transaction, or not at
- * all — and a 200 from the create is not evidence either way. This read is.
+ * The claim is not "the payment was created" but "each invoice moved by the
+ * share this payment gave it". `expected = read-time balance - allocation`, and
+ * the comparison is in integer minor units:
+ *
+ *   - ABOVE expected → our line did not land, so `verified` is false. This is
+ *     the failure the console must not paper over.
+ *   - BELOW expected → our line landed and something ELSE also paid. The money
+ *     is not lost, so this is not a verification failure; it is a ledger
+ *     disagreement a person has to reconcile, reported as
+ *     `reconciliationRequired`.
+ *
+ * A missing balance on either side is a fault in the answer, not a passing
+ * verification, so it throws exactly as it did before.
  */
-export async function verifyInvoiceCleared(
+export async function verifyInvoicesApplied(
   request: QboRequest,
-  invoiceId: string,
-): Promise<{ verified: boolean; calls: number }> {
-  const response = await request(`/invoice/${invoiceId}`);
-  assertQboOk(response, 'QuickBooks invoice verify');
-  const refreshed = readInvoice(response.body);
-  if (!refreshed) {
-    throw new AdaptorApplyError(
-      'invoice-not-cleared',
-      `QuickBooks did not return invoice ${invoiceId} when asked to confirm the payment`,
-    );
+  allocations: InvoiceAllocation[],
+): Promise<{ verified: boolean; reconciliationRequired: boolean; calls: number }> {
+  let verified = true;
+  let reconciliationRequired = false;
+  let calls = 0;
+
+  for (const allocation of allocations) {
+    const invoiceId = allocation.invoice.Id;
+    const before = minorUnitsFromNumber(allocation.invoice.Balance);
+    const share = minorUnitsFromNumber(allocation.amount);
+    if (before === null || share === null) {
+      throw new AdaptorApplyError(
+        'invoice-not-cleared',
+        `QuickBooks returned a balance for invoice ${invoiceId} that could not be compared`,
+      );
+    }
+    const expected = before - share;
+
+    const response = await request(`/invoice/${invoiceId}`);
+    calls += 1;
+    assertQboOk(response, 'QuickBooks invoice verify');
+    const refreshed = readInvoice(response.body);
+    if (!refreshed) {
+      throw new AdaptorApplyError(
+        'invoice-not-cleared',
+        `QuickBooks did not return invoice ${invoiceId} when asked to confirm the payment`,
+      );
+    }
+    const actual = minorUnitsFromNumber(refreshed.Balance);
+    if (actual === null) {
+      throw new AdaptorApplyError(
+        'invoice-not-cleared',
+        `QuickBooks returned a balance for invoice ${invoiceId} that could not be compared`,
+      );
+    }
+
+    const difference = actual - expected;
+    const tolerance = LEAST_MEANINGFUL_AMOUNT * 100;
+    if (difference > tolerance) {
+      verified = false;
+    } else if (difference < -tolerance) {
+      reconciliationRequired = true;
+    }
   }
-  return { verified: refreshed.Balance === CLEARED_EXACTLY, calls: 1 };
+
+  return { verified, reconciliationRequired, calls };
 }
 
 /**

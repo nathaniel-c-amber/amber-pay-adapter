@@ -135,6 +135,55 @@ describe('QuickBooks pre-flight', () => {
     await expect(adaptor.preflightPayment!(input)).resolves.toEqual({ ok: true });
   });
 
+  it('uses the TOTAL of all open invoices as the ceiling', async () => {
+    /*
+      A payment may span invoices — the push allocates it across them oldest
+      first — so the pre-flight must not refuse an amount that only fits the
+      total. Before this, the ceiling was one invoice's balance, and a customer
+      with two open invoices could not pay the sum of them at all.
+    */
+    const { adaptor } = await adaptorFor({
+      customers: [customer],
+      invoices: [
+        { Id: 'inv-1', TxnDate: '2026-01-01', Balance: 100 },
+        { Id: 'inv-2', TxnDate: '2026-02-01', Balance: 150 },
+      ],
+    });
+    await expect(adaptor.preflightPayment!(input)).resolves.toEqual({ ok: true });
+  });
+
+  it('rejects an amount above the total, even when it fits one invoice', async () => {
+    const { adaptor } = await adaptorFor({
+      customers: [customer],
+      invoices: [
+        { Id: 'inv-1', Balance: 100 },
+        { Id: 'inv-2', Balance: 150 },
+      ],
+    });
+    await expect(adaptor.preflightPayment!({ ...input, amount: '250.01' })).resolves.toEqual({
+      ok: false,
+      reason: 'amount-exceeds-balance',
+    });
+  });
+
+  it('rejects a currency mismatch on ANY invoice the payment could span', async () => {
+    /*
+      Only checking the first invoice would let a multi-invoice payment touch a
+      different currency later. Every present currency has to agree.
+    */
+    const { adaptor } = await adaptorFor({
+      customers: [customer],
+      invoices: [
+        { Id: 'inv-1', TxnDate: '2026-01-01', Balance: 100, CurrencyRef: { value: 'JMD' } },
+        { Id: 'inv-2', TxnDate: '2026-02-01', Balance: 150, CurrencyRef: { value: 'USD' } },
+      ],
+    });
+    await expect(adaptor.preflightPayment!(input)).resolves.toEqual({
+      ok: false,
+      reason: 'currency-mismatch',
+    });
+  });
+
   it('rejects a currency that is present and different', async () => {
     const { adaptor } = await adaptorFor({
       customers: [customer],

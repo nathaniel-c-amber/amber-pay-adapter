@@ -12,6 +12,7 @@ import { eventLog } from '../events/eventLog.service.js';
 import { failureTracker } from '../events/failureTracker.service.js';
 import { settingsService } from '../settings/settings.service.js';
 import { GatewayStatusService, gatewayFailureReason } from '../gateway/transactionStatus.service.js';
+import { openExpectedCharge } from '../gateway/amberPayWire.js';
 import { getPool } from '../../db/pool.js';
 import { getRepositories } from '../../repositories/index.js';
 import { InMemoryWebhookDedupRepository } from '../../repositories/inMemory.js';
@@ -25,6 +26,7 @@ import type {
   PushResult,
 } from '../../types/adaptor.js';
 import type { WebhookEvent, WebhookEventType } from '../../types/gateway.js';
+import type { GatewayStatusStore } from '../gateway/transactionStatus.service.js';
 import type {
   CustomerPaymentStatus,
   PaymentOutcomeStore,
@@ -55,6 +57,10 @@ function describePushFailure(action: string, err: unknown): string {
         return 'The matched accounting customer has no outstanding invoice';
       case 'invoice-ambiguous':
         return 'The matched accounting customer has several outstanding invoices';
+      case 'amount-invalid':
+        return 'The amount this payment was charged is not a usable figure';
+      case 'amount-exceeds-balance':
+        return 'The amount charged is more than the customer\'s total outstanding balance; nothing was written';
       case 'invoice-not-cleared':
         return 'The payment was recorded but the invoice is still outstanding';
       case 'scan-limit-reached':
@@ -93,17 +99,23 @@ function describePushFailure(action: string, err: unknown): string {
 }
 
 /**
- * The success line, naming the invoice so an operator can go and look at it.
+ * The success line, naming the invoices so an operator can go and look at them.
  *
  * An invoice id is the one upstream identifier worth putting in an event: it is
  * what the operator needs to find the record, and it identifies a transaction
- * rather than a person. Counts and figures are not — there are none here.
+ * rather than a person. Counts and figures are not, and it is also the reason
+ * reconciliation is reported as a sentence rather than as the difference —
+ * there is no amount in this result to quote.
  */
 function describeApplied(adaptorName: string, result: PushResult): string {
-  if (result.alreadyApplied) {
-    return `Already recorded in ${adaptorName} on invoice ${result.invoiceRef ?? 'unknown'}`;
-  }
-  return `Invoice ${result.invoiceRef ?? 'unknown'} paid in ${adaptorName}`;
+  const refs =
+    result.invoiceRefs.length > 0 ? result.invoiceRefs.join(', ') : 'unknown';
+  const applied = result.alreadyApplied
+    ? `Already recorded in ${adaptorName} on ${result.invoiceRefs.length > 1 ? 'invoices' : 'invoice'} ${refs}`
+    : `${result.invoiceRefs.length > 1 ? 'Invoices' : 'Invoice'} ${refs} paid in ${adaptorName}`;
+  return result.reconciliationRequired
+    ? `${applied}; part of the payment is unapplied or an invoice moved during the write, so this needs reconciling`
+    : applied;
 }
 
 /** Resolves an accounting adaptor by id (defaults to the singleton registry). */
@@ -155,6 +167,20 @@ export interface WebhookProcessorOverrides {
    * the common case pays no round trip.
    */
   statuses?: Pick<GatewayStatusService, 'lookup'>;
+  /**
+   * Where the figure the gateway CHARGED is read from, so it can be applied to
+   * the ledger.
+   *
+   * ★ IT IS THE SEALED CHECKOUT RECORD ON PURPOSE. The invoice balance is what
+   * the invoice still owes, which is not the same thing as what the customer
+   * paid — treating the two as one is the defect this seam exists to fix. A
+   * charge that cannot be found or opened REFUSES the push rather than falling
+   * back to a balance, because guessing here puts the wrong amount in the books.
+   *
+   * An override for the same reason `outcomes` is: the singleton wires the real
+   * store, and a unit test must answer without a database.
+   */
+  charges?: Pick<GatewayStatusStore, 'findExpectedChargeByTransactionId'>;
 }
 
 /**
@@ -482,7 +508,7 @@ export class WebhookProcessor {
         matchValue: event.reference,
         status: event.status,
         processedAt: event.at,
-      }, await this.resolveMatchConfig());
+      }, await this.resolveMatchConfig(), await this.resolveChargedAmount(event));
       // The terminal stage of the ledger: the record now exists in the
       // accounting system. Derived from `record-updated`, which (like
       // `webhook-received`) nothing ever wrote, so a successful push left no
@@ -504,6 +530,40 @@ export class WebhookProcessor {
         organizationId: this.organizationId,
       });
       throw err;
+    }
+  }
+
+  /**
+   * The figure the customer was CHARGED, read from the sealed checkout record.
+   *
+   * `event.id` is our transaction id, and it is the key the checkout row was
+   * written under. The value is opened here and held only for the duration of
+   * the push: it is passed as an argument and never written to `PaymentRef`, an
+   * event, a failure or a log line.
+   *
+   * ★ A MISSING ROW REFUSES THE PUSH. It would be easy to fall back to the
+   * invoice balance, and that is exactly the bug being repaired: the balance is
+   * what the invoice still owes, so a partial payment would be recorded as the
+   * full amount. An operator can see and fix a refused push; a plausible wrong
+   * figure is invisible until the books are reconciled.
+   */
+  private async resolveChargedAmount(event: WebhookEvent): Promise<string> {
+    const charges = this.overrides.charges ?? defaultExpectedCharges();
+    const row = await charges.findExpectedChargeByTransactionId(
+      this.organizationId,
+      event.id,
+    );
+    if (row === undefined) {
+      throw new AdaptorConnectionError(
+        'The amount this payment was charged could not be found, so it cannot be applied to an invoice without guessing.',
+      );
+    }
+    try {
+      return openExpectedCharge(row.expectedSealed).amount;
+    } catch {
+      throw new AdaptorConnectionError(
+        'The amount this payment was charged could not be read, so it cannot be applied to an invoice without guessing.',
+      );
     }
   }
 
@@ -547,6 +607,7 @@ export class WebhookProcessor {
     adaptor: AccountingAdaptor,
     payment: PaymentRef,
     match: CustomerMatchConfig,
+    amount: string,
   ): Promise<PushResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
@@ -558,7 +619,10 @@ export class WebhookProcessor {
     });
 
     try {
-      return await Promise.race([adaptor.pushCompletedPayment(payment, match), timeout]);
+      return await Promise.race([
+        adaptor.pushCompletedPayment(payment, match, amount),
+        timeout,
+      ]);
     } finally {
       if (timer) {
         clearTimeout(timer);
@@ -657,6 +721,21 @@ let gatewayStatus: GatewayStatusService | undefined;
 function defaultGatewayStatus(): GatewayStatusService {
   gatewayStatus ??= new GatewayStatusService(new PostgresCheckoutIntentStore(getPool()));
   return gatewayStatus;
+}
+
+/**
+ * The sealed-charge store, built once.
+ *
+ * Same reasoning as the status service above: the pool underneath is shared and
+ * lazy, and a processor that never pushes should not build a second one. The
+ * default is the REAL store rather than an absent seam — "no charge recorded"
+ * must mean the row is missing, never that production forgot to wire the read.
+ */
+let expectedCharges: PostgresCheckoutIntentStore | undefined;
+
+function defaultExpectedCharges(): PostgresCheckoutIntentStore {
+  expectedCharges ??= new PostgresCheckoutIntentStore(getPool());
+  return expectedCharges;
 }
 
 /**

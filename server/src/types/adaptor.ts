@@ -117,13 +117,24 @@ export interface CustomerMatchConfig {
 export interface PushResult {
   externalRef: string;
   at: string; // ISO 8601
-  /** The upstream invoice the payment was applied to, or null when none. */
-  invoiceRef: string | null;
+  /**
+   * The upstream invoices this payment was applied to, in the order it was
+   * allocated. Empty when a prior payment named none. IDS ONLY: no figures and
+   * no names, for the same reason as every other field here.
+   */
+  invoiceRefs: string[];
+  /**
+   * Someone has to look at this by hand: either the upstream left part of the
+   * payment unapplied, or a touched invoice moved by more than this payment
+   * alone. A boolean rather than a reason, and never an amount — the figure
+   * that would explain it is not allowed to leave the wire layer.
+   */
+  reconciliationRequired: boolean;
   /** Which strategy resolved the customer. `none` means nothing matched. */
   matchedBy: CustomerMatchStrategy | 'none';
   /** A prior payment already covered this reference; nothing was written. */
   alreadyApplied: boolean;
-  /** The post-write re-read confirmed the invoice cleared. */
+  /** The post-write re-read confirmed every allocated invoice moved as expected. */
   verified: boolean;
 }
 
@@ -287,13 +298,23 @@ export interface AccountingAdaptor {
   status(): Promise<AdaptorStatus>;
   /**
    * Apply a completed payment in the accounting system: resolve the customer,
-   * find their open invoice, record the payment against it, and confirm it
-   * cleared. Throws on any failure, including a match that found nothing or
-   * found too much — a wrong customer is not a state to guess your way out of.
+   * find their open invoices, allocate the money across the oldest first, and
+   * confirm every touched invoice moved. Throws on any failure, including a
+   * match that found nothing or found too much — a wrong customer is not a
+   * state to guess your way out of.
+   *
+   * `amount` IS A TRANSIENT ARGUMENT AND MUST NEVER BE STORED. It is the figure
+   * the gateway signed and showed the customer, in major units ("250.00"), and
+   * it exists only for the duration of this call. It is deliberately NOT on
+   * `PaymentRef`: a domain entity, an event, a failure title or a log line that
+   * carried it would outlive the payment being applied and leak a ledger figure
+   * into the privacy boundary. `privacy.test.ts` checks the shapes that leave
+   * this call; this parameter is not one of them.
    */
   pushCompletedPayment(
     payment: PaymentRef,
     match: CustomerMatchConfig,
+    amount: string,
   ): Promise<PushResult>;
   /**
    * Check whether a payment COULD be placed before a checkout is minted.

@@ -79,7 +79,7 @@ describe('SageAdaptor', () => {
     const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
     const adaptor = new SageAdaptor(transport);
     await adaptor.connect(credentials);
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toBeInstanceOf(AdaptorError);
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toBeInstanceOf(AdaptorError);
     // Nothing was sent upstream: a refusal that still made a call would be a
     // call whose result nobody looks at.
     expect(transport).not.toHaveBeenCalled();
@@ -88,7 +88,7 @@ describe('SageAdaptor', () => {
   it('refuses to apply a payment before it is connected', async () => {
     const transport = jest.fn().mockResolvedValue({ status: 200, body: {} });
     const adaptor = new SageAdaptor(transport);
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toBeInstanceOf(
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toBeInstanceOf(
       AdaptorConnectionError,
     );
   });

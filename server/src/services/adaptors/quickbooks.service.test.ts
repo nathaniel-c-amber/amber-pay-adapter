@@ -35,7 +35,7 @@ function quickBooks(script: {
   invoices?: unknown[];
   existingPayments?: unknown[];
   createdPayment?: { Id: string; UnappliedAmt?: number };
-  balanceAfterPayment?: number;
+  balanceAfterPayment?: number | Record<string, number>;
 }) {
   const calls: { url: string; body: unknown }[] = [];
   const transport = jest.fn(async (_method: string, url: string, body?: unknown) => {
@@ -58,10 +58,12 @@ function quickBooks(script: {
       return { status: 200, body: { Payment: script.createdPayment ?? { Id: 'pay-1' } } };
     }
     if (String(url).includes('/invoice/')) {
-      return {
-        status: 200,
-        body: { Invoice: { Id: 'inv-1', Balance: script.balanceAfterPayment ?? 0 } },
-      };
+      const id = String(url).split('/invoice/')[1] ?? 'inv-1';
+      const balance =
+        typeof script.balanceAfterPayment === 'object'
+          ? script.balanceAfterPayment[id] ?? 0
+          : script.balanceAfterPayment ?? 0;
+      return { status: 200, body: { Invoice: { Id: id, Balance: balance } } };
     }
     return { status: 200, body: {} };
   });
@@ -138,7 +140,7 @@ describe('QuickBooksAdaptor', () => {
     );
   });
 
-  it('applies a payment to the discovered invoice and confirms it cleared', async () => {
+  it('applies a payment to the discovered invoice and confirms it moved', async () => {
     const { transport } = quickBooks({
       customers: oneCustomer,
       invoices: oneOpenInvoice,
@@ -148,24 +150,91 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    const result = await adaptor.pushCompletedPayment(payment, match);
+    const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
 
     expect(result).toEqual({
       externalRef: 'pay-1',
       at: expect.any(String),
-      invoiceRef: 'inv-1',
+      invoiceRefs: ['inv-1'],
+      reconciliationRequired: false,
       matchedBy: 'customField',
       alreadyApplied: false,
       verified: true,
     });
   });
 
-  it('sends the invoice balance as the payment total, and links the line to the invoice', async () => {
+  it('writes the amount CHARGED, allocated across invoices, not the balance', async () => {
     /*
-      The figures are read from the INVOICE, never from the gateway. That is the
-      only number that can be right, and asserting the body is the only place
-      this can be proved — a payment for a different figure would satisfy every
-      other test in this file.
+      The figure comes from the gateway, never from the invoice. This test used
+      to assert `TotalAmt: 250` because the invoice balance happened to be 250 —
+      which is exactly the defect: a customer charged 100 against a 250 invoice
+      was recorded as having paid 250.
+    */
+    const { transport, calls } = quickBooks({
+      customers: oneCustomer,
+      invoices: oneOpenInvoice,
+      balanceAfterPayment: 150,
+    });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect(credentials);
+    await adaptor.pushCompletedPayment(payment, match, '100.00');
+
+    const create = calls.find((call) => call.url.endsWith('/payment'));
+    expect(create?.body).toMatchObject({
+      TotalAmt: 100,
+      CustomerRef: { value: 'cust-1' },
+      PaymentRefNum: 'p1',
+      Line: [{ Amount: 100, LinkedTxn: [{ TxnId: 'inv-1', TxnType: 'Invoice' }] }],
+    });
+  });
+
+  it('leaves a partially paid invoice and still verifies', async () => {
+    const { transport } = quickBooks({
+      customers: oneCustomer,
+      invoices: oneOpenInvoice,
+      balanceAfterPayment: 150,
+    });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect(credentials);
+
+    const result = await adaptor.pushCompletedPayment(payment, match, '100.00');
+
+    expect(result.verified).toBe(true);
+    expect(result.invoiceRefs).toEqual(['inv-1']);
+    expect(result.reconciliationRequired).toBe(false);
+  });
+
+  it('spans two invoices, oldest created first', async () => {
+    const { transport, calls } = quickBooks({
+      customers: oneCustomer,
+      invoices: [
+        { Id: 'inv-older', TxnDate: '2026-01-01', Balance: 100 },
+        { Id: 'inv-newer', TxnDate: '2026-02-01', Balance: 250 },
+      ],
+      balanceAfterPayment: { 'inv-older': 0, 'inv-newer': 50 },
+    });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect(credentials);
+
+    const result = await adaptor.pushCompletedPayment(payment, match, '300.00');
+
+    const create = calls.find((call) => call.url.endsWith('/payment'));
+    expect(create?.body).toMatchObject({
+      TotalAmt: 300,
+      Line: [
+        { Amount: 100, LinkedTxn: [{ TxnId: 'inv-older', TxnType: 'Invoice' }] },
+        { Amount: 200, LinkedTxn: [{ TxnId: 'inv-newer', TxnType: 'Invoice' }] },
+      ],
+    });
+    expect(result.invoiceRefs).toEqual(['inv-older', 'inv-newer']);
+    expect(result.verified).toBe(true);
+  });
+
+  it('refuses an amount larger than the total outstanding, before writing', async () => {
+    /*
+      The customer's outstanding total fell since allocation read it — or the
+      caller asked for more than exists. Writing the shortfall would either
+      overpay or invent an unlinked credit line, so nothing is written.
     */
     const { transport, calls } = quickBooks({
       customers: oneCustomer,
@@ -174,15 +243,46 @@ describe('QuickBooksAdaptor', () => {
     });
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
-    await adaptor.pushCompletedPayment(payment, match);
 
-    const create = calls.find((call) => call.url.endsWith('/payment'));
-    expect(create?.body).toMatchObject({
-      TotalAmt: 250,
-      CustomerRef: { value: 'cust-1' },
-      PaymentRefNum: 'p1',
-      Line: [{ Amount: 250, LinkedTxn: [{ TxnId: 'inv-1', TxnType: 'Invoice' }] }],
+    await expect(
+      adaptor.pushCompletedPayment(payment, match, '300.00'),
+    ).rejects.toMatchObject({ reason: 'amount-exceeds-balance' });
+    expect(calls.some((call) => call.url.endsWith('/payment'))).toBe(false);
+  });
+
+  it('reports a reconciliation when QuickBooks leaves an unapplied remainder', async () => {
+    /*
+      The balance moved between our read and our write, so upstream applied only
+      part of the payment. That is reported, never failed: the money is safe.
+    */
+    const { transport } = quickBooks({
+      customers: oneCustomer,
+      invoices: oneOpenInvoice,
+      createdPayment: { Id: 'pay-1', UnappliedAmt: 12.5 },
+      balanceAfterPayment: 0,
     });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect(credentials);
+
+    const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
+
+    expect(result.verified).toBe(true);
+    expect(result.reconciliationRequired).toBe(true);
+  });
+
+  it('reports a reconciliation when another payment moved the invoice further', async () => {
+    const { transport } = quickBooks({
+      customers: oneCustomer,
+      invoices: oneOpenInvoice,
+      balanceAfterPayment: 100,
+    });
+    const adaptor = new QuickBooksAdaptor(transport);
+    await adaptor.connect(credentials);
+
+    const result = await adaptor.pushCompletedPayment(payment, match, '100.00');
+
+    expect(result.verified).toBe(true);
+    expect(result.reconciliationRequired).toBe(true);
   });
 
   it('does not write when this reference was already paid upstream', async () => {
@@ -202,7 +302,7 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    const result = await adaptor.pushCompletedPayment(payment, match);
+    const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
 
     expect(result.alreadyApplied).toBe(true);
     expect(calls.some((call) => call.url.endsWith('/payment'))).toBe(false);
@@ -213,7 +313,7 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toMatchObject({
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toMatchObject({
       reason: 'customer-not-found',
     });
     expect(calls.some((call) => call.url.endsWith('/payment'))).toBe(false);
@@ -230,7 +330,7 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toMatchObject({
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toMatchObject({
       reason: 'customer-ambiguous',
       matches: 2,
     });
@@ -242,7 +342,7 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toMatchObject({
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toMatchObject({
       reason: 'invoice-not-found',
     });
   });
@@ -262,7 +362,7 @@ describe('QuickBooksAdaptor', () => {
     const adaptor = new QuickBooksAdaptor(transport);
     await adaptor.connect(credentials);
 
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toMatchObject({
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toMatchObject({
       reason: 'invoice-not-cleared',
     });
   });
@@ -276,6 +376,7 @@ describe('QuickBooksAdaptor', () => {
       adaptor.pushCompletedPayment(
         { ...payment, matchValue: "x' OR '1'='1" },
         match,
+        '250.00',
       ),
     ).rejects.toBeInstanceOf(AdaptorError);
     // The pattern is what refuses it, so nothing reached the network at all.
@@ -285,7 +386,7 @@ describe('QuickBooksAdaptor', () => {
   it('throws AdaptorConnectionError when not connected', async () => {
     const { transport } = quickBooks({});
     const adaptor = new QuickBooksAdaptor(transport);
-    await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toBeInstanceOf(
+    await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toBeInstanceOf(
       AdaptorConnectionError,
     );
   });
@@ -361,10 +462,10 @@ describe('QuickBooksAdaptor', () => {
       await adaptor.connect(credentials);
 
       // Delivery one: the write is accepted upstream, then fails on the way back.
-      await expect(adaptor.pushCompletedPayment(payment, match)).rejects.toThrow(/socket hang up/);
+      await expect(adaptor.pushCompletedPayment(payment, match, '250.00')).rejects.toThrow(/socket hang up/);
 
       // Delivery two: the retry. It must be a no-op, and it must know it is one.
-      const result = await adaptor.pushCompletedPayment(payment, match);
+      const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
       expect(result.alreadyApplied).toBe(true);
       expect(result.verified).toBe(true);
       /*
@@ -373,7 +474,7 @@ describe('QuickBooksAdaptor', () => {
         runs before the outstanding-invoice lookup: the invoice is settled now, so
         it cannot be found again by asking what is owed.
       */
-      expect(result.invoiceRef).toBe('inv-1');
+      expect(result.invoiceRefs).toEqual(['inv-1']);
 
       // THE ASSERTION. One upstream write across two deliveries, and the one
       // that happened is the first — not a second payment against the same
@@ -407,10 +508,10 @@ describe('QuickBooksAdaptor', () => {
       const adaptor = new QuickBooksAdaptor(transport);
       await adaptor.connect(credentials);
 
-      const result = await adaptor.pushCompletedPayment(payment, match);
+      const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
       expect(result).toMatchObject({
         alreadyApplied: true,
-        invoiceRef: 'inv-1',
+        invoiceRefs: ['inv-1'],
         verified: true,
       });
       // And it wrote nothing.
@@ -434,10 +535,48 @@ describe('QuickBooksAdaptor', () => {
       const adaptor = new QuickBooksAdaptor(transport);
       await adaptor.connect(credentials);
 
-      const result = await adaptor.pushCompletedPayment(payment, match);
+      const result = await adaptor.pushCompletedPayment(payment, match, '250.00');
       expect(result.alreadyApplied).toBe(true);
-      expect(result.invoiceRef).toBeNull();
+      expect(result.invoiceRefs).toEqual([]);
       expect(result.verified).toBe(false);
+    });
+
+    it('reports a partial payment from the durable row, without re-reading a settled balance', async () => {
+      /*
+        ★ A PARTIAL PAYMENT IS STILL "APPLIED".
+
+        The old retry check re-read the invoice and expected a zero balance.
+        That is wrong for a payment that deliberately left money outstanding:
+        the balance is not zero, so a retry would be reported as a failure — or,
+        if the test were inverted, a second payment could be written. The
+        payment row carrying our reference is the only evidence that survives,
+        and its linked invoice is what the result reports.
+      */
+      const { transport } = quickBooks({
+        customers: oneCustomer,
+        invoices: oneOpenInvoice,
+        existingPayments: [
+          {
+            Id: 'pay-1',
+            PaymentRefNum: payment.id,
+            Line: [{ Amount: 100, LinkedTxn: [{ TxnId: 'inv-1', TxnType: 'Invoice' }] }],
+          },
+        ],
+        balanceAfterPayment: 150,
+      });
+      const adaptor = new QuickBooksAdaptor(transport);
+      await adaptor.connect(credentials);
+
+      const result = await adaptor.pushCompletedPayment(payment, match, '100.00');
+
+      expect(result).toMatchObject({
+        alreadyApplied: true,
+        invoiceRefs: ['inv-1'],
+        verified: true,
+      });
+      expect(
+        transport.mock.calls.filter((call) => String(call[1]).endsWith('/payment')),
+      ).toHaveLength(0);
     });
   });
 
@@ -508,7 +647,7 @@ describe('QuickBooksAdaptor', () => {
       );
       const adaptor = new QuickBooksAdaptor(transport);
       await adaptor.connect(credentials);
-      await adaptor.pushCompletedPayment(payment, match);
+      await adaptor.pushCompletedPayment(payment, match, '250.00');
 
       const write = transport.mock.calls.find((call) => String(call[1]).endsWith('/payment'));
       expect(write).toBeDefined();
